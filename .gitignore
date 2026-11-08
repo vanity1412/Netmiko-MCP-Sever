@@ -1,18 +1,16 @@
-# Local credentials, topology, trusted identities and operational evidence
+# Local deployment data and integrations: never publish with MCP source
 /input/
 /runtime/
 /temp/
-/opencode.json
+/output/
+/app/
+/Check.cmd
+/OpenCode-Terminal.cmd
+/OpenCode-Web.cmd
+/opencode*.json
+/mcp/check.py
 /mcp/devices.json
 /mcp/ssh/
-/app/*.exe
-/output/*
-!/output/email-notification/
-/output/email-notification/*
-!/output/email-notification/*.py
-!/output/email-notification/tests/
-/output/email-notification/tests/*
-!/output/email-notification/tests/test_*.py
 __pycache__/
 *.py[cod]
 .env
@@ -22,5 +20,3 @@ __pycache__/
 *.sqlite*
 *.db
 .venv/
-
-!/output/email-notification/README.md

@@ -1,3 +1,9 @@
+# Repository cleanup
+
+- Tập trung source Netmiko MCP, scanner, tests và tài liệu liên quan.
+- Bỏ theo dõi launcher/OpenCode config, check client-specific và sender email; file tích hợp cục bộ còn có trên máy được giữ nguyên.
+- Giữ inventory, credential, host keys, runtime và báo cáo ngoài Git. Không đổi backend hoặc 10 tool.
+
 # 1.3.0
 
 - Giữ nguyên tên và schema 10 MCP tool.
