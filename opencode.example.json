@@ -1,0 +1,21 @@
+{
+  "mcp": {
+    "servers": {
+      "netmiko": {
+        "command": [
+          "python",
+          "-u",
+          "mcp/bootstrap.py",
+          "--config",
+          "mcp/devices.json",
+          "--inventory-csv",
+          "input/device.csv"
+        ],
+        "environment": {
+          "NETWORK_SSH_USER": "{env:NETWORK_SSH_USER}",
+          "NETWORK_SSH_PASSWORD": "{env:NETWORK_SSH_PASSWORD}"
+        }
+      }
+    }
+  }
+}

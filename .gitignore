@@ -1,0 +1,24 @@
+# Local credentials, topology, trusted identities and operational evidence
+/input/
+/runtime/
+/temp/
+/opencode.json
+/mcp/devices.json
+/mcp/ssh/
+/app/*.exe
+/output/*
+!/output/email-notification/
+/output/email-notification/*
+!/output/email-notification/*.py
+!/output/email-notification/tests/
+/output/email-notification/tests/*
+!/output/email-notification/tests/test_*.py
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*.pem
+*.key
+*.sqlite*
+*.db
+.venv/

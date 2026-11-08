@@ -1,0 +1,17 @@
+{
+  "defaults": {
+    "device_type": "autodetect",
+    "ssh_strict": true,
+    "system_host_keys": true,
+    "alt_host_keys": true,
+    "username": "${NETWORK_SSH_USER}",
+    "password": "${NETWORK_SSH_PASSWORD}",
+    "session_ttl_seconds": 28800,
+    "session_max_age_seconds": 43200,
+    "max_sessions": 64,
+    "max_workers": 8,
+    "keepalive": 30
+  },
+  "profiles": {},
+  "devices": {}
+}
