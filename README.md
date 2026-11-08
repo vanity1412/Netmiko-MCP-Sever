@@ -1,6 +1,6 @@
 # Netmiko-MCP-Sever — OpenCode Network
 
-## Source 1.2.3 trên Git
+## Source 1.3.0 trên Git
 
 Repository chỉ chứa mã nguồn, test và cấu hình mẫu. Tài khoản, inventory thật,
 SSH host keys, executable, báo cáo vận hành và runtime được giữ riêng tại máy.
@@ -66,3 +66,7 @@ Chạy `Check.cmd` để kiểm tra Python, inventory, credential profiles và k
 - `mcp/devices.json` giữ nguyên profile/tài khoản và các host-key flags; việc fingerprint/AAA cần triển khai riêng có kiểm soát. Lệnh nhiều dòng/control characters bị từ chối, nhưng backend không thay cho command authorization read-only.
 - Source Python thay đổi không cập nhật module đã được process MCP cũ import. Khi không có công việc đang chạy, reconnect riêng Netmiko qua `/mcps`; không cần restart toàn bộ OpenCode Web. Không tự reload/ngắt phiên đang làm việc.
 - Regression offline: `python -m unittest discover -s mcp/tests -v`. SSH smoke-test có quyền: `python mcp/check.py --ssh`; không dùng credential trong CLI. Kiểm thử nâng cấp và rollback ở `output/UPGRADE-MCP-OPENCODE/`.
+
+## Quét toàn inventory
+
+Dùng `python mcp/scan.py --all --output output/SCAN-VERSION` để preview không SSH. Thêm `--execute` khi chạy thật; mặc định chỉ lấy version. Luồng fast/slow, profile, bằng chứng tăng dần và resume xem [mcp/SCAN.md](mcp/SCAN.md). Giữ nguyên 10 MCP tool/schema.

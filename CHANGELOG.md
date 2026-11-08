@@ -1,3 +1,13 @@
+# 1.3.0
+
+- Giữ nguyên tên và schema 10 MCP tool.
+- Error category/stage giữ được nguyên nhân host key/KEX/auth-method/auth-timeout qua exception chain và detection worker.
+- Detection/collection dùng chung SSH slots; Python API có cumulative request budget.
+- CLI error với echo/prompt hoàn chỉnh không ngắt transport; BGP notification counters không bị coi CLI failure.
+- Scanner CLI preview mặc định, hai lane fast/slow, kết quả/evidence tăng dần, dedup và resume có kiểm chứng.
+- Retry lane chậm giới hạn cho transport/read timeout; không thử lại auth/host-key/KEX để làm đẹp tỷ lệ.
+- Không thay inventory/credential/trust store. Không tự import credential hoặc legacy algorithms từ SecureCRT.
+
 # 1.2.3
 
 - Sửa prompt cuối, CLI errors/counters, session slot và close deadline.

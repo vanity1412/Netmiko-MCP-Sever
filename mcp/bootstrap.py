@@ -14,13 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / 'mcp' / 'collector_backend.py'
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True)
-    parser.add_argument('--inventory-csv', required=True)
-    parser.add_argument('--check', action='store_true')
-    parser.add_argument('--output-dir', help='Optional isolated evidence directory; credentials/inventory unchanged')
-    args = parser.parse_args()
+def prepare_environment():
     os.environ['NETWORK_MCP_DATA_DIR'] = str(ROOT / 'runtime' / 'data' / 'netmiko')
     if not (os.environ.get('NETWORK_SSH_USER') and os.environ.get('NETWORK_SSH_PASSWORD')):
         source = ROOT / 'input' / 'ssh.txt'
@@ -31,6 +25,16 @@ def main():
         if not credentials:
             raise RuntimeError('Fill SSH environment fields in opencode.json or provide input/ssh.txt')
         os.environ['NETWORK_SSH_USER'], os.environ['NETWORK_SSH_PASSWORD'] = (value.strip() for value in credentials[0])
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    parser.add_argument('--inventory-csv', required=True)
+    parser.add_argument('--check', action='store_true')
+    parser.add_argument('--output-dir', help='Optional isolated evidence directory; credentials/inventory unchanged')
+    args = parser.parse_args()
+    prepare_environment()
     spec = importlib.util.spec_from_file_location('goosenet_collector', BACKEND)
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)

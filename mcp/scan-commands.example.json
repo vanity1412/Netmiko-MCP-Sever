@@ -1,0 +1,8 @@
+{
+  "juniper_junos": ["show version", "show system uptime"],
+  "cisco_ios": ["show version", "show clock"],
+  "cisco_xr": ["show version", "show clock"],
+  "cisco_nxos": ["show version", "show clock"],
+  "huawei": ["display version", "display clock"],
+  "linux": ["uname -s", "uptime"]
+}

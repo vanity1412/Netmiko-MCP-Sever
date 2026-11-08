@@ -1,0 +1,4 @@
+[
+  {"target": "192.0.2.10", "device_type": "juniper_junos", "commands": ["show version", "show system uptime"]},
+  {"target": "192.0.2.11", "device_type": "autodetect", "lane": "slow"}
+]

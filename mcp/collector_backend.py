@@ -13,6 +13,7 @@ import concurrent.futures
 import contextlib
 import datetime as dt
 import hashlib
+import functools
 import json
 import os
 from pathlib import Path
@@ -25,13 +26,84 @@ import traceback
 import uuid
 from typing import Any, Callable
 
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 APP_HOME = Path(os.environ.get("NETWORK_MCP_DATA_DIR") or ((Path(os.environ["LOCALAPPDATA"]) / "GooseNetworkCollector") if os.environ.get("LOCALAPPDATA") else (Path.home() / ".goose-network-collector")))
 SENSITIVE_KEYS = ("password", "secret", "passphrase", "token", "private_key", "username")
 ENV_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 KNOWN_KEYS = {"host", "port", "device_type", "username", "password", "secret", "use_keys", "key_file", "allow_agent", "ssh_strict", "system_host_keys", "alt_host_keys", "alt_key_file", "fast_cli", "conn_timeout", "auth_timeout", "banner_timeout", "global_delay_factor", "keepalive", "ssh_config_file", "disabled_algorithms"}
+
+
+class CollectionError(Exception):
+    """Bounded worker failures retain categories without copying library secrets."""
+    def __init__(self, details):
+        self.details = details
+        super().__init__(details.get('error', 'CollectionError'))
+
+
+def classify_error(exc, stage='unknown'):
+    stage = getattr(exc, '_network_error_stage', stage)
+    if isinstance(exc, CollectionError):
+        return dict(exc.details)
+    chain, seen, current = [], set(), exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current)); chain.append(current)
+        current = current.__cause__ or current.__context__
+    names = ' '.join(type(e).__name__ for e in chain).lower()
+    message = ' '.join(str(e) for e in chain).lower()
+    text = names + ' ' + message
+    category, retry = 'unknown_error', False
+    if 'cancelled' in names:
+        category = 'cancelled'
+    elif 'deadline exceeded' in message:
+        category = 'deadline'
+    elif 'badhostkey' in names or 'host key for server' in message:
+        category, stage = 'host_key_changed', 'host_key'
+    elif 'not found in known_hosts' in message or 'not in known_hosts' in message:
+        category, stage = 'host_key_unknown', 'host_key'
+    elif any(s in text for s in ('incompatiblepeer', 'no acceptable', 'no matching', 'incompatible ssh peer')):
+        category, stage = 'algorithm_mismatch', 'key_exchange'
+    elif 'badauthenticationtype' in names or 'bad authentication type' in message:
+        category, stage = 'auth_method', 'authentication'
+    elif 'authentication timeout' in message or 'authentication timed out' in message:
+        category, stage = 'auth_timeout', 'authentication'
+    elif 'authentication' in text:
+        category, stage = 'authentication', 'authentication'
+    elif isinstance(exc, PermissionError):
+        category = 'policy_denied'
+    elif 'prompt could not be verified' in message:
+        category, stage = 'output_verification', 'prompt'
+    elif 'error reading ssh protocol banner' in message:
+        timed_out = 'timeout' in names or 'timed out' in message
+        category, stage, retry = ('banner_timeout' if timed_out else 'banner_error'), 'banner', timed_out
+    elif 'readtimeout' in names or (isinstance(exc, TimeoutError) and stage == 'command'):
+        category, retry = 'read_timeout', True
+    elif 'connectionrefused' in names:
+        category, stage = 'connection_refused', 'tcp'
+    elif 'gaierror' in names or 'name or service not known' in message or 'dns failure' in message:
+        category, stage = 'dns_error', 'dns'
+    elif 'sshexception' in names:
+        category = 'ssh_error'  # Netmiko may wrap SSH errors as TimeoutException.
+    elif 'timeout' in names and stage in {'connect', 'autodetect'}:
+        category, stage, retry = 'connect_timeout', 'tcp', True
+    elif isinstance(exc, (TypeError, ValueError, FileNotFoundError)):
+        category = 'invalid_input'
+    return {'error': type(exc).__name__, 'error_category': category,
+            'error_stage': stage, 'retryable': retry}
+
+
+def bounded_request(method):
+    @functools.wraps(method)
+    def call(self, *args, **kwargs):
+        with self.request_budget():
+            try:
+                return method(self, *args, **kwargs)
+            except Exception as exc:
+                if not hasattr(exc, '_network_error_stage'):
+                    exc._network_error_stage = getattr(self._request, 'stage', 'unknown')
+                raise
+    return call
 
 
 def stderr(message: str) -> None:
@@ -270,25 +342,43 @@ def redact_data(value: Any, secrets: list[str] | None = None) -> Any:
     return value
 
 
+def command_echo_line(command, output):
+    normalized = ' '.join(command.split())
+    for index, line in enumerate(output.splitlines()[:3]):
+        line = ' '.join(line.split())
+        if line == normalized or re.fullmatch(r'\S+[>#%$\]]\s*' + re.escape(normalized), line):
+            return index
+    return None
+
+
 def detection_worker(params: dict[str, Any]) -> dict[str, Any]:
     """Small read-only probe set; parent process enforces a hard wall deadline."""
     from netmiko import ConnectHandler
     params = dict(params)
-    params.update(device_type="generic_termserver", conn_timeout=8, auth_timeout=8,
-                  banner_timeout=8, read_timeout_override=4)
+    probe_timeout = bounded_int(params.pop('_probe_read_timeout', 4),4,1,60)
+    params.update(device_type="generic_termserver", read_timeout_override=probe_timeout)
+    for field in ("conn_timeout", "auth_timeout", "banner_timeout"):
+        params.setdefault(field, 8)
     conn = None
     try:
         conn = ConnectHandler(**params)
         for command in ("show version", "display version", "uname -s"):
-            output = conn.send_command_timing(command, last_read=0.5, read_timeout=4,
+            output = conn.send_command_timing(command, last_read=0.5, read_timeout=probe_timeout,
                                                strip_prompt=False, strip_command=False)
-            platform = platform_from_version(output)
+            output = clean_terminal(output)
+            echo_line = command_echo_line(command, output)
+            if echo_line is None or not last_prompt(output):
+                return {'error':'DetectionOutputVerificationError', 'error_category':'output_verification',
+                        'error_stage':'autodetect', 'retryable':False,
+                        'message':'Probe echo or ending prompt could not be verified'}
+            # Initial login banners are not the response to our probe command.
+            platform = platform_from_version('\n'.join(output.splitlines()[echo_line+1:-1]))
             if platform:
                 return {"device_type": platform, "probe_command": command}
         return {"error": "AutodetectUnknown", "message": "No supported version signature in bounded probes"}
     except Exception as exc:
         # Never put library exception text/credentials on the worker wire.
-        return {"error": type(exc).__name__, "message": "Read-only detection probe failed"}
+        return {**classify_error(exc, "autodetect"), "message": "Read-only detection probe failed"}
     finally:
         if conn is not None:
             with contextlib.suppress(Exception):
@@ -603,12 +693,13 @@ class Collector:
         if not isinstance(settings["device_type"], str) or not re.fullmatch(r"[A-Za-z0-9_]+", settings["device_type"]):
             raise ValueError("Invalid device_type")
         settings["port"] = bounded_int(settings["port"], 22, 1, 65535)
+        settings.update(getattr(self._request, 'connection_timeouts', None) or {})
         return settings
 
     def _session_key(self, params: dict[str, Any]) -> tuple[Any, ...]:
         # Security/host-key/algorithm changes must not reuse a connection built under
         # different policy. Only the digest is retained in dictionary keys.
-        token = json.dumps({k: v for k, v in params.items() if k not in {"host", "port", "device_type"}}, ensure_ascii=False, sort_keys=True)
+        token = json.dumps({k: v for k, v in params.items() if k not in {"host", "port", "device_type", "conn_timeout", "auth_timeout", "banner_timeout"}}, ensure_ascii=False, sort_keys=True)
         fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
         return (params["host"], params["port"], params["device_type"], params.get("username"), params.get("key_file"), fingerprint)
 
@@ -634,7 +725,7 @@ class Collector:
                 try:
                     self._resolve_platform_locked(params)
                 except Exception as exc:
-                    if 'Authentication' in type(exc).__name__ or 'Authentication' in str(exc):
+                    if classify_error(exc, 'autodetect')['error_category'] in {'authentication', 'auth_method', 'auth_timeout'}:
                         self._auth_failures[key] = time.monotonic() + 300
                     raise
         finally:
@@ -652,33 +743,51 @@ class Collector:
                 self._detection_cache_hits += 1
                 return
             self._detection_probes += 1
-        if self._custom_detect is not None:
-            detector = self._custom_detect(**params)
-            try:
-                guess = detector.autodetect()
-            finally:
-                connection = getattr(detector, "connection", None)
-                if connection is not None:
-                    with contextlib.suppress(Exception):
-                        connection.disconnect()
-        else:
-            # Killable process, not a timed-out thread left sending more probes.
-            worker = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--detect-worker"],
-                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      text=True, encoding="utf-8")
-            try:
-                stdout, _stderr = worker.communicate(json.dumps(params), timeout=min(self.autodetect_timeout, self._checkpoint()))
-            except subprocess.TimeoutExpired:
-                worker.kill()
-                worker.communicate()
-                raise TimeoutError(f"Autodetect exceeded {self.autodetect_timeout}s; probe process stopped") from None
-            try:
-                result = json.loads(stdout)
-            except (ValueError, TypeError):
-                raise ValueError("Autodetect worker returned invalid output") from None
-            if result.get("error"):
-                raise ValueError("Autodetect failed: " + str(result["error"]))
-            guess = result.get("device_type")
+        with self._entry_lock(self._ssh_slots):
+            self._request.stage = 'autodetect'
+            if self._custom_detect is not None:
+                detector = self._custom_detect(**params)
+                try:
+                    guess = detector.autodetect()
+                finally:
+                    connection = getattr(detector, "connection", None)
+                    if connection is not None:
+                        with contextlib.suppress(Exception):
+                            connection.disconnect()
+            else:
+                # Killable process, not a timed-out thread left sending more probes.
+                self._checkpoint()
+                probe_deadline = time.monotonic() + min(
+                    getattr(self._request, 'detection_timeout', None) or self.autodetect_timeout, self._checkpoint())
+                worker = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--detect-worker"],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          text=True, encoding="utf-8")
+                wire_params = dict(params)
+                overrides = getattr(self._request, 'connection_timeouts', None) or {}
+                wire_params['_probe_read_timeout'] = min(30, overrides.get('banner_timeout', 4))
+                wire = json.dumps(wire_params)
+                try:
+                    while True:
+                        self._checkpoint()
+                        left = probe_deadline - time.monotonic()
+                        if left <= 0:
+                            raise TimeoutError('Autodetect deadline exceeded')
+                        try:
+                            stdout, _stderr = worker.communicate(wire, timeout=min(.1, left))
+                            break
+                        except subprocess.TimeoutExpired:
+                            wire = None
+                finally:
+                    if worker.poll() is None:
+                        worker.kill()
+                    worker.communicate()
+                try:
+                    result = json.loads(stdout)
+                except (ValueError, TypeError):
+                    raise ValueError("Autodetect worker returned invalid output") from None
+                if result.get("error"):
+                    raise CollectionError(result)
+                guess = result.get("device_type")
         if not guess or not re.fullmatch(r"[a-zA-Z0-9_]+", guess):
             raise ValueError("Autodetect could not verify a supported platform; specify device_type")
         params["device_type"] = guess
@@ -692,15 +801,22 @@ class Collector:
         params = dict(params)
         for field in ('conn_timeout', 'auth_timeout', 'banner_timeout'):
             params[field] = min(params.get(field, 15), remaining)
+        self._request.stage = 'connect'
+        started = time.monotonic()
         conn = self._connect(**params)
         try:
+            self._request.stage = 'prompt'
             prompt = getattr(conn, "_network_prompt_text", None)
             if not prompt and hasattr(conn, "find_prompt"):
                 prompt = last_prompt(conn.find_prompt())
+            if not prompt:
+                raise ValueError('CLI prompt could not be verified after connection')
             if prompt:
                 conn._network_prompt_text = prompt
                 conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
                 conn.base_prompt = prompt[:-1]
+            conn._network_connect_prepare_ms = int((time.monotonic()-started)*1000)
+            self._checkpoint()
             return conn
         except Exception:
             with contextlib.suppress(Exception):
@@ -774,15 +890,15 @@ class Collector:
                         self._disconnect_entry(entry)
                 if entry["conn"] is None:
                     try:
-                        if self._auth_failures.get(key, 0) > time.monotonic():
+                        if self._auth_failures.get(self._detect_key(params), 0) > time.monotonic():
                             raise PermissionError("Authentication previously failed; suppressed for 5 minutes")
                         entry["conn"] = self._open(params)
                     except Exception as exc:
                         with self._guard:
-                            if "Authentication" in type(exc).__name__:
+                            if classify_error(exc, 'connect')['error_category'] in {'authentication', 'auth_method', 'auth_timeout'}:
                                 now = time.monotonic()
                                 self._auth_failures = {k: expiry for k, expiry in self._auth_failures.items() if expiry > now}
-                                self._auth_failures[key] = now + 300
+                                self._auth_failures[self._detect_key(params)] = now + 300
                             self._connection_failures += 1
                         raise
                     entry["created"] = time.monotonic()
@@ -793,8 +909,11 @@ class Collector:
                         self._session_reuses += 1
                 try:
                     yield entry["conn"]
-                except Exception:
-                    self._disconnect_entry(entry)
+                except Exception as exc:
+                    verified_cli_failure = isinstance(exc, BatchError) and bool(exc.results) and all(
+                        exc.results[-1].get(k) for k in ('transport_ok', 'output_complete', 'command_echo_verified'))
+                    if not verified_cli_failure:
+                        self._disconnect_entry(entry)
                     raise
                 finally:
                     entry["used"] = time.monotonic()
@@ -811,6 +930,50 @@ class Collector:
         if conn is not None:
             with contextlib.suppress(Exception):
                 conn.disconnect()
+
+    @contextlib.contextmanager
+    def request_budget(self, timeout=None, cancel=None, connection_timeouts=None, autodetect_timeout=None):
+        previous = getattr(self._request, 'context', None)
+        old_timeouts = getattr(self._request, 'connection_timeouts', None)
+        old_stage = getattr(self._request, 'stage', 'queue')
+        old_detection_timeout = getattr(self._request, 'detection_timeout', None)
+        if timeout is not None and not 0 < timeout <= 3600:
+            raise ValueError('Request budget must be 0..3600 seconds')
+        if autodetect_timeout is not None and not 0 < autodetect_timeout <= 120:
+            raise ValueError('Autodetect budget must be 0..120 seconds')
+        overrides = connection_timeouts or {}
+        if set(overrides) - {'conn_timeout', 'auth_timeout', 'banner_timeout'} or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 600 for v in overrides.values()):
+            raise ValueError('Invalid connection timeouts')
+        if previous is None:
+            self._request.context = (cancel or threading.Event(), time.monotonic() + (timeout or self.request_timeout))
+            self._request.stage = 'queue'
+        elif timeout is not None:
+            self._request.context = (previous[0], min(previous[1], time.monotonic()+timeout))
+        if connection_timeouts is not None:
+            self._request.connection_timeouts = dict(overrides)
+        if autodetect_timeout is not None:
+            self._request.detection_timeout = autodetect_timeout
+        try:
+            self._checkpoint()
+            yield
+        finally:
+            self._request.context = previous
+            self._request.connection_timeouts = old_timeouts
+            self._request.stage = old_stage
+            self._request.detection_timeout = old_detection_timeout
+
+    def failure_result(self, exc, target=None, command=None):
+        details = classify_error(exc, getattr(self._request, 'stage', 'unknown'))
+        details.update(ok=False, transport_ok=False, cli_ok=None, output_complete=False,
+                       message=self.scrub_error(str(exc)))
+        details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt'} else None
+        details['cli_ready'] = True if details['error_stage'] == 'command' else None
+        if target is not None:
+            details['target'] = target
+        if command is not None:
+            details['command'] = self.redact_output(command)
+        return details
 
     def _checkpoint(self) -> float:
         context = getattr(self._request, 'context', None)
@@ -835,6 +998,7 @@ class Collector:
             lock.release()
 
     def _preflight(self, target, commands, device_type=None, profile=None):
+        self._request.stage = 'validation'
         params = self._get_settings(target, device_type, profile)
         # Autodetect must complete before choosing a platform-specific policy.
         self._resolve_platform(params)
@@ -923,13 +1087,12 @@ class Collector:
         complete = bool(matches and matches[-1].end() == len(ending)) if prompt_pattern else bool(prompt)
         # Match known error messages at line boundaries, not words in a config/route.
         errors = re.findall(r"(?im)^\s*(?:%\s*)?(?:Invalid (?:input|command|interface)|Bad IP address or host name|Unknown command|Error\s*:|Ambiguous command|Incomplete command|Unrecognized command|syntax error|permission denied|access denied|authorization (?:failed|denied)|command authorization failed|not authorized|insufficient (?:privilege|permission)|bash: .*: command not found)[^\n]*", output)
+        if re.match(r'^show\s+bgp\s+neighbors?\b', command.strip(), re.I) and re.search(r'(?m)^Peer:\s+', output):
+            errors = [line for line in errors if not re.fullmatch(
+                r"\s*Error:\s+'[^'\n]+'\s+Sent:\s+\d+\s+Recv:\s+\d+\s*", line)]
         if re.search(r'(?im)(?:--More--|---\(more[^\n]*|---- More ----|\[yes/no\]|\[confirm\])', output):
             complete = False
-        normalized = " ".join(command.split())
-        echo = interactive or any(
-            " ".join(line.split()) == normalized or
-            bool(re.fullmatch(r'\S+[>#%$\]]\s*' + re.escape(normalized), " ".join(line.split())))
-            for line in output.splitlines()[:3])
+        echo = interactive or command_echo_line(command, output) is not None
         cli_ok = not bool(errors)
         output = self.redact_output(output)
         size = len(output)
@@ -938,6 +1101,8 @@ class Collector:
                                 "validation": "heuristic", "characters": size, "lines": output.count("\n") + (1 if output and not output.endswith("\n") else 0), "elapsed_ms": int(elapsed * 1000)}
         if not data["ok"]:
             data["error"] = "CliError" if not cli_ok else "OutputVerificationError"
+            data.update(error_category='cli_error' if not cli_ok else 'output_verification',
+                        error_stage='cli' if not cli_ok else 'verification', retryable=False)
             data["message"] = self.scrub_error(errors[0]) if errors else "Command echo or ending prompt not verified; output may be incomplete"
         if save_output or size > self.inline_max_chars:
             data["output_id"] = self._save_output(output)
@@ -952,6 +1117,7 @@ class Collector:
     def _send(self, conn: Any, command: str, timeout: int, expect_string: str | None = None,
               use_timing: bool = False) -> tuple[Any, str | None]:
         timeout = min(timeout, self._checkpoint())
+        self._request.stage = 'command'
         pattern = expect_string or getattr(conn, "_network_prompt_regex", None)
         if pattern:
             if len(pattern) > 1000:
@@ -967,6 +1133,7 @@ class Collector:
         self._checkpoint()
         return output, pattern
 
+    @bounded_request
     def execute(self, target: str, command: str, device_type: str | None = None, profile: str | None = None,
                 read_timeout: int | None = None, expect_string: str | None = None, use_timing: bool = False,
                 save_output: bool = False, use_textfsm: bool = False) -> dict[str, Any]:
@@ -1003,6 +1170,7 @@ class Collector:
         for entry in entries:
             self._disconnect_entry(entry)
 
+    @bounded_request
     def execute_many(self, target: str, commands: list[str], device_type: str | None = None, profile: str | None = None,
                      read_timeout: int | None = None, save_output: bool = False, use_timing: bool = False,
                      expect_string: str | None = None) -> dict[str, Any]:
@@ -1025,10 +1193,11 @@ class Collector:
                     raise
                 except Exception as exc:
                     # The connection is potentially out of sync; do not continue blindly.
-                    results.append({"target": target, "command": self.redact_output(cmd), "ok": False, "error": type(exc).__name__})
+                    results.append(self.failure_result(exc, target, cmd))
                     raise BatchError(results)
         return {"target": target, "results": results, "ok": True, "total": len(commands), "successes": len(results)}
 
+    @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
                  read_timeout: int | None = None, save_output: bool = False) -> dict[str, Any]:
         if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
@@ -1057,6 +1226,7 @@ class Collector:
             result['steps'] = results
         return result
 
+    @bounded_request
     def parallel(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
             raise ValueError(f"tasks must contain 1 to {MAX_TASKS} items")
@@ -1085,7 +1255,7 @@ class Collector:
             except BatchError as exc:
                 return {"target": item.get("target"), "ok": False, "results": exc.results, "error": "Batch interrupted after command failure"}
             except Exception as exc:
-                return {"target": item.get("target"), "ok": False, "error": type(exc).__name__ + ": " + self.scrub_error(str(exc))}
+                return self.failure_result(exc, item.get("target"))
             finally:
                 self._request.context = None
         results = list(self._task_pool.map(run_task, tasks))
@@ -1378,7 +1548,7 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
                 # Tool errors belong in tool result (not broken JSON-RPC). Never dump locals or tracebacks.
                 msg = collector.scrub_error(str(exc))
                 audit_error = type(exc).__name__ + ": " + msg
-                result = {"content": [{"type": "text", "text": json.dumps({"ok": False, "transport_ok": False, "cli_ok": None, "output_complete": False, "error": type(exc).__name__, "message": msg}, ensure_ascii=False)}], "isError": True}
+                result = {"content": [{"type": "text", "text": json.dumps(collector.failure_result(exc, args.get("target")), ensure_ascii=False)}], "isError": True}
             collector.audit(name, args, not result["isError"], time.monotonic() - started, audit_error)
             return rpc_response(rid, result)
         return rpc_error(rid, -32601, "Method not found")

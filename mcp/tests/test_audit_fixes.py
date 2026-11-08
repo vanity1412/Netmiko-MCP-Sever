@@ -74,7 +74,7 @@ class AuditFixes(unittest.TestCase):
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
         import readonly_client
         with patch.object(readonly_client, 'Collector', return_value=self.c) as factory:
-            wrapper=readonly_client.ReadOnlyConnection(host='MOCK',ssh_strict=False)
+            wrapper=readonly_client.ReadOnlyConnection(host='MOCK',device_type='juniper_junos',ssh_strict=False)
             defaults=factory.call_args.args[0]['defaults']
             self.assertTrue(defaults['ssh_strict']);self.assertTrue(defaults['alt_host_keys'])
             with self.assertRaises(PermissionError):wrapper.send_command('configure')

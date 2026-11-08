@@ -1,0 +1,293 @@
+[
+  {
+    "name": "ssh_execute",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "device_type": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "read_timeout": {
+          "type": "integer"
+        },
+        "expect_string": {
+          "type": "string"
+        },
+        "use_timing": {
+          "type": "boolean"
+        },
+        "save_output": {
+          "type": "boolean"
+        },
+        "use_textfsm": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target",
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_execute_many",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "device_type": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "read_timeout": {
+          "type": "integer"
+        },
+        "save_output": {
+          "type": "boolean"
+        },
+        "use_timing": {
+          "type": "boolean"
+        },
+        "expect_string": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "commands"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_interact",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "device_type": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "read_timeout": {
+          "type": "integer"
+        },
+        "save_output": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target",
+        "steps"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_parallel",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "device_type": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "read_timeout": {
+                "type": "integer"
+              },
+              "expect_string": {
+                "type": "string"
+              },
+              "use_timing": {
+                "type": "boolean"
+              },
+              "save_output": {
+                "type": "boolean"
+              },
+              "use_textfsm": {
+                "type": "boolean"
+              },
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "tasks"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_read_output",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "output_id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "output_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_read_output_bytes",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "output_id": {
+          "type": "string"
+        },
+        "byte_offset": {
+          "type": "integer"
+        },
+        "length": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "output_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_search_output",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "output_id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "regex": {
+          "type": "boolean"
+        },
+        "ignore_case": {
+          "type": "boolean"
+        },
+        "max_matches": {
+          "type": "integer"
+        },
+        "context_lines": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "output_id",
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_inventory",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "device_type": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "summary_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "ssh_close",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]

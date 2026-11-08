@@ -1,4 +1,4 @@
-# Netmiko MCP 1.2.3
+# Netmiko MCP 1.3.0
 
 1.2.2 cho phép `/` và `:` trong đối số interface/prefix và regex có pipe trong dấu nháy. Pipeline ngoài dấu nháy vẫn phải thuộc whitelist; không hỗ trợ escape/backslash hoặc lệnh ghi file. Nhóm RSVP/BFD/multicast Junos được bổ sung. Autodetect khóa theo identity thay vì khóa toàn collector. Không sửa trust store, inventory hoặc tài khoản.
 
@@ -6,7 +6,7 @@ Giữ nguyên 10 tên tool, schema, STDIO JSON-RPC và session pool. Bản này 
 
 ## Chính sách
 
-- Junos: các nhóm `show` được duyệt; Cisco: các nhóm `show`; Huawei: các nhóm `display`. Linux chỉ có danh sách nhỏ lệnh quan sát cố định. Driver chưa được duyệt (kể cả generic_termserver) bị chặn. Autodetect vẫn giữ nguyên probe/cache/deadline trước khi chọn policy.
+- Junos: các nhóm `show` được duyệt; Cisco: các nhóm `show`; Huawei: các nhóm `display`. Linux chỉ có danh sách nhỏ lệnh quan sát cố định. Driver chưa được duyệt bị chặn; generic_termserver được chuyển qua autodetect trước khi chọn grammar. Autodetect vẫn giữ nguyên probe/cache/deadline trước khi chọn policy.
 - Chặn lệnh viết, viết tắt, chuỗi lệnh, shell expansion, redirection, pipeline không được duyệt và đường dẫn file. Đây là lớp giảm rủi ro, không thay cho tài khoản AAA chỉ đọc. Khi thêm cú pháp hãng/phiên bản mới phải review và thêm regression.
 - `ssh_interact` chỉ nhận chuỗi lệnh đọc độc lập, xác minh từng bước; không nhận Enter/yes/password hay phiên cấu hình. Fail sớm khi CLI lỗi, thiếu echo, prompt thay đổi hoặc có confirmation/pager.
 - Mọi kết nối mới cưỡng chế strict host key; cả profile cũ đặt false cũng không được bỏ strict. Bootstrap dùng `mcp/ssh/known_hosts` tuyệt đối. Không tự thêm hoặc thay key. Không sửa trust store trong lần nâng cấp này.
@@ -34,3 +34,7 @@ Tests dùng fake connection và SSH server localhost sinh key tạm; không gử
 Redaction dùng chung `redact_text` cho output, audit/error và sender email hiện có. Structured output dùng recursive sanitizer để không hỏng JSON framing. Đây vẫn là best-effort; bảo vệ ACL credential/output, không công khai dữ liệu thô. Không có thay đổi sender/dedup hoặc email thật trong nâng cấp.
 
 1.2.3: generic_termserver được autodetect trước policy, regex search chạy process riêng tối đa 2 giây, auth failure suppress 5 phút theo identity. Entry host key vẫn cần xác minh độc lập; coverage cũ là snapshot, không phải cam kết kết nối.
+
+## Scanner 1.3
+
+Xem SCAN.md về ngân sách fast/slow, loại lỗi, resume và giới hạn thực tế. Detection/collection cùng dùng semaphore SSH. Python execute/batch/interact/parallel có request budget dù không gọi qua STDIO. Regex search vẫn dùng process riêng. Không hạ kiểm chứng echo/prompt, không thay trust provisioning để tăng tỷ lệ thành công. Session preparation/network I/O còn cooperative, không cam kết hard deadline hoặc SSH thành công mọi thiết bị.
