@@ -14,8 +14,13 @@
         "environment": {
           "NETWORK_SSH_USER": "{env:NETWORK_SSH_USER}",
           "NETWORK_SSH_PASSWORD": "{env:NETWORK_SSH_PASSWORD}"
-        }
+        },
+        "type": "local"
       }
     }
-  }
+  },
+  "instructions": [
+    "AGENTS.md",
+    "mcp/WORKFLOW.md"
+  ]
 }

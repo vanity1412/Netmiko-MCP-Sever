@@ -1,3 +1,13 @@
+# 1.2.3
+
+- Sửa prompt cuối, CLI errors/counters, session slot và close deadline.
+- Regex search có process riêng, timeout 2 giây và cancellation.
+- Suppress auth failure cùng identity 5 phút; signature xét tham số kết nối.
+- Bổ sung inheritance, quoted regex anchor, các nhóm lệnh NOC được duyệt.
+- Generic termserver qua autodetect; giữ inventory và strict host key.
+- Đồng bộ description, workflow, cấu hình mẫu; Python fallback chung policy.
+- Pin Netmiko 4.7.0 theo runtime đã kiểm thử. Giữ redaction hiện có.
+
 # 1.2.2
 
 - Cho phép interface có `/`, IPv4 prefix, IPv6 và nhóm Junos RSVP/BFD/multicast trong policy chỉ đọc.

@@ -1,6 +1,6 @@
 # Netmiko-MCP-Sever — OpenCode Network
 
-## Source 1.2.2 trên Git
+## Source 1.2.3 trên Git
 
 Repository chỉ chứa mã nguồn, test và cấu hình mẫu. Tài khoản, inventory thật,
 SSH host keys, executable, báo cáo vận hành và runtime được giữ riêng tại máy.

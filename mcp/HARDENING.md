@@ -1,4 +1,4 @@
-# Netmiko MCP 1.2.2
+# Netmiko MCP 1.2.3
 
 1.2.2 cho phép `/` và `:` trong đối số interface/prefix và regex có pipe trong dấu nháy. Pipeline ngoài dấu nháy vẫn phải thuộc whitelist; không hỗ trợ escape/backslash hoặc lệnh ghi file. Nhóm RSVP/BFD/multicast Junos được bổ sung. Autodetect khóa theo identity thay vì khóa toàn collector. Không sửa trust store, inventory hoặc tài khoản.
 
@@ -32,3 +32,5 @@ STDIO có tối đa max_workers request chạy và max_workers request chờ; qu
 Tests dùng fake connection và SSH server localhost sinh key tạm; không gửi lệnh nguy hiểm tới thiết bị thật. `python mcp/check.py --ssh` dùng thiết bị Junos cố định theo script; chỉ chạy khi được phép. Không in credential trong CLI.
 
 Redaction dùng chung `redact_text` cho output, audit/error và sender email hiện có. Structured output dùng recursive sanitizer để không hỏng JSON framing. Đây vẫn là best-effort; bảo vệ ACL credential/output, không công khai dữ liệu thô. Không có thay đổi sender/dedup hoặc email thật trong nâng cấp.
+
+1.2.3: generic_termserver được autodetect trước policy, regex search chạy process riêng tối đa 2 giây, auth failure suppress 5 phút theo identity. Entry host key vẫn cần xác minh độc lập; coverage cũ là snapshot, không phải cam kết kết nối.

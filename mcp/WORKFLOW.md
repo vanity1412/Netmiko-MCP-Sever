@@ -15,3 +15,8 @@
 - Với CRC lấy ít nhất hai mẫu kèm thời gian và đối chiếu hai đầu; với port dự phòng kiểm tra tồn tại, tốc độ, optic, kế thừa và dịch vụ. Không suy ra port dùng được chỉ vì down/cấu hình rỗng.
 - Báo cáo phải có nhật ký từng bước theo AGENTS; ghi nguyên nhân đổi hướng khi lỗi prompt, timeout, output thiếu hoặc dữ liệu trái giả thuyết. Lưu output đã che bí mật vào hồ sơ trước TTL cleanup.
 - Email dùng sender tại `output/email-notification/`; cấu hình SMTP qua môi trường, không đoán host/tài khoản. Khi test chỉ `--dry-run`/SMTP giả lập; trạng thái ambiguous không tự gửi lại. Chi tiết ở `output/email-notification/README.md`.
+
+
+Quy trình 1.2.3: tra inventory, chọn đúng driver; generic_termserver qua bounded autodetect. Mỗi thiết bị một batch ngắn, song song nhóm nhỏ thiết bị khác nhau. ssh_interact chỉ chạy lệnh đọc độc lập với timing, không nhận yes/Enter/config; ưu tiên ssh_execute_many.
+Lỗi authentication phải dừng identity đó (backend suppress 5 phút), không đổi credential để thử tiếp. Thiếu/sai host key phải đối chiếu fingerprint độc lập, không tắt strict. Python fallback dùng mcp/readonly_client.py; không gọi ConnectHandler trực tiếp hoặc chạy script legacy chưa chuyển wrapper. Chỉ ssh_close đúng target công việc của mình.
+Giữ prompt cache mặc định. Regex search giới hạn 2 giây; khi timeout dùng literal query. Lưu bằng chứng đầy đủ vào hồ sơ trước khi kết thúc công việc.
