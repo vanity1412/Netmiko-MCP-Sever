@@ -1,22 +1,15 @@
-# Network Investigation Workflow
+# Workflow
 
-- Chủ động sử dụng Netmiko MCP và inventory để SSH, thu thập dữ liệu và điều tra sự cố mạng.
-- Tự xác định thiết bị liên quan, lựa chọn lệnh, phân tích kết quả và mở rộng phạm vi kiểm tra khi cần.
-- Điều tra linh hoạt theo từng case, không giới hạn giao thức, hãng thiết bị, phương pháp hoặc số bước.
-- Khi thiếu thông tin, chủ động tìm kiếm và kiểm chứng thêm thay vì dừng ở nhận định chưa đủ dữ liệu.
-- Tận dụng SSH song song và session hiện có; xử lý timeout, lỗi kết nối và output bất thường theo tình huống.
-- Chủ động suy luận nguyên nhân, lựa chọn phương án tối ưu và đưa cấu hình CLI đề xuất cụ thể, kèm giải thích và kiểm chứng. Không tự apply/commit.
-- Ghi rõ từng bước điều tra: lệnh thực tế, output quan trọng, phân tích và quyết định tiếp theo.
-- Không bịa bằng chứng, không tiết lộ thông tin đăng nhập và không thực hiện thay đổi vận hành.
-- Tuân thủ `AGENTS.md` về báo cáo, lưu file và gửi email.
-- Backend 1.2 giữ nguyên 10 tool. Prompt chuẩn được cache theo session; chỉ truyền `expect_string` khi cần override đã xác minh. Batch/parallel dừng hoặc trả lỗi nếu CLI/output không đạt; xem `transport_ok`, `cli_ok`, `output_complete`, không chỉ boolean cũ.
-- Session pool giữ idle tối đa 8 giờ, max-age 12 giờ theo `mcp/devices.json`, keepalive 30 giây; thiết bị/AAA vẫn có thể ngắt sớm. Không tăng quyền hoặc TTL AAA để giữ phiên. Pool không tồn tại qua việc kết thúc process MCP; khi cấu hình/source đổi, không tự ngắt process đang có công việc.
-- Autodetect dùng probe chỉ đọc trong process có deadline, cache kết quả theo host/port/credential fingerprint. Khi đã biết đúng driver thì dùng driver đó; không thử lặp sau authentication failure.
-- Với CRC lấy ít nhất hai mẫu kèm thời gian và đối chiếu hai đầu; với port dự phòng kiểm tra tồn tại, tốc độ, optic, kế thừa và dịch vụ. Không suy ra port dùng được chỉ vì down/cấu hình rỗng.
-- Báo cáo phải có nhật ký từng bước theo AGENTS; ghi nguyên nhân đổi hướng khi lỗi prompt, timeout, output thiếu hoặc dữ liệu trái giả thuyết. Lưu output đã che bí mật vào hồ sơ trước TTL cleanup.
-- Email dùng sender tại `output/email-notification/`; cấu hình SMTP qua môi trường, không đoán host/tài khoản. Khi test chỉ `--dry-run`/SMTP giả lập; trạng thái ambiguous không tự gửi lại. Chi tiết ở `output/email-notification/README.md`.
-
-
-Quy trình 1.2.3: tra inventory, chọn đúng driver; generic_termserver qua bounded autodetect. Mỗi thiết bị một batch ngắn, song song nhóm nhỏ thiết bị khác nhau. ssh_interact chỉ chạy lệnh đọc độc lập với timing, không nhận yes/Enter/config; ưu tiên ssh_execute_many.
-Lỗi authentication phải dừng identity đó (backend suppress 5 phút), không đổi credential để thử tiếp. Thiếu/sai host key phải đối chiếu fingerprint độc lập, không tắt strict. Python fallback dùng mcp/readonly_client.py; không gọi ConnectHandler trực tiếp hoặc chạy script legacy chưa chuyển wrapper. Chỉ ssh_close đúng target công việc của mình.
-Giữ prompt cache mặc định. Regex search giới hạn 2 giây; khi timeout dùng literal query. Lưu bằng chứng đầy đủ vào hồ sơ trước khi kết thúc công việc.
+- Chọn cách làm theo yêu cầu: giải đáp thì trả lời trực tiếp; thu thập/phân tích thì lấy và xử lý dữ liệu; viết hoặc rà code thì tập trung vào code và kiểm thử phù hợp. Các bước điều tra mạng dưới đây chỉ áp dụng khi liên quan, không phải khuôn bắt buộc cho mọi công việc.
+- Chủ động dùng inventory và Netmiko MCP để xác định thiết bị, lựa chọn lệnh đọc, phân tích kết quả và mở rộng điều tra theo từng case; không bó vào một bộ lệnh hay số bước cố định.
+- Từ triệu chứng, đặt giả thuyết rồi chọn dữ liệu để kiểm chứng. Khi thiếu thông tin, chủ động tìm thêm; khi kết quả trái giả thuyết, đổi hướng và ghi lý do.
+- Tra `ssh_inventory` hoặc `input/device.csv` để lấy alias/IP, driver và profile nếu có. Target do người dùng chỉ định không nằm trong inventory vẫn có thể dùng trực tiếp bằng IP/hostname với tài khoản đã cấu hình, không tự sửa CSV. Nếu chỉ có IP và chưa rõ hãng, truyền `device_type="autodetect"`; khi dùng Python fallback, truyền driver từ cột `netmiko_device_type` hoặc `autodetect` qua `mcp/readonly_client.py`.
+- Tận dụng session hiện có; dùng `ssh_execute` cho lệnh đơn, `ssh_execute_many` cho batch ngắn trên một thiết bị, `ssh_parallel` cho nhóm thiết bị khác nhau. `ssh_interact` hiện chỉ chạy lệnh đọc độc lập bằng timing, không nhận yes/Enter/config. Thông số thực tế xem `ssh_status`.
+- Đối chiếu lệnh, echo, prompt, nội dung và các trường `transport_ok`, `cli_ok`, `output_complete` nếu có. Khi batch lỗi, xác định bước nào đã chạy; output thiếu hoặc lỗi truy cập không đồng nghĩa dịch vụ down. Lỗi authentication hoặc host key thì ghi rõ phần bị chặn, không đổi credential hay bỏ xác minh để thử tiếp.
+- Khi classifier và nội dung mâu thuẫn, đối chứng bằng lệnh khác. Ví dụ dòng `Error ... Sent/Recv` trong BGP neighbor có thể là counter lịch sử; kiểm tra State/summary trước khi kết luận.
+- Mở rộng hai đầu, member/uplink, L2/L3, routing, policy và lịch sử NMS theo dữ liệu thực tế. Đối chiếu description với config, LACP/LLDP và trạng thái vận hành để xác định đường đi.
+- Với CRC/error/drop, lấy ít nhất hai mẫu có thời điểm, kiểm tra reset/last cleared trước tính delta. Với tải, ghi chiều, đơn vị, tốc độ cổng và cách tính rate; phân biệt thời gian cảnh báo, collector và thiết bị. Không suy nguyên nhân từ counter tích lũy hoặc đóng sự cố chỉ vì vài mẫu đã bình thường.
+- Với port dự phòng, xác minh tốc độ, optic, config kế thừa, VLAN/service và dung lượng thay thế. Đưa CLI đề xuất cụ thể khi đã đủ dữ liệu; nếu hiện trạng đúng thì ghi rõ chưa cần thay đổi.
+- Khi quét nhiều thiết bị, chia nhóm vừa tải; loại task trùng theo host, port, driver và identity/profile nếu không lấy mẫu lặp. Lưu kết quả từng đích, thời điểm, lỗi và bằng chứng; tổng kết rõ thành công, thất bại, một phần và chưa chạy. Tool quét được yêu cầu tạo cần timeout, giới hạn đồng thời và checkpoint/resume phù hợp.
+- Kết thúc khi đã trả lời được mục tiêu hoặc bước tiếp không còn bổ sung bằng chứng hữu ích trong phạm vi công việc. Nếu một nhánh bị chặn, tiếp tục các nhánh độc lập còn lại rồi báo phần thiếu.
+- Trả kết quả theo dạng phù hợp trong `AGENTS.md`. Khi có báo cáo điều tra, ghi ngắn gọn từng bước và lưu output đầy đủ trước TTL cleanup. Mỗi yêu cầu công việc đều gửi kết quả qua email mặc định theo AGENTS, không chờ người dùng nhắc. Gửi **nội dung kết quả/báo cáo trong thân email**, có HTML và văn bản UTF-8 dự phòng; không gửi file báo cáo đính kèm hoặc chỉ gửi link. Nếu người dùng cấm gửi thật hoặc chỉ yêu cầu dry-run thì tuân theo; các phép thử sender dùng mock/dry-run, còn báo cáo kết quả công việc vẫn gửi mặc định.

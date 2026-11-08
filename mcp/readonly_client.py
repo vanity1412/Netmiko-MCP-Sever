@@ -1,9 +1,14 @@
 """Same-policy Python fallback for local investigation scripts; no write API."""
 from pathlib import Path
+import re
 from collector_backend import Collector, KNOWN_KEYS
 
 class ReadOnlyConnection:
-    def __init__(self, **params):
+    def __init__(self, *, device_type: str, **params):
+        # This wrapper does not load inventory: never guess a Cisco driver.
+        if not isinstance(device_type, str) or not re.fullmatch(r'[A-Za-z0-9_]+', device_type):
+            raise ValueError('device_type must be supplied from the inventory netmiko_device_type field')
+        params['device_type'] = device_type
         root = Path(__file__).resolve().parents[1]
         self.target = params.pop('host')
         defaults = {k:v for k,v in params.items() if k in KNOWN_KEYS}
