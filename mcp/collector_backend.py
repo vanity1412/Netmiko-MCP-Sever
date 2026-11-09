@@ -26,7 +26,7 @@ import traceback
 import uuid
 from typing import Any, Callable
 
-VERSION = "1.3.3"
+VERSION = "1.4.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 APP_HOME = Path(os.environ.get("NETWORK_MCP_DATA_DIR") or ((Path(os.environ["LOCALAPPDATA"]) / "GooseNetworkCollector") if os.environ.get("LOCALAPPDATA") else (Path.home() / ".goose-network-collector")))
@@ -358,6 +358,7 @@ def cli_pipeline(command: str) -> list[str]:
     return parts
 
 
+@functools.lru_cache(maxsize=4096)
 def readonly_command(command: str, platform: str) -> str:
     """Conservative grammar, not a substitute for device-side AAA authorization."""
     command = safe_command(command).strip()
@@ -416,8 +417,14 @@ def clean_terminal(text: str) -> str:
     """Remove ANSI/control noise, including BEL, without dropping evidence lines."""
     text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-    while re.search(r"[^\n]\x08", text):
-        text = re.sub(r"[^\n]\x08", "", text)
+    if '\x08' in text:
+        terminal = []
+        for char in text:
+            if char == '\x08' and terminal and terminal[-1] != '\n':
+                terminal.pop()
+            else:
+                terminal.append(char)
+        text = ''.join(terminal)
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -517,7 +524,7 @@ def pending_interaction(text):
     return bool(re.fullmatch(r'(?i)(?:(?:enter|retype|confirm)\s+)?(?:(?:old|new|current)\s+)?(?:password|passphrase)\s*:|press\s+(?:enter|return|any key)\s+to\s+continue[.:]?', line))
 
 
-def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.08):
+def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03):
     """Read one command without re-sending it; retain partial data on failure.
 
     Netmiko owns the transport, driver setup and channel normalization. Reading
@@ -529,6 +536,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.08)
     handled_pagers = {}
     last_data = time.monotonic()
     failure = None
+    next_checkpoint = 0.0
     try:
         # Drop a buffered old prompt/login banner before sending this command.
         for _ in range(16):
@@ -540,9 +548,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.08)
                 break
         conn.write_channel(conn.normalize_cmd(command))
         while True:
-            if checkpoint:
-                checkpoint()
             now = time.monotonic()
+            if checkpoint and now >= next_checkpoint:
+                checkpoint()
+                next_checkpoint = now + .05
             if now >= deadline:
                 raise TimeoutError('Command read timed out')
             data = conn.read_channel()
@@ -569,7 +578,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.08)
                     if ending_matches(pattern, cleaned):
                         break
                     raise EOFError('SSH channel closed before ending prompt')
-            time.sleep(min(.02, max(0, deadline - time.monotonic())))
+            time.sleep(min(.01, max(0, deadline - time.monotonic())))
     except Exception as exc:
         failure = classify_error(exc, 'command')
         failure['message'] = 'Command interrupted; partial output retained'
@@ -669,6 +678,17 @@ class Collector:
         if not isinstance(self.defaults, dict) or not isinstance(self.devices, dict) or not isinstance(self.profiles, dict):
             raise ValueError("defaults, profiles and devices must be JSON objects")
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
+        self.health_check_interval = bounded_int(self.defaults.get('health_check_interval_seconds'), 30, 0, 3600)
+        self.auth_cooldown = bounded_int(self.defaults.get('auth_failure_cooldown_seconds'), 300, 0, 3600)
+        self.redaction_enabled = bool(self.defaults.get('redaction_enabled', True))
+        self.prefer_inventory_driver = bool(self.defaults.get('prefer_inventory_driver', True))
+        self.host_key_store_mode = self.defaults.get('host_key_store_mode', 'shared')
+        if self.host_key_store_mode not in {'shared', 'process'}:
+            raise ValueError('host_key_store_mode must be shared or process')
+        self.prompt_quiet = float(self.defaults.get('prompt_quiet_seconds', .03))
+        self.timing_quiet = float(self.defaults.get('timing_quiet_seconds', .1))
+        if not all(0 <= value <= 2 for value in (self.prompt_quiet, self.timing_quiet)):
+            raise ValueError('Prompt quiet time must be between 0 and 2 seconds')
         self.inline_max_chars = bounded_int(self.defaults.get("inline_max_chars"), 12000, 100, MAX_INLINE)
         self.session_ttl = bounded_int(self.defaults.get("session_ttl_seconds"), 180, 0, 86400)
         self.session_max_age = bounded_int(self.defaults.get("session_max_age_seconds"), 43200, 0, 604800)
@@ -725,21 +745,16 @@ class Collector:
                 def tolerant_session_preparation(conn: Any) -> None:
                     conn._test_channel_read(pattern=r"[%>$#]")
                     conn.enter_cli_mode()
-                    prompt = None
-                    for command in (
-                        "set cli screen-width 511",
-                        "set cli complete-on-space off",
-                        "set cli screen-length 0",
-                    ):
-                        conn.write_channel(conn.normalize_cmd(command))
-                        reply = conn.read_channel_timing(last_read=0.5, read_timeout=5)
-                        prompt = last_prompt(reply) or prompt
-                    conn.clear_buffer()
+                    prompt = last_prompt(conn.find_prompt())
                     if not prompt:
-                        conn.write_channel(conn.RETURN)
-                        prompt = last_prompt(conn.read_channel_timing(last_read=0.5, read_timeout=5))
-                    if not prompt:
-                        raise ValueError("Junos did not return a valid CLI prompt after setup")
+                        raise ValueError('Junos did not return a valid CLI prompt before setup')
+                    pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
+                    for command in ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'):
+                        reply, failure = read_cli_output(conn, command, 5, pattern)
+                        if failure:
+                            raise CollectionError(failure)
+                        if not ending_matches(pattern, reply):
+                            raise ValueError('Junos did not return a valid CLI prompt after setup')
                     conn.base_prompt = prompt[:-1]
                     conn._network_prompt_text = prompt
                     conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
@@ -861,9 +876,11 @@ class Collector:
                "explicit unique device_type/profile or inventory alias is required." % key)
 
     def scrub_error(self, message: str) -> str:
-        return self.redact_output(message)[:400]
+        return self.redact_output(message, force=True)[:400]
 
-    def redact_output(self, message: str) -> str:
+    def redact_output(self, message: str, *, force=False) -> str:
+        if not force and not self.redaction_enabled:
+            return message
         secrets = [os.environ.get(x, "") for x in ("NETWORK_SSH_PASSWORD", "NETWORK_SSH_SECRET")]
         for section in [self.defaults, *self.profiles.values(), *self.devices.values()]:
             if isinstance(section, dict):
@@ -880,6 +897,8 @@ class Collector:
         return text
 
     def redact_structured(self, value: Any) -> Any:
+        if not self.redaction_enabled:
+            return value
         if isinstance(value, dict):
             return {k: '[redacted]' if any(s in str(k).lower() for s in (*SENSITIVE_KEYS, 'community', 'api_key')) else self.redact_structured(v) for k, v in value.items()}
         if isinstance(value, list):
@@ -948,7 +967,8 @@ class Collector:
         settings.update({k: v for k, v in device.items() if k in KNOWN_KEYS})
         settings["host"] = safe_target(device.get("host") or target)
         if device_type:
-            settings["device_type"] = device_type
+            known = device.get('device_type')
+            settings['device_type'] = known if (self.prefer_inventory_driver and device_type in {'autodetect', 'generic_termserver'} and known and known not in {'autodetect', 'generic_termserver'}) else device_type
         settings.setdefault("device_type", "cisco_ios")
         settings.setdefault("port", 22)
         settings.setdefault("username", os.environ.get("NETWORK_SSH_USER", ""))
@@ -960,6 +980,9 @@ class Collector:
         settings['alt_host_keys'] = False
         settings['system_host_keys'] = False
         settings['alt_key_file'] = str(Path(settings.get('alt_key_file') or APP_HOME / 'known_hosts').expanduser().resolve())
+        if self.host_key_store_mode == 'process':
+            store = Path(settings['alt_key_file'])
+            settings['alt_key_file'] = str(store.with_name(store.name + '.' + str(os.getpid())))
         install_tofu()
         settings.setdefault("conn_timeout", 15)
         settings.setdefault("auth_timeout", 15)
@@ -975,7 +998,12 @@ class Collector:
     def _session_key(self, params: dict[str, Any]) -> tuple[Any, ...]:
         # Security/host-key/algorithm changes must not reuse a connection built under
         # different policy. Only the digest is retained in dictionary keys.
-        token = json.dumps({k: v for k, v in params.items() if k not in {"host", "port", "device_type", "conn_timeout", "auth_timeout", "banner_timeout"}}, ensure_ascii=False, sort_keys=True)
+        identity = {k: v for k, v in params.items() if k not in {"host", "port", "device_type", "conn_timeout", "auth_timeout", "banner_timeout"}}
+        if self.host_key_store_mode == 'process':
+            # PID-specific persistence must not change task IDs across job resume.
+            path = identity.get('alt_key_file', '')
+            identity['alt_key_file'] = path.removesuffix('.' + str(os.getpid()))
+        token = json.dumps(identity, ensure_ascii=False, sort_keys=True)
         fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
         return (params["host"], params["port"], params["device_type"], params.get("username"), params.get("key_file"), fingerprint)
 
@@ -997,12 +1025,12 @@ class Collector:
         try:
             with self._entry_lock(entry[0]):
                 if self._auth_failures.get(key, 0) > time.monotonic():
-                    raise PermissionError('Authentication previously failed; suppressed for 5 minutes')
+                    raise PermissionError('Authentication previously failed; credential identity is cooling down')
                 try:
                     self._resolve_platform_locked(params)
                 except Exception as exc:
                     if classify_error(exc, 'autodetect')['error_category'] in {'authentication', 'auth_method'}:
-                        self._auth_failures[key] = time.monotonic() + 300
+                        self._auth_failures[key] = time.monotonic() + self.auth_cooldown
                     raise
         finally:
             with self._guard:
@@ -1159,23 +1187,32 @@ class Collector:
                     self._disconnect_entry(entry)
                 if entry["conn"] is not None:
                     try:
-                        if not entry["conn"].is_alive():
+                        channel = getattr(entry['conn'], 'remote_conn', None)
+                        dead = (getattr(entry['conn'], 'alive', True) is False or getattr(entry['conn'], 'closed', False) is True or (channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False))))
+                        transport = getattr(channel, 'transport', None)
+                        if transport is not None and not transport.is_active():
+                            dead = True
+                        due = now - entry.get('health_checked', 0) >= self.health_check_interval
+                        if dead or (due and not entry['conn'].is_alive()):
                             self._disconnect_entry(entry)
+                        elif due:
+                            entry['health_checked'] = now
                     except Exception:
                         self._disconnect_entry(entry)
                 if entry["conn"] is None:
                     try:
                         if self._auth_failures.get(self._detect_key(params), 0) > time.monotonic():
-                            raise PermissionError("Authentication previously failed; suppressed for 5 minutes")
+                            raise PermissionError("Authentication previously failed; credential identity is cooling down")
                         entry["conn"] = self._open(params)
                     except Exception as exc:
                         with self._guard:
                             if classify_error(exc, 'connect')['error_category'] in {'authentication', 'auth_method'}:
                                 now = time.monotonic()
                                 self._auth_failures = {k: expiry for k, expiry in self._auth_failures.items() if expiry > now}
-                                self._auth_failures[self._detect_key(params)] = now + 300
+                                self._auth_failures[self._detect_key(params)] = now + self.auth_cooldown
                             self._connection_failures += 1
                         raise
+                    entry["health_checked"] = time.monotonic()
                     entry["created"] = time.monotonic()
                     with self._guard:
                         self._connections_opened += 1
@@ -1271,8 +1308,9 @@ class Collector:
 
     @contextlib.contextmanager
     def _entry_lock(self, lock):
-        while not lock.acquire(timeout=min(.1, self._checkpoint())):
-            pass
+        if not lock.acquire(blocking=False):
+            while not lock.acquire(timeout=min(.1, self._checkpoint())):
+                pass
         try:
             self._checkpoint()
             yield
@@ -1337,8 +1375,9 @@ class Collector:
                     pass
         return {"removed": removed, "freed_bytes": freed}
 
-    def _save_output(self, content: str) -> str:
-        content = self.redact_output(content)
+    def _save_output(self, content: str, *, already_redacted=False) -> str:
+        if not already_redacted:
+            content = self.redact_output(content)
         content_bytes = len(content.encode("utf-8"))
         if self.output_quota and content_bytes > self.output_quota:
             raise ValueError("Output exceeds storage quota; no output_id was issued")
@@ -1393,7 +1432,7 @@ class Collector:
             data["message"] = self.scrub_error(errors[0]) if errors else "Ending prompt not verified or pager/confirmation remains; output is incomplete"
         if save_output or size > self.inline_max_chars:
             try:
-                data["output_id"] = self._save_output(output)
+                data["output_id"] = self._save_output(output, already_redacted=True)
             except Exception as exc:
                 exc._network_error_stage = 'persistence'
                 raise
@@ -1432,7 +1471,7 @@ class Collector:
         conn._network_read_failure = None
         if hasattr(conn, 'read_channel') and hasattr(conn, 'write_channel'):
             output, failure = read_cli_output(conn, command, timeout, pattern or r'(?!)',
-                                             self._checkpoint, quiet=.5 if use_timing else .08)
+                                             self._checkpoint, quiet=self.timing_quiet if use_timing else self.prompt_quiet)
             conn._network_read_failure = failure
             return output, pattern
         if use_timing:

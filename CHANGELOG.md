@@ -1,3 +1,16 @@
+# 1.4.0 - Collection performance options
+
+- Prefer a concrete inventory driver over autodetect by default; configurable override.
+- Reuse sessions with local closed/transport checks and periodic active health probes (30s).
+- Faster Junos preparation reads setup responses to the discovered prompt; prompt remains connection-local.
+- Prompt quiet defaults: 30ms normal, 100ms timing; configurable 0..2s.
+- Optional output redaction; errors and audit commands remain scrubbed. Avoid duplicate output redaction on save; linear backspace cleanup.
+- Read-loop budget/cancellation checkpoints at 50ms intervals and nonblocking lock fast path; session locks and SSH limits remain enforced.
+- Bounded command validation cache (4096 successful entries).
+- Configurable auth cooldown; timeout/lost transport never enters credential cooldown.
+- Parallel detection across identities and single-flight detection for one identity retained.
+- Optional process-specific known_hosts files; shared mode remains supported with atomic merging.
+
 # 1.3.3 - Fleet and SSH fault validation
 
 - Phát hiện channel EOF/closed ngay, giữ partial output, retry có giới hạn cho connection_lost và handshake_incomplete (Paramiko No existing session).

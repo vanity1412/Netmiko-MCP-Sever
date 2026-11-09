@@ -10,7 +10,14 @@
     "session_max_age_seconds": 43200,
     "max_sessions": 64,
     "max_workers": 8,
-    "keepalive": 30
+    "keepalive": 30,
+    "health_check_interval_seconds": 30,
+    "prompt_quiet_seconds": 0.03,
+    "timing_quiet_seconds": 0.1,
+    "redaction_enabled": false,
+    "prefer_inventory_driver": true,
+    "auth_failure_cooldown_seconds": 30,
+    "host_key_store_mode": "process"
   },
   "profiles": {},
   "devices": {}

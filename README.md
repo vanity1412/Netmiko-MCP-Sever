@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.3.3**, giữ nguyên **10 MCP tool**.
+MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.4.0**, giữ nguyên **10 MCP tool**.
 
 ## Cấu trúc
 
@@ -61,3 +61,17 @@ Tests dùng fake transport và SSH server localhost, không đăng nhập thiế
 ## Kiểm chứng 1.3.3
 
 Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thiết bị ảo, kiểm tra bằng chứng/resume và SSH localhost cho Cisco IOS/XR/NXOS, Huawei, Junos, Linux. Dữ liệu production và báo cáo riêng không được đưa lên Git. Xem `docs/ARCHITECTURE.md` và `docs/SCAN.md`.
+
+## Tối ưu 1.4.0
+
+| defaults option | Constructor default | Cấu hình mẫu |
+|---|---|---|
+| prefer_inventory_driver | true | true |
+| health_check_interval_seconds | 30 | 30 |
+| prompt_quiet_seconds | 0.03 | 0.03 |
+| timing_quiet_seconds | 0.1 | 0.1 |
+| redaction_enabled | true | false |
+| auth_failure_cooldown_seconds | 300 | 30 |
+| host_key_store_mode | shared | process |
+
+Cấu hình mẫu ưu tiên tốc độ và trả/lưu output không che bí mật. Đặt redaction_enabled=true nếu muốn che dữ liệu output. Error và audit command luôn được che. Mode process ghi known_hosts.<PID>, không tự hợp nhất sang file chung; dùng shared nếu cần một store thống nhất. Prompt được cache trong phiên, không tái sử dụng mù qua kết nối mới. Đặt prefer_inventory_driver=false để yêu cầu dò lại dù inventory đã có driver. Quiet ngắn có thể cần tăng lại trên thiết bị gửi dữ liệu bất thường; điều kiện prompt cuối và kiểm tra CLI vẫn được giữ.

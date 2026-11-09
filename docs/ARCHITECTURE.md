@@ -62,7 +62,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 Inventory, credential, known_hosts, runtime và output được cung cấp riêng tại môi trường triển khai, không được theo dõi trong Git. Dữ liệu lịch sử không đại diện cho phiên SSH hoặc trạng thái thiết bị hiện tại.
 
-## Chính sách hiện tại — 1.3.3
+## Chính sách hiện tại — 1.4.0
 
 - Backend, Python fallback và subprocess autodetect cùng chấp nhận host key mới/đổi, lưu theo SSH client dưới khóa file liên tiến trình. Lỗi ghi store tạo warning và không chặn kết nối.
 - Không patch AutoAddPolicy toàn cục; mỗi Netmiko client có policy giữ đường dẫn store riêng. File được đọc/merge lại khi đang giữ lock rồi atomic replace.
@@ -74,3 +74,5 @@ Inventory, credential, known_hosts, runtime và output được cung cấp riên
 - Scanner có fast/slow lanes; retry tối đa một lần cho TCP/banner/read/auth timeout. Authentication rejected/auth_method vẫn cooldown 5 phút và không retry. Resume bỏ qua failed/partial đã lưu.
 
 CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần khai báo theo thiết bị, không tự đoán hoặc thử tất cả credential. Bootstrap không bắt cặp credential toàn cục khi profile đã có credential riêng.
+
+Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, store theo process, cooldown và ưu tiên driver inventory) được mô tả trong README.md. Output redaction có thể tắt; thông báo lỗi và audit command vẫn được che.

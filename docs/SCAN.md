@@ -1,4 +1,4 @@
-# Quét inventory — Netmiko MCP 1.3.3
+# Quét inventory — Netmiko MCP 1.4.0
 
 Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
 
@@ -62,7 +62,7 @@ Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo v�
 
 Copy mcp/collector_backend.py, mcp/bootstrap.py, mcp/scan.py; giữ mcp/readonly_client.py bản đã bắt buộc device_type. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Source mới cần process MCP mới; kiểm tra ssh_status.version=1.3.3. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.4.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
 ## Kiểm tra diện rộng và tình huống lỗi
 
