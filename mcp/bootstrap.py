@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / 'mcp' / 'collector_backend.py'
 
 
-def prepare_environment():
+def prepare_environment(required=False):
     os.environ['NETWORK_MCP_DATA_DIR'] = str(ROOT / 'runtime' / 'data' / 'netmiko')
     if not (os.environ.get('NETWORK_SSH_USER') and os.environ.get('NETWORK_SSH_PASSWORD')):
         source = ROOT / 'input' / 'ssh.txt'
@@ -23,8 +23,11 @@ def prepare_environment():
             source.read_text(encoding='utf-8-sig') if source.is_file() else '', re.I,
         )
         if not credentials:
-            raise RuntimeError('Fill SSH environment fields in opencode.json or provide input/ssh.txt')
+            if required:
+                raise RuntimeError('Provide SSH credentials through profiles, environment or input/ssh.txt')
+            return False
         os.environ['NETWORK_SSH_USER'], os.environ['NETWORK_SSH_PASSWORD'] = (value.strip() for value in credentials[0])
+    return True
 
 
 def main():
@@ -52,7 +55,17 @@ def main():
         config['defaults']['output_dir'] = str(output_path if output_path.is_absolute() else ROOT / output_path)
     profiles = config.setdefault('profiles', {})
     if args.check:
-        print(json.dumps({'ok': True, 'devices': len(config.get('devices', {})), 'profiles': list(profiles), 'credentials_available': True}))
+        collector = backend.Collector(config)
+        try:
+            missing = 0
+            for target in collector.devices:
+                settings = collector._get_settings(target, None, None)
+                if not settings.get('username') or not any(settings.get(k) for k in ('password', 'use_keys', 'key_file', 'allow_agent')):
+                    missing += 1
+            print(json.dumps({'ok': missing == 0, 'devices': len(collector.devices), 'profiles': list(profiles),
+                              'credentials_available': missing == 0, 'devices_missing_credentials': missing}))
+        finally:
+            collector.shutdown()
         return
     backend.run_stdio(backend.Collector(config))
 

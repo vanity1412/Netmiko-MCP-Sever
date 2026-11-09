@@ -12,7 +12,7 @@ class ReadOnlyConnection:
         root = Path(__file__).resolve().parents[1]
         self.target = params.pop('host')
         defaults = {k:v for k,v in params.items() if k in KNOWN_KEYS}
-        defaults.update(ssh_strict=True, alt_host_keys=True,
+        defaults.update(ssh_strict=False, alt_host_keys=False,
                         alt_key_file=str(root/'mcp/ssh/known_hosts'),
                         session_sweep_seconds=0,
                         output_dir=str(root/'runtime/data/netmiko/outputs'))

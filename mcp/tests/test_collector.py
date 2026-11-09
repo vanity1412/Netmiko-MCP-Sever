@@ -66,11 +66,11 @@ class Regression(unittest.TestCase):
         with self.assertRaises(PermissionError): self.c.execute_many('MOCK', ['show version', 'configure'])
         self.assertFalse(self.connections)
 
-    def test_hostkey_strict_cannot_override(self):
+    def test_hostkey_permissive_collector_policy(self):
         self.c.execute('MOCK', 'show version')
-        self.assertIs(self.params[0]['ssh_strict'], True)
+        self.assertIs(self.params[0]['ssh_strict'], False)
 
-    def test_hostkey_unknown_and_changed_rejected_before_auth(self):
+    def test_explicit_upstream_strict_rejects_before_auth(self):
         import paramiko
         from netmiko import ConnectHandler
         server_key = paramiko.RSAKey.generate(2048)
@@ -101,7 +101,7 @@ class Regression(unittest.TestCase):
                         listener.close()
                 thread = threading.Thread(target=serve); thread.start()
                 params = self.c._get_settings('127.0.0.1','cisco_ios',None)
-                params.update(port=port,username='MOCK',password='MOCK',system_host_keys=False,alt_host_keys=True,alt_key_file=str(hostfile),conn_timeout=2,auth_timeout=2,banner_timeout=2)
+                params.update(ssh_strict=True,port=port,username='MOCK',password='MOCK',system_host_keys=False,alt_host_keys=True,alt_key_file=str(hostfile),conn_timeout=2,auth_timeout=2,banner_timeout=2)
                 try:
                     with self.assertRaises((paramiko.SSHException, paramiko.BadHostKeyException)):
                         ConnectHandler(**params)
@@ -162,7 +162,7 @@ class Regression(unittest.TestCase):
                 self.assertFalse(r['ok']); self.assertTrue(r['transport_ok']); self.assertFalse(r['cli_ok']); self.assertTrue(r['output_complete'])
 
     def test_incomplete_and_echo(self):
-        for text in ['show version\nPARTIAL', 'other command\nMOCK>', 'show version\n--More--\nMOCK>']:
+        for text in ['show version\nPARTIAL', 'show version\n--More--']:
             self.assertFalse(self.c._result('MOCK','show version',text,0)['ok'])
 
     def test_custom_expect_cannot_accept_confirmation(self):

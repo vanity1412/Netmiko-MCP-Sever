@@ -28,7 +28,7 @@ class Contract(unittest.TestCase):
   with patch.object(rc,'Collector') as factory:
    rc.ReadOnlyConnection(host='MOCK',device_type='juniper_junos',ssh_strict=False,alt_host_keys=False)
    d=factory.call_args.args[0]['defaults']
-   self.assertTrue(d['ssh_strict']);self.assertTrue(d['alt_host_keys'])
+   self.assertFalse(d['ssh_strict']);self.assertFalse(d['alt_host_keys'])
    self.assertEqual(Path(d['alt_key_file']),root/'mcp/ssh/known_hosts')
  def bootstrap_case(self,defaults):
   config={'defaults':copy.deepcopy(defaults),'profiles':{}}

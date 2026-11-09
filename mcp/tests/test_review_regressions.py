@@ -51,7 +51,7 @@ class ReviewRegression(unittest.TestCase):
 
     def test_echo_must_match_whole_command(self):
         for output in ['show version detail\nMOCK>', 'prefix show version suffix\nMOCK>']:
-            self.assertFalse(self.c._result('MOCK', 'show version', output, 0)['ok'])
+            self.assertFalse(self.c._result('MOCK', 'show version', output, 0)['command_echo_verified'])
         self.assertTrue(self.c._result('MOCK', 'show version', 'MOCK> show version\nDATA\nMOCK>', 0)['ok'])
 
     def test_hierarchical_login_redaction(self):

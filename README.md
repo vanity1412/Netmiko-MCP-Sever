@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.3.0**, giữ nguyên **10 MCP tool**.
+MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.3.3**, giữ nguyên **10 MCP tool**.
 
 ## File trong repository
 
@@ -28,7 +28,7 @@ python -m pip install -r requirements.txt
 
 Trên máy mới, copy `mcp/devices.example.json` thành `mcp/devices.json`; cung cấp inventory riêng tại `input/device.csv` với các cột `name,ip,netmiko_device_type`. Đặt `NETWORK_SSH_USER` và `NETWORK_SSH_PASSWORD` trong môi trường của process MCP. Bootstrap hỗ trợ nguồn tài khoản cục bộ `input/ssh.txt` khi thiếu cặp môi trường; không đưa file này lên Git.
 
-Cung cấp `mcp/ssh/known_hosts` từ fingerprint đã được xác minh độc lập. Không tắt strict để vượt lỗi host key. Giữ nguyên cấu hình và dữ liệu riêng khi cập nhật source từ Git.
+Host key mới/đổi được chấp nhận và lưu atomic dưới khóa liên tiến trình. Lỗi ghi known_hosts tạo warning, không chặn SSH. Thành công cần prompt cuối và CLI không báo lỗi; echo không bắt buộc. Giữ nguyên cấu hình và dữ liệu riêng khi cập nhật source từ Git.
 
 ## Chạy MCP STDIO
 
@@ -64,3 +64,7 @@ python -m unittest discover -s mcp/tests -v
 ```
 
 Tests dùng fake transport và SSH server localhost, không đăng nhập thiết bị production. Giới hạn và cách triển khai: [mcp/HARDENING.md](mcp/HARDENING.md). Lịch sử: [CHANGELOG.md](CHANGELOG.md).
+
+## Kiểm chứng 1.3.3
+
+Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thiết bị ảo, kiểm tra bằng chứng/resume và SSH localhost cho Cisco IOS/XR/NXOS, Huawei, Junos, Linux. Dữ liệu production và báo cáo riêng không được đưa lên Git. Xem `mcp/ARCHITECTURE.md` và `mcp/SCAN.md`.

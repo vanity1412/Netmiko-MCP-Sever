@@ -1,4 +1,6 @@
-# Netmiko MCP 1.3.0
+# Netmiko MCP — ghi chú lịch sử 1.3.0
+
+Hành vi hiện tại 1.3.2 được mô tả trong README.md, ARCHITECTURE.md và mcp/SCAN.md: chấp nhận/lưu host key mới hoặc đổi; echo không bắt buộc; chỉ báo thành công với prompt cuối; auth timeout có retry giới hạn. Nội dung bên dưới ghi lại chính sách các bản trước.
 
 1.2.2 cho phép `/` và `:` trong đối số interface/prefix và regex có pipe trong dấu nháy. Pipeline ngoài dấu nháy vẫn phải thuộc whitelist; không hỗ trợ escape/backslash hoặc lệnh ghi file. Nhóm RSVP/BFD/multicast Junos được bổ sung. Autodetect khóa theo identity thay vì khóa toàn collector. Không sửa trust store, inventory hoặc tài khoản.
 

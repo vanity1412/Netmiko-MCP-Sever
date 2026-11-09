@@ -46,8 +46,8 @@ class Performance(unittest.TestCase):
    try:raise EOFError('MOCK EOF')
    except Exception:raise paramiko.SSHException('Error reading SSH protocol banner')
   except Exception as exc:
-   self.assertEqual(b.classify_error(exc,'connect')['error_category'],'banner_error')
-   self.assertFalse(b.classify_error(exc,'connect')['retryable'])
+   self.assertEqual(b.classify_error(exc,'connect')['error_category'],'connection_lost')
+   self.assertTrue(b.classify_error(exc,'connect')['retryable'])
  def test_banner_timeout_and_nested_detection_budget(self):
   import paramiko
   try:
@@ -58,23 +58,15 @@ class Performance(unittest.TestCase):
    with self.c.request_budget():self.assertEqual(self.c._request.detection_timeout,90)
   self.assertIsNone(self.c._request.detection_timeout)
  def test_detection_worker_does_not_trust_banner_or_partial_output(self):
-  class Probe(f.Fake):
-   def send_command_timing(inner,command,**kw):
-    inner.commands.append(command)
-    return 'JUNOS login banner\n'+command+'\nPARTIAL'
-  fake=Probe()
-  with patch('netmiko.ConnectHandler',return_value=fake):
+  fake=f.Fake()
+  with patch('netmiko.ConnectHandler',return_value=fake),patch.object(b,'read_cli_output',return_value=('JUNOS login banner\nshow version\nPARTIAL',None)) as reader:
    result=b.detection_worker({'host':'MOCK'})
   self.assertEqual(result['error_category'],'output_verification')
-  self.assertEqual(fake.commands,['show version']);self.assertFalse(fake.alive)
+  self.assertEqual(reader.call_args.args[1],'show version');self.assertFalse(fake.alive)
  def test_detection_worker_verified_response_and_slow_read_budget(self):
-  calls=[]
-  class Probe(f.Fake):
-   def send_command_timing(inner,command,**kw):
-    calls.append(kw['read_timeout']);return command+'\nJunos: 23.4R1\nMOCK>'
-  with patch('netmiko.ConnectHandler',return_value=Probe()) as factory:
+  with patch('netmiko.ConnectHandler',return_value=f.Fake()) as factory,patch.object(b,'read_cli_output',return_value=('show version\nJunos: 23.4R1\nMOCK>',None)) as reader:
    result=b.detection_worker({'host':'MOCK','_probe_read_timeout':30})
-  self.assertEqual(result['device_type'],'juniper_junos');self.assertEqual(calls,[30])
+  self.assertEqual(result['device_type'],'juniper_junos');self.assertEqual(reader.call_args.args[2],30)
   self.assertNotIn('_probe_read_timeout',factory.call_args.kwargs)
  def test_wrapped_ssh_errors(self):
   import paramiko
@@ -84,7 +76,7 @@ class Performance(unittest.TestCase):
     try:raise underlying
     except Exception:raise NetmikoTimeoutException('wrapped library error')
    except Exception as exc:
-    result=b.classify_error(exc,'connect');self.assertEqual(result['error_category'],expected);self.assertFalse(result['retryable'])
+    result=b.classify_error(exc,'connect');self.assertEqual(result['error_category'],expected);self.assertEqual(result['retryable'], result['error_category']=='auth_timeout')
  def test_autodetect_worker_category_retained(self):
   result=b.classify_error(b.CollectionError({'error':'NetmikoTimeoutException','error_category':'host_key_unknown','error_stage':'host_key','retryable':False}))
   self.assertEqual(result['error_category'],'host_key_unknown')
@@ -218,7 +210,7 @@ class Performance(unittest.TestCase):
   from netmiko.exceptions import NetmikoTimeoutException
   for message in ['Server MOCK not found in known_hosts','Authentication timeout.','Incompatible ssh peer (no acceptable kex algorithm)']:
    with self.subTest(message=message):
-    result=b.classify_error(NetmikoTimeoutException(message),'connect');self.assertFalse(result['retryable'])
+    result=b.classify_error(NetmikoTimeoutException(message),'connect');self.assertEqual(result['retryable'], result['error_category']=='auth_timeout')
 
  def test_cli_private_raw_retired_only_after_archiving(self):
   original=self.c.output_dir

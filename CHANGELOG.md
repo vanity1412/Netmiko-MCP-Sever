@@ -1,3 +1,36 @@
+# 1.3.3 - Fleet and SSH fault validation
+
+- Phát hiện channel EOF/closed ngay, giữ partial output, retry có giới hạn cho connection_lost và handshake_incomplete (Paramiko No existing session).
+- Chỉ loại đúng vị trí pager đã xử lý, giữ nguyên chuỗi --More--/[confirm] trong dữ liệu cấu hình/log; phân biệt câu hỏi đang chờ với dòng log.
+- ssh_interact giữ phân loại theo từng lệnh, không đánh nhầm bộ đếm BGP ở kết quả gộp.
+- Session preparation không bắt echo mặc định; xử lý bước terminal-width Cisco vốn chờ echo trước khi base_prompt tồn tại. Có thể cấu hình global_cmd_verify.
+- Lỗi lưu output được phân loại storage_error, không coi là SSH thành công hoặc retry network.
+- Thêm validate_fleet.py: census TCP/banner toàn inventory, dedup endpoint, chọn mẫu SSH theo driver, lưu kết quả và bằng chứng; không tự thử nhiều credential.
+- Bổ sung replay 2.000 cách chia chunk, stress 500 thiết bị ảo qua scanner thật, kiểm tra SHA256/resume/corrupt evidence, profile isolation và SSH localhost với driver Cisco IOS/XR/NXOS, Huawei, Junos, Linux.
+
+# 1.3.2 - SSH reliability and complete output
+
+- Chỉ báo thành công khi có prompt cuối của phiên và CLI không báo lỗi; không yêu cầu echo. Custom expect, pager và confirmation không thể ghi đè kết quả thành công.
+- Đọc trực tiếp Netmiko channel dưới session lease: không chờ echo cố định, tự chuyển trang, giữ partial output khi timeout/cancel/transport error và dừng batch trước lệnh tiếp theo.
+- Auth timeout có thể retry một lần ở scanner slow lane, không bị cooldown như sai credential; giữ chống lặp với authentication rejected/auth_method.
+- Host-key policy riêng từng SSH client và cả subprocess autodetect; khóa file liên tiến trình, merge lại dưới khóa, atomic replace, warning khi không lưu được key mà vẫn tiếp tục SSH.
+- Mở rộng các nhóm lệnh NOC và chẩn đoán; giới hạn số gói ping, tự thêm count 5 cho Junos/Linux khi thiếu.
+- Profile CSV được giữ đúng khi xử lý alias trùng; bootstrap chấp nhận credential riêng trong profile mà không bắt có tài khoản toàn cục. Không tự đoán mapping credential.
+- STDIO MCP/worker dùng UTF-8 tường minh trên Windows, tránh hỏng JSON-RPC hoặc alias/credential Unicode khi locale của pipe là CP1252.
+- Thêm regression và integration SSH localhost cho phân trang, output chậm/thiếu, no-echo, session reuse, autodetect subprocess, host-key changed và ghi nhiều process.
+
+# 1.3.1 - SSH Collection Improvements
+
+- **TOFU host key policy**: Tự động thêm host key mới và cập nhật key đổi vào known_hosts (atomic write với lock)
+- **Nới echo/prompt verification**:
+  - Tìm echo trong 5 dòng đầu thay vì 3
+  - OK khi có prompt cuối HOẶC echo (không phải cả hai bắt buộc)
+  - Junos session setup tăng last_read từ 0.3s → 0.5s
+  - Linux prompt thêm pattern `[user@host]$` và `[dir]#`
+- **Multi-profile credential**: CSV hỗ trợ cột `profile` optional, devices.json có nhiều profile credential
+
+Mục tiêu: giảm lỗi host_key_unknown (~718), output_verification (~244), authentication (~21) trong quét 2376 thiết bị.
+
 # Repository cleanup
 
 - Tập trung source Netmiko MCP, scanner, tests và tài liệu liên quan.

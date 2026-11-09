@@ -1,4 +1,4 @@
-# Quét inventory — Netmiko MCP 1.3.0
+# Quét inventory — Netmiko MCP 1.3.3
 
 Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
 
@@ -20,16 +20,29 @@ Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu kh�
 
 Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể. Sửa các target ví dụ thành target thật đã xác minh. Plan chỉ nhận target, commands, device_type, profile, read_timeout, lane. Target ngoài inventory được gọi bằng IP/hostname và driver tường minh/autodetect; không tự thêm CSV.
 
-`lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json, không chứa username/password trong plan. Tool dùng cặp NETWORK_SSH_USER/PASSWORD từ môi trường, nếu thiếu thì cùng fallback input/ssh.txt như bootstrap. Chạy ngoài OpenCode cần cung cấp môi trường hoặc nguồn fallback này; không tự lấy literal credential từ opencode.json.
+`lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json, không chứa username/password trong plan. Có thể chọn profile qua cột CSV `profile`; bỏ trống dùng `default`. Profile khai báo credential riêng hoạt động khi không có credential toàn cục. Environment và cặp đầu tiên trong input/ssh.txt vẫn là nguồn fallback; không tự thử lần lượt các cặp credential.
+
+Ví dụ mapping (thay giá trị mẫu và đặt biến môi trường tương ứng):
+
+```json
+{"profiles":{"default":{"username":"${NETWORK_SSH_USER}","password":"${NETWORK_SSH_PASSWORD}"},"branch":{"username":"${BRANCH_SSH_USER}","password":"${BRANCH_SSH_PASSWORD}"}}}
+```
+
+```csv
+name,ip,netmiko_device_type,profile
+BRANCH-01,192.0.2.1,cisco_ios,branch
+```
 
 ## Nhanh nhưng không làm đẹp tỷ lệ giả
 
 - Tổng worker mặc định16, tối đa32 và không vượt max_workers của collector; gồm lượt chậm mặc định4. Tối thiểu2 slot để có hai lane. Detection và collection cùng dùng semaphore SSH toàn collector. Một transport vẫn serialize từng lệnh.
 - Mỗi thiết bị lấy đủ batch trước khi chuyển sang đích tiếp. Kết quả và bằng chứng được ghi tăng dần, không chờ toàn nhóm hoặc lượt chậm hoàn tất.
 - Fast: deadline90s/thiết bị; TCP10s, banner15s, auth30s, read45s. Slow: deadline240s; TCP30s, banner45s, auth60s, read120s. Probe autodetect trong scanner được phép tối đa min(deadline,120s), thay vì trần20s của lời gọi MCP thông thường. Nếu probe hết hard deadline mà chưa xác định được pha auth, không tự retry mù; target đã biết chậm nên đặt lane slow ngay từ đầu. Đây là ngân sách của job, không phải cam kết thời gian thực tế; Netmiko I/O cancellation vẫn cooperative. Điều chỉnh deadline qua --fast-timeout/--slow-timeout, read timeout riêng trong plan. Chúng không sửa config thiết bị hoặc config cục bộ.
-- Chỉ retry tối đa một lần ở lane chậm cho connect_timeout/banner_timeout/read_timeout đã phân loại. Không retry authentication/auth_timeout/auth_method, host key, KEX, CLI error hoặc lỗi không rõ nguyên nhân. Deadline chưa rõ pha không bị coi là TCP timeout để retry mù.
+- Chỉ retry tối đa một lần ở lane chậm cho connect_timeout/banner_timeout/read_timeout/auth_timeout/connection_lost/handshake_incomplete đã phân loại. Auth timeout không kích hoạt cooldown 5 phút; xác thực bị từ chối/auth_method vẫn có cooldown và không retry. Không retry algorithm_mismatch, CLI error hoặc lỗi không rõ nguyên nhân. Deadline chưa rõ pha không bị coi là TCP timeout để retry mù.
 - Thiết bị chậm vẫn có kết quả riêng: success, partial, failed hoặc unknown; pending là chưa chạy, không phải thành công. Không biến timeout/auth thành interface down hoặc số đo0.
-- Không tắt strict, nhập key chưa xác minh, đổi credential hoặc bật thuật toán cũ toàn mạng. Các entry host key/credential/profile đúng đích vẫn là điều kiện tiên quyết.
+- Host key mới/đổi được chấp nhận và lưu atomic dưới khóa liên tiến trình. Lỗi persistence tạo warning và không làm SSH thất bại. Không tự đổi credential hoặc bật thuật toán cũ toàn mạng.
+- Luồng đọc Netmiko channel không chờ echo; chỉ kết thúc thành công khi có prompt cuối. Tự gửi Space tại pager, không gửi phản hồi confirmation. Timeout giữ output dở dang làm bằng chứng và dừng batch. Session đầy đủ không echo vẫn được reuse.
+- Thêm các nhóm show/display NOC như NTP, MAC/STP, VRF, BFD, nguồn/quạt và lệnh ping/traceroute/tracert; Linux có ip route get, ip -s link show, getent hosts. Ping Junos/Linux không chỉ định số gói được thêm count 5/-c 5. Số gói tường minh giới hạn 1..20; flood/preload và lệnh cấu hình/ghi file vẫn bị từ chối.
 
 ## Output và resume
 
@@ -49,4 +62,15 @@ Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo v�
 
 Copy mcp/collector_backend.py, mcp/bootstrap.py, mcp/scan.py; giữ mcp/readonly_client.py bản đã bắt buộc device_type. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Chỉ reconnect MCP khi không còn công việc, kiểm tra ssh_status.version=1.3.0. Thử preview rồi smoke read-only trên nhóm có fingerprint/profile xác minh trước khi quét toàn inventory. Bản này chưa benchmark SSH production. Rollback source từ commit ec8c27a nếu hậu kiểm không đạt, không rollback bằng tắt strict.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.3.3. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+
+## Kiểm tra diện rộng và tình huống lỗi
+
+```powershell
+python -u mcp/validate_fleet.py --output output/FLEET-NEW --execute --ssh-limit 128
+python -m unittest discover -s mcp/tests -v
+```
+
+Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity reachable, phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. TCP mở không đồng nghĩa SSH thành công. Không có banner vẫn được thử SSH trong mẫu để ghi nhận lỗi handshake thực tế. Log transport nằm trong ssh-transport.log.
+
+Tests có fault injection, replay 2.000 cách chia chunk, 500 thiết bị ảo qua scanner/persistence/resume và SSH localhost với driver thật. Stress cố tình tạo auth reject/timeout, EOF, CLI error và partial output; kiểm tra kết quả đúng oracle, không lấy tỷ lệ success của fixture làm tỷ lệ production. Dữ liệu --More--/[confirm] ở giữa config/log phải được giữ nguyên. Lỗi ghi output là storage_error và không gây retry SSH. EOF được phát hiện sớm; channel chưa hoàn chỉnh không được tái sử dụng.
