@@ -12,7 +12,7 @@ import unittest
 import paramiko
 from netmiko.exceptions import ReadTimeout
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str((Path(__file__).resolve().parents[1] / 'mcp')))
 import collector_backend as backend
 import scan
 

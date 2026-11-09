@@ -1,31 +1,30 @@
-# AI Technical Assistant
+# Agent guide
 
-Hỗ trợ công việc theo yêu cầu thực tế của người dùng: điều tra mạng, thu thập thông tin, phân tích dữ liệu, viết hoặc rà soát code/script, tạo công cụ, tài liệu và các nhiệm vụ khác. Tự chọn cách làm phù hợp, chủ động tìm thông tin, sử dụng tool và kiểm chứng kết quả; chỉ hỏi khi thông tin bắt buộc không thể tự xác minh. Không mặc định mọi yêu cầu là HT/sự cố hoặc ép mọi việc vào quy trình điều tra.
+## Mục tiêu
 
-Khi làm việc với thiết bị mạng, tham khảo `input/device.csv`, dùng Netmiko MCP như kỹ sư NOC: tự chọn lệnh đọc, phân tích giả thuyết và mở rộng kiểm chứng theo dữ liệu. Inventory là nguồn hỗ trợ, không phải danh sách bắt buộc: IP/hostname do người dùng chỉ định chưa có trong CSV vẫn được thu thập qua SSH bằng tài khoản đã cấu hình. Tận dụng session và SSH song song ở tải nhỏ.
+Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: đọc trạng thái/cấu hình, thu thập nhiều thiết bị và xử lý dữ liệu. Trả lời theo ngôn ngữ người dùng. Chủ động kiểm chứng, phân biệt dữ liệu thật, mô phỏng và nhận định chưa xác minh.
 
-Có thể gọi MCP trực tiếp bằng IP/hostname; nếu MCP không đủ, dùng Python/Netmiko qua `mcp/readonly_client.py`. Truyền `device_type` đã biết hoặc lấy từ inventory; chỉ có IP và chưa rõ hãng thì truyền `device_type="autodetect"` để backend dò bằng lệnh đọc. Không cần tự thêm target vào CSV để thực hiện yêu cầu. Giữ quyền chỉ đọc, không tự apply/commit cấu hình hoặc tác động dịch vụ.
+## Chạy dự án
 
-Đề xuất phương án phù hợp nhất với hiện trạng; khi đề xuất thay đổi mạng, kèm CLI đúng hãng, lý do, pre-check, post-check và rollback. Không bịa interface/IP/next-hop hoặc tạo thay đổi khi hệ thống đang đúng.
+- Cài dependency: `python -m pip install -r requirements.txt`.
+- Cấu hình riêng: copy `mcp/devices.example.json` thành `mcp/devices.json`; cấp credential qua environment hoặc profile. Inventory CSV dùng `name,ip,netmiko_device_type`, tùy chọn `profile`.
+- MCP: `python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv`.
+- Kiểm tra version/dependency: `python mcp/collector_backend.py --check`.
+- Test: `python -m unittest discover -s tests -v`. Chỉ dùng mock và SSH localhost; không cần inventory/credential production.
+- Xem `docs/ARCHITECTURE.md`, `docs/SCAN.md` và `CHANGELOG.md` trước khi đổi luồng kết nối.
 
-## Kết quả và báo cáo
+## Khi thao tác thiết bị
 
-Trả kết quả bằng tiếng Việt, đúng dạng người dùng cần: câu trả lời, code/script, bảng dữ liệu, tài liệu hoặc báo cáo. Giải thích ngắn gọn những gì đã làm, kết quả kiểm chứng và điểm còn thiếu khi liên quan. Với câu hỏi hoặc việc đơn giản, trả lời trực tiếp; bản lưu/gửi email chỉ cần nội dung kết quả phù hợp, không bắt buộc ép vào mẫu điều tra hoặc lập nhật ký.
+- Dùng alias/IP/hostname do người dùng yêu cầu. Chọn driver từ inventory hoặc autodetect; không cần thêm target vào CSV.
+- Tận dụng session, dùng batch và song song có giới hạn. Chỉ thực hiện lệnh đọc qua các tool hiện có; không tự apply/commit cấu hình hay tác động dịch vụ.
+- Chỉ coi thu thập thành công khi CLI không báo lỗi và output có prompt cuối. Echo không bắt buộc. Thiếu output hoặc không truy cập được không đồng nghĩa dịch vụ down.
+- Giữ output dở dang và lỗi theo từng đích. Không đoán credential, không tự thử nhiều tài khoản. Host key mới/đổi được backend chấp nhận và lưu; lỗi persistence có warning.
+- Chỉ SSH production khi yêu cầu công việc có phạm vi tương ứng. Các test phát triển không tự truy cập production.
 
-Khi cần báo cáo điều tra, dùng các phần sau:
+## Khi sửa source
 
-1. **Kết luận:** Hiện trạng, nguyên nhân hoặc giả thuyết còn lại, mức độ tin cậy.
-2. **Bằng chứng:** Thiết bị, lệnh, output thực tế, thời điểm và ý nghĩa.
-3. **Hướng xử lý:** Phương án tốt nhất và cấu hình đề xuất nếu cần; ghi rõ đề xuất chưa chạy.
-4. **Chưa xác minh:** Những điểm còn thiếu và ảnh hưởng đến quyết định.
-5. **Nhật ký điều tra:** Mỗi bước ghi ngắn gọn: mục tiêu/giả thuyết → thiết bị + lệnh → kết quả và đường dẫn bằng chứng → phân tích → bước tiếp theo. Ghi lỗi/timeout, cách xử lý và kết quả kiểm chứng lại; tách dữ liệu thật, mô phỏng và đề xuất.
-
-Giữ nguyên `input/`; báo cáo/bằng chứng ở `output/<tên-công-việc-hoặc-mã-sự-cố>/`, script tạm ở `temp/`. Lưu đầy đủ lệnh/output cùng hồ sơ, không chỉ dẫn tới `output_id` có TTL; che thông tin đăng nhập và bí mật trước khi lưu/chia sẻ.
-
-## Email
-
-Mặc định gửi kết quả của mỗi yêu cầu/case công việc tới `[redacted-email]`, kể cả ngoài HT/sự cố như giải đáp, thu thập, phân tích, viết/rà code hoặc tạo công cụ. Không cần người dùng nhắc gửi email và không hỏi lại quyền gửi. Lưu nội dung kết quả phù hợp vào `output/<tên-công-việc-hoặc-mã>/bao-cao.md`, rồi dùng `python output/email-notification/send_report.py output/<tên-công-việc-hoặc-mã>/bao-cao.md`. Chỉ không gửi thật khi người dùng yêu cầu không gửi hoặc chỉ dry-run; riêng các phép thử chức năng gửi mail dùng mock/dry-run, không phát sinh thư thử ngoài ý muốn. Báo cáo kết quả kiểm thử công việc vẫn được gửi mặc định.
-
-**Gửi toàn bộ nội dung kết quả/báo cáo trực tiếp trong thân email; với báo cáo điều tra gồm kết luận, bảng số liệu, nhật ký và đầy đủ lệnh/output liên quan; không đính kèm file báo cáo, không chỉ gửi đường dẫn.** Trình bày HTML dễ đọc bằng renderer chung: tiêu đề/phân mục rõ, bảng có header và viền, CLI/output tách riêng; kèm văn bản UTF-8 dự phòng. Không CC/BCC.
-
-Dùng retry/dedup của sender theo `output/email-notification/README.md`; không lặp gửi thủ công khi `unknown`/`sending`. Chỉ báo SMTP accepted khi sender trả `accepted`; thiếu sender/SMTP thì giữ nội dung báo cáo và nêu chưa gửi được.
+- Giữ tên/schema 10 MCP tool, JSON-RPC UTF-8 và tương thích Python 3.10+ trừ khi người dùng yêu cầu đổi.
+- Giữ session isolation theo host/port/driver/credential, timeout, retry có giới hạn, checkpoint và kiểm chứng bằng chứng khi resume.
+- Sửa test khi hành vi chủ đích thay đổi; không xóa test chỉ để làm bộ kiểm thử đạt. Chạy kiểm thử phù hợp trước commit.
+- Không commit inventory, credential, private key, known_hosts, cache, runtime, log hoặc output thiết bị. Không đưa dữ liệu thật vào fixture.
+- Báo rõ thay đổi, kết quả kiểm thử và hạn chế. Không tự gửi email/thông báo hoặc phụ thuộc dịch vụ cá nhân ngoài yêu cầu của người dùng.

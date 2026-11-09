@@ -12,7 +12,7 @@ import unittest
 import socket
 from unittest.mock import patch
 
-BACKEND = Path(os.environ.get('NETMIKO_TEST_BACKEND') or Path(__file__).resolve().parents[1] / 'collector_backend.py')
+BACKEND = Path(os.environ.get('NETMIKO_TEST_BACKEND') or (Path(__file__).resolve().parents[1] / 'mcp') / 'collector_backend.py')
 spec = importlib.util.spec_from_file_location('tested_collector', BACKEND)
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import paramiko
 
-MCP = Path(__file__).resolve().parents[1]
+MCP = (Path(__file__).resolve().parents[1] / 'mcp')
 sys.path.insert(0, str(MCP))
 import bootstrap
 import collector_backend as backend

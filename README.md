@@ -2,21 +2,14 @@
 
 MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.3.3**, giữ nguyên **10 MCP tool**.
 
-## File trong repository
+## Cấu trúc
 
-| File/thư mục | Vai trò |
-|---|---|
-| `mcp/collector_backend.py` | Backend MCP STDIO, SSH pool, kiểm tra lệnh/output và phân loại lỗi |
-| `mcp/bootstrap.py` | Nạp cấu hình/inventory và môi trường tài khoản, bật private known_hosts |
-| `mcp/readonly_client.py` | Python fallback dùng cùng policy; bắt buộc device_type |
-| `mcp/scan.py` | Quét theo job, fast/slow lanes, bằng chứng tăng dần và resume |
-| `mcp/*.example.json` | Cấu hình và kế hoạch quét mẫu, không chứa thông tin truy cập thật |
-| `mcp/tests/` | Regression offline/mock và SSH localhost |
-| `mcp/SCAN.md`, `mcp/HARDENING.md` | Hướng dẫn quét và giới hạn vận hành |
-| `AGENTS.md`, `mcp/WORKFLOW.md` | Hướng dẫn cho agent trong môi trường sử dụng |
-| `requirements.txt`, `CHANGELOG.md` | Dependency và lịch sử thay đổi |
+- `mcp/`: backend, bootstrap, Python client, scanner và cấu hình mẫu.
+- `tests/`: bộ kiểm thử phát triển, không cần khi chạy MCP.
+- `docs/`: kiến trúc và hướng dẫn quét inventory.
+- `AGENTS.md`: hướng dẫn agent thực thi và sửa source.
 
-Launcher/executable OpenCode, sender email, báo cáo, credential, inventory thật, host keys và runtime không thuộc source MCP trong Git. Các tích hợp có sẵn trên máy vẫn được giữ riêng. Hướng dẫn email trong AGENTS/WORKFLOW áp dụng khi môi trường triển khai có sender tương ứng; backend/scanner không phụ thuộc sender để chạy.
+Inventory, credential, host keys và output được cung cấp riêng tại môi trường triển khai và không đưa lên Git.
 
 ## Cài và cấu hình
 
@@ -55,16 +48,16 @@ Preview, không SSH:
 python mcp/scan.py --all --output output/SCAN-VERSION
 ```
 
-Thêm `--execute` khi thực hiện quét thật với credential/fingerprint đã xác minh. Mặc định chỉ lấy version. Kế hoạch riêng, fast/slow lanes, profile, checkpoint và resume: [mcp/SCAN.md](mcp/SCAN.md).
+Thêm `--execute` khi thực hiện quét thật với credential/fingerprint đã xác minh. Mặc định chỉ lấy version. Kế hoạch riêng, fast/slow lanes, profile, checkpoint và resume: [docs/SCAN.md](docs/SCAN.md).
 
 ## Kiểm thử
 
 ```powershell
-python -m unittest discover -s mcp/tests -v
+python -m unittest discover -s tests -v
 ```
 
-Tests dùng fake transport và SSH server localhost, không đăng nhập thiết bị production. Giới hạn và cách triển khai: [mcp/HARDENING.md](mcp/HARDENING.md). Lịch sử: [CHANGELOG.md](CHANGELOG.md).
+Tests dùng fake transport và SSH server localhost, không đăng nhập thiết bị production. Kiến trúc: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Lịch sử: [CHANGELOG.md](CHANGELOG.md).
 
 ## Kiểm chứng 1.3.3
 
-Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thiết bị ảo, kiểm tra bằng chứng/resume và SSH localhost cho Cisco IOS/XR/NXOS, Huawei, Junos, Linux. Dữ liệu production và báo cáo riêng không được đưa lên Git. Xem `mcp/ARCHITECTURE.md` và `mcp/SCAN.md`.
+Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thiết bị ảo, kiểm tra bằng chứng/resume và SSH localhost cho Cisco IOS/XR/NXOS, Huawei, Junos, Linux. Dữ liệu production và báo cáo riêng không được đưa lên Git. Xem `docs/ARCHITECTURE.md` và `docs/SCAN.md`.

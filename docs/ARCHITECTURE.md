@@ -3,12 +3,11 @@
 ## Đọc theo thứ tự
 
 1. README.md: danh sách source và dependency.
-2. mcp/ARCHITECTURE.md: luồng chạy và điểm sửa (file này).
-3. mcp/HARDENING.md: hành vi/giới hạn hiện tại, tài liệu gốc lịch sử.
-4. mcp/SCAN.md: job runner, retry, bằng chứng và resume.
+2. docs/ARCHITECTURE.md: luồng chạy và điểm sửa (file này).
+4. docs/SCAN.md: job runner, retry, bằng chứng và resume.
 5. CHANGELOG.md: lịch sử thay đổi.
 
-Regression và integration SSH localhost nằm trong mcp/tests; chạy `python -m unittest discover -s mcp/tests -v`.
+Regression và integration SSH localhost nằm trong tests; chạy `python -m unittest discover -s tests -v`.
 
 ## Ba đường gọi
 
@@ -75,7 +74,3 @@ Inventory, credential, known_hosts, runtime và output được cung cấp riên
 - Scanner có fast/slow lanes; retry tối đa một lần cho TCP/banner/read/auth timeout. Authentication rejected/auth_method vẫn cooldown 5 phút và không retry. Resume bỏ qua failed/partial đã lưu.
 
 CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần khai báo theo thiết bị, không tự đoán hoặc thử tất cả credential. Bootstrap không bắt cặp credential toàn cục khi profile đã có credential riêng.
-
-## Cấu hình MCP client mẫu
-
-cấu hình MCP client mô tả phần server theo cấu trúc ví dụ OpenCode của bộ gốc. Đây là ví dụ tham khảo, không phải cam kết schema cho mọi client/phiên bản. Không chứa instruction AGENTS/WORKFLOW hay credential thật. Chỉnh đường dẫn/CWD và cung cấp environment phù hợp ở client thực tế.

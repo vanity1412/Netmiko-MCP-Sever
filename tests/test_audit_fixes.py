@@ -71,7 +71,7 @@ class AuditFixes(unittest.TestCase):
         import sys
         from pathlib import Path
         from unittest.mock import patch
-        sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+        sys.path.insert(0,str((Path(__file__).resolve().parents[1] / 'mcp')))
         import readonly_client
         with patch.object(readonly_client, 'Collector', return_value=self.c) as factory:
             wrapper=readonly_client.ReadOnlyConnection(host='MOCK',device_type='juniper_junos',ssh_strict=False)

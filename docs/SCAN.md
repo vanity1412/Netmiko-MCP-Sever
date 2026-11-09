@@ -68,7 +68,7 @@ Source mới cần process MCP mới; kiểm tra ssh_status.version=1.3.3. Thay 
 
 ```powershell
 python -u mcp/validate_fleet.py --output output/FLEET-NEW --execute --ssh-limit 128
-python -m unittest discover -s mcp/tests -v
+python -m unittest discover -s tests -v
 ```
 
 Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity reachable, phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. TCP mở không đồng nghĩa SSH thành công. Không có banner vẫn được thử SSH trong mẫu để ghi nhận lỗi handshake thực tế. Log transport nằm trong ssh-transport.log.

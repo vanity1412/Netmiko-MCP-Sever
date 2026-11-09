@@ -20,3 +20,13 @@ __pycache__/
 *.sqlite*
 *.db
 .venv/
+
+# Generated development files
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

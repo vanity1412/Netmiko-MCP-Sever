@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str((Path(__file__).resolve().parents[1] / 'mcp')))
 from collector_backend import readonly_command
 from validate_fleet import COMMANDS, probe_endpoint, validate
 

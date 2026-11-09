@@ -3,7 +3,7 @@ from pathlib import Path
 import sys,copy,importlib.util,unittest
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-root=Path(__file__).resolve().parents[2]
+root=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(root/'mcp'))
 import readonly_client as rc
 spec=importlib.util.spec_from_file_location('tested_bootstrap',root/'mcp/bootstrap.py')

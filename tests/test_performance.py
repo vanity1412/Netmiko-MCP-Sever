@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 import test_collector as f
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str((Path(__file__).resolve().parents[1] / 'mcp')))
 import collector_backend as b
 import scan
 
