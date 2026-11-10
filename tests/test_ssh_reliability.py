@@ -293,6 +293,7 @@ class LocalSSHServer:
         self.auth_delay = 0
         self.stop = threading.Event()
         self.commands = []
+        self.auth_attempts = 0
         self.transports = []
         self.listener = socket.socket()
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -315,6 +316,7 @@ class LocalSSHServer:
         owner = self
         class Auth(paramiko.ServerInterface):
             def check_auth_password(self, username, password):
+                owner.auth_attempts += 1
                 time.sleep(owner.auth_delay)
                 return paramiko.AUTH_SUCCESSFUL if (username, password) == ('tester', 'loopback-only') else paramiko.AUTH_FAILED
             def get_allowed_auths(self, username): return 'password'

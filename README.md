@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.5.0**, giữ nguyên **10 MCP tool**.
+MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.6.0**, giữ nguyên **10 MCP tool**.
 
 ## Cấu trúc
 
@@ -82,4 +82,14 @@ Cấu hình mẫu ưu tiên tốc độ và trả/lưu output không che bí m�
 - `output_cleanup_interval_seconds`: mặc định 30s. Exclusive không glob mỗi lần ghi; quota vẫn kiểm tra trước mọi lần ghi, cleanup ngay khi thiếu chỗ. Reconcile định kỳ hoặc khi gọi cleanup tường minh; restart đọc lại index từ file. File đang được đọc hoặc đang pin được bảo vệ. Không dùng exclusive nếu nhiều Collector/process cùng ghi một thư mục. Shared vẫn cần thư mục riêng nếu yêu cầu quota cứng giữa nhiều process; không có global quota transaction.
 - `autodetect_persistent_cache`: mặc định true. Bootstrap/scanner/validator dùng chung `runtime/data/netmiko/autodetect.sqlite3`; `autodetect_cache_file` cho phép đổi đường dẫn. Direct Collector dùng APP_HOME nếu không khai báo path.
 - SQLite chỉ lưu hash identity, driver và thời điểm; không lưu credential rõ. Cache theo host/port/credential/route options, hết hạn theo TTL autodetect (mặc định 8 giờ). Chỉ ghi sau probe thành công. Cache lỗi/khóa/bị hỏng sẽ fallback dò thật; không chặn SSH vì lỗi cache. Driver chỉ định rõ vẫn ưu tiên và không cần disk lookup. Cache không tự sửa inventory và có thể cũ nếu thiết bị bị thay trong khoảng TTL; tắt cache persistent và khởi động Collector mới hoặc chỉ định driver đúng khi cần kiểm chứng lại.
-- Probe vẫn ở process riêng để giữ hard deadline. Chưa chia sẻ transport probe sang process thu thập; tái sử dụng cùng session đòi hỏi thiết kế ownership/cancellation khác.
+- Từ 1.6.0, probe và thu thập dùng chung phiên như mô tả dưới đây.
+
+## Tái sử dụng phiên probe — 1.6.0
+
+Khi chưa có driver trong cache, `mcp/probe_session.py` mở SSH, chạy probe chỉ đọc, rồi dùng Netmiko `redispatch` để chuẩn bị CLI vendor ngay trên kết nối đã xác thực. Process này giữ phiên trong session pool và chạy các lệnh tiếp theo qua pipe JSON riêng. Một phiên autodetect mới chỉ đăng nhập một lần. Driver rõ hoặc cache hit vẫn dùng đường ConnectHandler trực tiếp, không khởi chạy probe.
+
+Parent giám sát hard deadline cho toàn bộ probe + chuẩn bị CLI và từng lệnh của worker. Timeout, cancellation hoặc worker chết sẽ đóng phiên; dữ liệu đã truyền về được giữ làm partial output và không được báo thành công. Reader vẫn xử lý pager, xác minh prompt cuối và CLI error; batch dừng tại lệnh thất bại, không tự gửi lại lệnh. Request deadline có thể được báo `read_timeout` nếu read budget đã được giới hạn theo thời gian còn lại.
+
+Worker được đóng khi session hết TTL, bị eviction, gọi close hoặc shutdown. Mỗi phiên được tạo bằng probe giữ thêm một Python process và một receiver thread; số phiên theo `max_sessions` (mặc định 64). Cần tính RAM trước khi nâng giới hạn lớn. Khi cập nhật, copy cả thư mục `mcp/` và khởi động lại MCP. Kiểm thử phát triển dùng SSH localhost cho sáu driver; chưa đo trên thiết bị production.
+
+Reader thu thập giải mã tăng dần theo từng SSH channel, giữ ký tự Unicode bị chia giữa các packet. Không đổi encoding mặc định của Netmiko; byte không hợp lệ theo encoding vẫn bị bỏ qua như trước.

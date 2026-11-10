@@ -27,7 +27,7 @@ import traceback
 import uuid
 from typing import Any, Callable
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 APP_HOME = Path(os.environ.get("NETWORK_MCP_DATA_DIR") or ((Path(os.environ["LOCALAPPDATA"]) / "GooseNetworkCollector") if os.environ.get("LOCALAPPDATA") else (Path.home() / ".goose-network-collector")))
@@ -525,7 +525,32 @@ def pending_interaction(text):
     return bool(re.fullmatch(r'(?i)(?:(?:enter|retype|confirm)\s+)?(?:(?:old|new|current)\s+)?(?:password|passphrase)\s*:|press\s+(?:enter|return|any key)\s+to\s+continue[.:]?', line))
 
 
-def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03):
+def preserve_channel_encoding(conn):
+    """Keep multibyte characters across SSH packets on this channel only."""
+    channel = getattr(conn, 'channel', None)
+    if channel is None or getattr(channel, '_network_incremental_reader', False):
+        return
+    from netmiko.channel import SSHChannel, MAX_BUFFER, ReadException
+    if not isinstance(channel, SSHChannel):
+        return
+    import codecs
+    decoder = codecs.getincrementaldecoder(channel.encoding)(errors='ignore')
+
+    def read_buffer():
+        if channel.remote_conn is None:
+            raise ReadException('Attempt to read, but there is no active channel.')
+        if not channel.remote_conn.recv_ready():
+            return ''
+        data = channel.remote_conn.recv(MAX_BUFFER)
+        if not data:
+            raise ReadException('Channel stream closed by remote device.')
+        return decoder.decode(data)
+
+    channel.read_buffer = read_buffer
+    channel._network_incremental_reader = True
+
+
+def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03, on_data=None):
     """Read one command without re-sending it; retain partial data on failure.
 
     Netmiko owns the transport, driver setup and channel normalization. Reading
@@ -539,6 +564,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03)
     failure = None
     next_checkpoint = 0.0
     try:
+        preserve_channel_encoding(conn)
         # Drop a buffered old prompt/login banner before sending this command.
         for _ in range(16):
             if checkpoint:
@@ -558,6 +584,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03)
             data = conn.read_channel()
             if data:
                 chunks.append(data)
+                if on_data:
+                    on_data(data)
                 received += len(data)
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
@@ -597,7 +625,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03)
     return output, failure
 
 
-def detection_worker(params: dict[str, Any]) -> dict[str, Any]:
+def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, Any]:
     """Small read-only probe set; parent process enforces a hard wall deadline."""
     from netmiko import ConnectHandler
     params = dict(params)
@@ -608,6 +636,7 @@ def detection_worker(params: dict[str, Any]) -> dict[str, Any]:
     for field in ("conn_timeout", "auth_timeout", "banner_timeout"):
         params.setdefault(field, 8)
     conn = None
+    retained = False
     try:
         conn = ConnectHandler(**params)
         prompt = last_prompt(conn.find_prompt())
@@ -627,13 +656,18 @@ def detection_worker(params: dict[str, Any]) -> dict[str, Any]:
             # Initial login banners are not the response to our probe command.
             platform = platform_from_version('\n'.join(output.splitlines()[(echo_line+1 if echo_line is not None else 0):-1]))
             if platform:
+                if connection_sink:
+                    connection_sink(conn, platform)
+                    retained = True
                 return {"device_type": platform, "probe_command": command}
         return {"error": "AutodetectUnknown", "message": "No supported version signature in bounded probes"}
     except Exception as exc:
         # Never put library exception text/credentials on the worker wire.
         return {**classify_error(exc, "autodetect"), "message": "Read-only detection probe failed"}
     finally:
-        if conn is not None:
+        if conn is not None and not retained:
+            with contextlib.suppress(Exception):
+                conn.remote_conn_pre.close()
             with contextlib.suppress(Exception):
                 conn.disconnect()
 
@@ -662,6 +696,39 @@ def install_tolerant_width():
 
     set_width._goose_tolerant_width = True
     BaseConnection.set_terminal_width = set_width
+
+
+def install_tolerant_preparation():
+    """Configure vendor preparation without allocating a Collector or storage."""
+    install_tolerant_width()
+    # Some Junos images suppress/localize Netmiko's expected acknowledgements.
+    # Keep injected/fake Netmiko modules valid when they omit vendor packages.
+    try:
+        from netmiko.juniper.juniper import JuniperBase
+    except (ImportError, ModuleNotFoundError):
+        return
+    if getattr(JuniperBase, '_goose_tolerant_prep', False):
+        return
+
+    def tolerant_session_preparation(conn: Any) -> None:
+        conn._test_channel_read(pattern=r"[%>$#]")
+        conn.enter_cli_mode()
+        prompt = last_prompt(conn.find_prompt())
+        if not prompt:
+            raise ValueError('Junos did not return a valid CLI prompt before setup')
+        pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
+        for command in ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'):
+            reply, failure = read_cli_output(conn, command, 5, pattern)
+            if failure:
+                raise CollectionError(failure)
+            if not ending_matches(pattern, reply):
+                raise ValueError('Junos did not return a valid CLI prompt after setup')
+        conn.base_prompt = prompt[:-1]
+        conn._network_prompt_text = prompt
+        conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
+
+    JuniperBase.session_preparation = tolerant_session_preparation
+    JuniperBase._goose_tolerant_prep = True
 
 
 def interaction_step(cmd: Any) -> str:
@@ -741,39 +808,7 @@ class Collector:
         self._connections_opened = 0
         self._session_reuses = 0
         if connect_factory is None:
-            install_tolerant_width()
-            # Some Junos images localize/suppress the English acknowledgements
-            # expected by Netmiko (for example, "Screen width set to").
-            # Consume those setup replies by timing instead of matching text.
-            # Patch Junos only when the installed Netmiko exposes its real package.
-            # Lightweight injected/fake Netmiko modules used by protocol tests need
-            # only ConnectHandler/SSHDetect and must remain valid dependencies.
-            try:
-                from netmiko.juniper.juniper import JuniperBase
-            except (ImportError, ModuleNotFoundError):
-                JuniperBase = None
-
-            if JuniperBase is not None and not getattr(JuniperBase, "_goose_tolerant_prep", False):
-                def tolerant_session_preparation(conn: Any) -> None:
-                    conn._test_channel_read(pattern=r"[%>$#]")
-                    conn.enter_cli_mode()
-                    prompt = last_prompt(conn.find_prompt())
-                    if not prompt:
-                        raise ValueError('Junos did not return a valid CLI prompt before setup')
-                    pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
-                    for command in ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'):
-                        reply, failure = read_cli_output(conn, command, 5, pattern)
-                        if failure:
-                            raise CollectionError(failure)
-                        if not ending_matches(pattern, reply):
-                            raise ValueError('Junos did not return a valid CLI prompt after setup')
-                    conn.base_prompt = prompt[:-1]
-                    conn._network_prompt_text = prompt
-                    conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
-
-                JuniperBase.session_preparation = tolerant_session_preparation
-                JuniperBase._goose_tolerant_prep = True
-
+            install_tolerant_preparation()
             from netmiko import ConnectHandler, SSHDetect
             connect_factory = ConnectHandler
             detect_factory = SSHDetect
@@ -1102,39 +1137,23 @@ class Collector:
                         with contextlib.suppress(Exception):
                             connection.disconnect()
             else:
-                # Killable process, not a timed-out thread left sending more probes.
-                self._checkpoint()
-                probe_deadline = time.monotonic() + min(
-                    getattr(self._request, 'detection_timeout', None) or self.autodetect_timeout, self._checkpoint())
-                worker = subprocess.Popen([sys.executable, "-u", str(Path(__file__).resolve()), "--detect-worker"],
-                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                          text=True, encoding="utf-8")
+                from probe_session import ProbeSession, ProbeFailure
+                budget = min(getattr(self._request, 'detection_timeout', None) or self.autodetect_timeout, self._checkpoint())
                 wire_params = dict(params)
                 overrides = getattr(self._request, 'connection_timeouts', None) or {}
                 wire_params['_probe_read_timeout'] = min(30, overrides.get('banner_timeout', 4))
-                wire = json.dumps(wire_params)
                 try:
-                    while True:
-                        self._checkpoint()
-                        left = probe_deadline - time.monotonic()
-                        if left <= 0:
-                            raise TimeoutError('Autodetect deadline exceeded')
-                        try:
-                            stdout, _stderr = worker.communicate(wire, timeout=min(.1, left))
-                            break
-                        except subprocess.TimeoutExpired:
-                            wire = None
-                finally:
-                    if worker.poll() is None:
-                        worker.kill()
-                    worker.communicate()
+                    proxy = ProbeSession(wire_params, self._checkpoint, budget)
+                except ProbeFailure as exc:
+                    # Also works when this backend is the __main__ module.
+                    raise CollectionError(exc.details) from None
                 try:
-                    result = json.loads(stdout)
-                except (ValueError, TypeError):
-                    raise ValueError("Autodetect worker returned invalid output") from None
-                if result.get("error"):
-                    raise CollectionError(result)
-                guess = result.get("device_type")
+                    guess = proxy.device_type
+                    ready_params = dict(params, device_type=guess)
+                    self._adopt_probe(ready_params, proxy)
+                except Exception:
+                    proxy.close()
+                    raise
         if not guess or not re.fullmatch(r"[a-zA-Z0-9_]+", guess):
             raise ValueError("Autodetect could not verify a supported platform; specify device_type")
         params["device_type"] = guess
@@ -1143,6 +1162,31 @@ class Collector:
                 self._detect_cache.pop(min(self._detect_cache, key=lambda k: self._detect_cache[k][0]))
             self._detect_cache[key] = (time.monotonic(), guess)
         self._disk_detection(params, guess)
+
+    def _adopt_probe(self, params, proxy):
+        key = self._session_key(params)
+        evicted = None
+        with self._guard:
+            existing = self._sessions.get(key)
+            # An earlier failed lease can leave an idle, empty entry behind.
+            # Borrowed entries belong to their lease, including an ongoing open.
+            accepted = existing is None or (existing.get('conn') is None and not existing.get('borrowers'))
+            if accepted:
+                if existing is None and len(self._sessions) >= self.max_sessions:
+                    idle = [(k,e) for k,e in self._sessions.items() if not e.get('borrowers')]
+                    if not idle:
+                        raise RuntimeError('Session pool is at capacity; all sessions are leased')
+                    old_key, evicted = min(idle, key=lambda item:item[1]['used'])
+                    self._sessions.pop(old_key)
+                    self._session_evictions += 1
+                now = time.monotonic()
+                self._sessions[key] = {'lock':threading.RLock(),'borrowers':0,'conn':proxy,
+                    'used':now,'created':now,'health_checked':now}
+                self._connections_opened += 1
+        if not accepted:
+            proxy.close()
+        if evicted:
+            self._disconnect_entry(evicted)
 
     def _open(self, params: dict[str, Any]) -> Any:
         remaining = self._checkpoint()
@@ -1537,6 +1581,10 @@ class Collector:
                 raise ValueError("expect_string too long")
             re.compile(pattern)
         conn._network_read_failure = None
+        if hasattr(conn, 'collect_in_worker'):
+            output, failure = conn.collect_in_worker(command, timeout, pattern, self.timing_quiet if use_timing else self.prompt_quiet, self._checkpoint)
+            conn._network_read_failure = failure
+            return output, pattern
         if hasattr(conn, 'read_channel') and hasattr(conn, 'write_channel'):
             output, failure = read_cli_output(conn, command, timeout, pattern or r'(?!)',
                                              self._checkpoint, quiet=self.timing_quiet if use_timing else self.prompt_quiet)

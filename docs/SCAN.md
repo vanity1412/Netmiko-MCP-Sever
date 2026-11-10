@@ -1,4 +1,4 @@
-# Quét inventory — Netmiko MCP 1.5.0
+# Quét inventory — Netmiko MCP 1.6.0
 
 Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
 

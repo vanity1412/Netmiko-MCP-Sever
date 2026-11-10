@@ -28,6 +28,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 | Collector._get_settings | Ghép defaults → profile → device → override; chấp nhận host key và chọn file persistence riêng |
 | Collector._session_key | Identity cho session cache; thay policy phải tránh tái dùng transport cũ |
 | Collector._resolve_platform, detection_worker | Autodetect bằng probe đọc trong process riêng, có ngân sách thời gian |
+| probe_session.py / ProbeSession, main | Worker giữ SSH từ probe qua redispatch và thu thập; parent kiểm soát deadline, truyền partial output qua pipe |
 | Collector._open, lease/session helpers | Mở SSH, xác minh prompt, giới hạn số phiên và reuse |
 | readonly_command, cli_pipeline | Grammar lệnh chỉ đọc, chặn pipeline/lệnh không được duyệt |
 | Collector._send, read_cli_output | Đọc Netmiko channel, chờ prompt cuối, chuyển trang, giữ partial output và kiểm soát timeout |
@@ -62,7 +63,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 Inventory, credential, known_hosts, runtime và output được cung cấp riêng tại môi trường triển khai, không được theo dõi trong Git. Dữ liệu lịch sử không đại diện cho phiên SSH hoặc trạng thái thiết bị hiện tại.
 
-## Chính sách hiện tại — 1.5.0
+## Chính sách hiện tại — 1.6.0
 
 - Backend, Python fallback và subprocess autodetect cùng chấp nhận host key mới/đổi, lưu theo SSH client dưới khóa file liên tiến trình. Lỗi ghi store tạo warning và không chặn kết nối.
 - Không patch AutoAddPolicy toàn cục; mỗi Netmiko client có policy giữ đường dẫn store riêng. File được đọc/merge lại khi đang giữ lock rồi atomic replace.
@@ -77,4 +78,8 @@ CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần 
 
 Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, store theo process, cooldown và ưu tiên driver inventory) được mô tả trong README.md. Output redaction có thể tắt; thông báo lỗi và audit command vẫn được che.
 
-1.5.0: SQLite lưu driver đã xác minh theo hash endpoint/auth/route và TTL; tách cache driver khỏi location known_hosts để các job dùng cùng cache. Output exclusive có index RAM, quota check mỗi ghi và reconcile định kỳ; shared vẫn đối soát file. Không chuyển transport qua process: probe còn giữ hard deadline riêng.
+1.5.0: SQLite lưu driver đã xác minh theo hash endpoint/auth/route và TTL; tách cache driver khỏi location known_hosts để các job dùng cùng cache. Output exclusive có index RAM, quota check mỗi ghi và reconcile định kỳ; shared vẫn đối soát file.
+
+1.6.0: `ProbeSession` sở hữu worker từ lúc SSH bắt đầu đến khi session đóng. Worker dùng `detection_worker(connection_sink=...)` và redispatch cùng Netmiko object; parent đưa proxy vào pool theo đúng identity driver/credential/endpoint. Không serialize hay chuyển SSH socket giữa process. Session lease vẫn tuần tự hóa CLI; semaphore giới hạn công việc SSH đang hoạt động. Cache hit không probe và mở phiên thu thập trực tiếp khi pool chưa có phiên.
+
+Worker truyền chunk ngay khi reader nhận được, rồi trả output đã xử lý pager và failure. Parent chỉ nhận kết quả cuối khi vẫn còn request budget; EOF/hard timeout/cancel trả partial kèm failure dù partial chứa prompt. Thời gian kill/reap process là phần cleanup có giới hạn. TTL/eviction/close/shutdown đóng worker qua cùng lifecycle của session pool. Mỗi phiên probe giữ một process + receiver thread, cần cân nhắc RAM khi tăng max_sessions. `--detect-worker` một lần và custom detect factory vẫn tương thích; custom factory không hỗ trợ giữ lại phiên.

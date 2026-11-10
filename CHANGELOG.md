@@ -1,3 +1,13 @@
+# 1.6.0 - Reuse the probe SSH session for collection
+
+- Keep the isolated SSH worker alive after a verified probe, redispatch the same connection to the detected driver, and adopt its proxy into the session pool; avoid a second login on cold autodetect.
+- Preserve hard deadlines and cancellation through parent-supervised RPC; stream partial evidence before final completion. Worker exit or interruption always returns failure, even when partial data contains a prompt.
+- Retain paging, prompt/CLI verification, batch stop behavior, TextFSM and timing reads; close transport before driver cleanup on incomplete probes.
+- Decode SSH collection data incrementally on each channel to preserve Unicode characters split across packets; retain Netmiko's existing behavior for invalid encoded bytes.
+- Reap workers through normal TTL, eviction, close and shutdown. Explicit drivers and persistent-cache hits keep the direct connection path; ten MCP schemas remain unchanged.
+- Add real localhost SSH coverage for six drivers, one-login counting, concurrency, large Unicode output, cache restart, deadlines, cancellation, worker crash/hang, confirmation, batch failure and idle reaping. No production SSH benchmark is claimed.
+- Validation: 181 unittest tests passed on Python 3.14.6 / Netmiko 4.7.0; all six runtime Python files parse with Python 3.10 syntax rules.
+
 # 1.5.0 - Output storage accounting and persistent driver cache
 
 - Output quota accounting under one thread lock; remove repeated directory scans in a single save.
