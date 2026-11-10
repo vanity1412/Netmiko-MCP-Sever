@@ -1,3 +1,11 @@
+# Cải tiến storage, evidence và đo hiệu năng
+
+Shared output dùng output_storage.py: transaction OS liên tiến trình bao quanh quota/cleanup/publish; pin 300 giây được lưu xuống đĩa, 64 stripe lock bảo vệ reader/search/export. Atomic publish không để lộ file .txt ghi dở. Scanner retire scratch qua cùng khóa, chỉ sau khi evidence đã được lưu. Exclusive vẫn dành cho một Collector. Cần restart mọi process dùng chung thư mục và dùng cùng quota/TTL; process bản cũ không tham gia khóa mới.
+
+Mặc định redaction_enabled=false, giữ username/password/hash/secret/token trong dữ liệu CLI, structured result, evidence và lỗi/audit. Cấu hình true tường minh vẫn hỗ trợ như trước. Khi persistence thất bại, giữ toàn bộ output đã nhận trong lỗi, không tự SSH lại; việc này có thể tăng kích thước response lỗi.
+
+telemetry.py giữ 128 mẫu gần nhất mỗi pha và tổng count/failures/total_ms; status có phase_metrics, kết quả có timings_ms/connection_timings_ms/session_reused. Đo Paramiko connect và _auth, Netmiko _try_session_preparation để không làm mất dispatch vendor khi redispatch. Các pha có thể lồng nhau. Không thêm lệnh SSH để đo, không thay timeout/worker, không suy diễn timing bị thiếu thành 0. Test 500/2.500 thiết bị dùng mock transport, theo dõi tài nguyên process; không đại diện cho tải AAA/SSH thực.
+
 # Permission diagnostics and agent workflow — 1.9.1
 
 CLI response classification adds error_reason=permission_denied/syntax_error/command_failed while retaining CLI_ERROR and error_category=cli_error. Normalization removes stale reasons on success or non-CLI failure. Existing batch stop, session retention and retry behavior stay unchanged. Permission classification uses recognized diagnostic lines and access-denied RPC error tags, not arbitrary payload words; it remains heuristic.
@@ -118,7 +126,7 @@ Inventory, credential, known_hosts, runtime và output được cung cấp riên
 
 CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần khai báo theo thiết bị, không tự đoán hoặc thử tất cả credential. Bootstrap không bắt cặp credential toàn cục khi profile đã có credential riêng.
 
-Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, store theo process, cooldown và ưu tiên driver inventory) được mô tả trong README.md. Output redaction có thể tắt; thông báo lỗi và audit command vẫn được che.
+Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, store theo process, cooldown và ưu tiên driver inventory) được mô tả trong README.md. Ở các bản cũ thông báo lỗi và audit command luôn được che; hiện redaction_enabled=false giữ nguyên dữ liệu ở cả các đường này.
 
 1.5.0: SQLite lưu driver đã xác minh theo hash endpoint/auth/route và TTL; tách cache driver khỏi location known_hosts để các job dùng cùng cache. Output exclusive có index RAM, quota check mỗi ghi và reconcile định kỳ; shared vẫn đối soát file.
 

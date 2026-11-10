@@ -62,6 +62,7 @@ class ProbeSession:
             self._network_prompt_regex = r'(?m)^' + re.escape(response['prompt']) + r'[ \t]*\r?$'
             self.base_prompt = response['prompt'][:-1]
             self._network_host_key_persisted = response.get('host_key_persisted')
+            self._network_timings_ms = response.get('connection_timings_ms', {})
         except Exception:
             self.close()
             raise
@@ -180,6 +181,7 @@ def main():
         if not prompt:
             raise ValueError('CLI prompt could not be verified after redispatch')
         emit({'device_type':result['device_type'],'prompt':prompt,
+              'connection_timings_ms':getattr(conn,'_network_timings_ms',{}),
               'host_key_persisted':getattr(conn.remote_conn_pre,'_network_host_key_persisted',None)})
         for line in sys.stdin:
             request = json.loads(line)

@@ -74,7 +74,7 @@ BRANCH-01,192.0.2.1,cisco_ios,branch
 
 - scan-manifest.json: hash của kế hoạch/identity, không lưu credential.
 - results/<task_id>.json: trạng thái, các lần thử, lỗi có category/stage, duration và đường dẫn chứng cứ. elapsed_ms của attempt đo từ bắt đầu thu thập tới trước export evidence (gồm chờ slot/detection/connect/CLI); không phải RTT hoặc thời gian riêng auth. Thời gian toàn job đo riêng khi benchmark, gồm cả ghi checkpoint/evidence.
-- bang-chung/: toàn bộ output đã sanitize, có SHA256.
+- bang-chung/: output CLI đã chuẩn hóa ANSI/pager, có SHA256. Mặc định không che username/password/hash/secret/token; chỉ sanitize nếu chủ động bật redaction_enabled=true.
 - scan-summary.json: tổng đích/loại trùng/thành công/lỗi/một phần/chưa rõ/chưa chạy.
 - raw-output/: scratch riêng của CLI, được dọn theo từng output sau khi kết quả/bằng chứng đã lưu. Không dọn output của MCP hay job khác. Dùng các đường dẫn bang-chung trong kết quả, không phụ thuộc output_id của scratch.
 
@@ -86,7 +86,7 @@ Scanner thực thi plan do agent cung cấp, có thể gồm lệnh đọc hoặ
 
 ## Cập nhật bộ công ty
 
-Copy toàn bộ thư mục mcp/, gồm probe_session.py; giữ cấu hình devices.json riêng. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
+Copy toàn bộ thư mục mcp/, gồm probe_session.py, output_storage.py và telemetry.py; giữ cấu hình devices.json riêng. Restart tất cả process dùng chung output để cùng áp dụng khóa storage mới. Các process chung thư mục phải cùng quota/TTL. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
 Source mới cần process MCP mới; kiểm tra ssh_status.version=1.9.1. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
@@ -99,6 +99,6 @@ python -m unittest discover -s tests -v
 
 Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity reachable, phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. TCP mở không đồng nghĩa SSH thành công. Không có banner vẫn được thử SSH trong mẫu để ghi nhận lỗi handshake thực tế. Log transport nằm trong ssh-transport.log.
 
-Tests có fault injection, replay 2.000 cách chia chunk, 500 thiết bị ảo qua scanner/persistence/resume và SSH localhost với driver thật. Stress cố tình tạo auth reject/timeout, EOF, CLI error và partial output; kiểm tra kết quả đúng oracle, không lấy tỷ lệ success của fixture làm tỷ lệ production. Dữ liệu --More--/[confirm] ở giữa config/log phải được giữ nguyên. Lỗi ghi output là storage_error và không gây retry SSH. EOF được phát hiện sớm; channel chưa hoàn chỉnh không được tái sử dụng.
+Tests có fault injection, replay 2.000 cách chia chunk, 500 và 2.500 thiết bị ảo qua scanner/persistence/resume và SSH localhost với driver thật. Stress cố tình tạo auth reject/timeout, EOF, CLI error và partial output; kiểm tra kết quả đúng oracle, không lấy tỷ lệ success của fixture làm tỷ lệ production. Dữ liệu --More--/[confirm] ở giữa config/log phải được giữ nguyên. Lỗi ghi output là storage_error và không gây retry SSH. EOF được phát hiện sớm; channel chưa hoàn chỉnh không được tái sử dụng.
 
 Scanner dùng output index exclusive cho scratch riêng và thông báo khi xóa scratch. Các entry driver đã dò thành công được cache tại runtime/data/netmiko/autodetect.sqlite3 để lần chạy sau tái sử dụng trong TTL; lỗi cache quay về probe thật.

@@ -55,7 +55,7 @@ class BootstrapStdioTests(unittest.TestCase):
                     self.assertEqual(result['execution_state'], 'NOT_SENT')
                     self.assertEqual(result['data_state'], 'PARTIAL')
                     self.assertIn('bằng chứng', result['output'])
-                    self.assertNotIn('loopback-only', reply['result']['content'][0]['text'])
+                    self.assertIn('loopback-only', result['output'])
                     self.assertNotIn('show interfaces terse', server.commands)
                     self.assertEqual(server.commands.count('set cli screen-width 511'), 1)
                     self.assertEqual(server.auth_attempts, 1)

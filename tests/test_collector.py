@@ -121,6 +121,7 @@ class Regression(unittest.TestCase):
         self.assertEqual(result['password'],'[redacted]')
         self.assertEqual(result['rows'][0]['count'],4)
         self.assertNotIn('HASHVALUE',json.dumps(result))
+        self.c.redaction_enabled = True
         self.c.profiles['mock'] = {'password':'KNOWNVALUE'}
         self.assertEqual(self.c.redact_structured({'data':'KNOWNVALUE','count':2}),{'data':'[redacted]','count':2})
 
@@ -148,6 +149,7 @@ class Regression(unittest.TestCase):
         self.assertTrue(all(r['ok'] for r in results)); self.assertLessEqual(counts['max'],2)
 
     def test_redaction_save_error_audit(self):
+        self.c.redaction_enabled = True
         self.c.profiles['mock'] = {'password': 'SYNTHETICVALUE'}
         self.assertNotIn('SYNTHETICVALUE', self.c.scrub_error('failure SYNTHETICVALUE'))
         oid = self.c._save_output('username alice secret 9 HASHVALUE')

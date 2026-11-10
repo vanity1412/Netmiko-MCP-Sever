@@ -87,7 +87,7 @@ class PreparationTimingTests(unittest.TestCase):
         self.addCleanup(c.shutdown)
         return c
 
-    def test_preparation_failure_reports_readiness_and_keeps_redacted_partial_output(self):
+    def test_preparation_failure_reports_readiness_and_keeps_unredacted_partial_output(self):
         from netmiko import BaseConnection
         from netmiko.juniper.juniper import JuniperBase
         b.install_tolerant_preparation()
@@ -97,7 +97,7 @@ class PreparationTimingTests(unittest.TestCase):
                 conn.global_cmd_verify = False
                 c = self.collector(conn)
                 c.defaults.update(username='tester', password='secret-value')
-                c.redaction_enabled = False  # Error evidence must still redact credentials.
+                c.redaction_enabled = False  # Preserve evidence exactly in unredacted mode.
                 def connect(**kw):
                     if driver == 'juniper_junos':
                         JuniperBase.session_preparation(conn)
@@ -116,7 +116,7 @@ class PreparationTimingTests(unittest.TestCase):
                 self.assertEqual(result['execution_state'], 'NOT_SENT')
                 self.assertEqual(result['data_state'], 'PARTIAL')
                 self.assertIn('bằng chứng', result['output'])
-                self.assertNotIn('secret-value', result['output'])
+                self.assertIn('secret-value', result['output'])
                 self.assertEqual(result['preparation_command'], command)
                 self.assertEqual(conn.writes, [command + '\n'])
 

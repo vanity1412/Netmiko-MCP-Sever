@@ -1,5 +1,13 @@
 > Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
 
+## Unreleased — 2026-11-10
+
+- Synchronize shared output quota/cleanup/publication across MCP processes using bounded OS locks. Persist creation pins and protect live readers/search/export with bounded striped leases; process crashes release locks. Scanner retires committed scratch through the same storage protocol.
+- Default to unredacted CLI/evidence/structured data and error/audit content, preserving usernames, passwords, hashes, secrets and tokens. Explicit redaction_enabled=true remains supported. Preserve full received output in storage failures instead of returning only a preview.
+- Add bounded phase metrics and request/connection timings for connect/authentication/preparation/autodetect/command/output plus session reuse and slot/lease waits. Instrument existing methods without additional SSH, preserve vendor redispatch, and keep all ten tool schemas and Python 3.10+ compatibility.
+- Extend offline fleet tests to 500 and 2,500 simulated devices, resource sampling, connection/session bounds, shutdown cleanup and evidence-verified resume. Add real subprocess shared-storage contention/crash regressions. These are not production SSH benchmarks.
+- Validation: 321/321 tests passed in 455.512 seconds on Python 3.14.6 / Netmiko 4.7.0, including mock fleets and loopback SSH. Python 3.10 syntax compatibility checked; no production SSH.
+
 ## 1.9.1 — 2026-11-10
 
 - Add MIT license. Correct outdated public setup/scanner documentation.

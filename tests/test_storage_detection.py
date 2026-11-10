@@ -46,9 +46,7 @@ class StorageDetectionTests(unittest.TestCase):
         a=self.collector(output_quota_bytes=10)
         other=self.collector(output_quota_bytes=10)
         oid=a._save_output('1234567890')
-        # A different collector sees the existing file; pins are process-local,
-        # so protect it as an active output before exercising quota rejection.
-        other._active_outputs[oid]=1
+        # A new Collector must honor the creator's persisted retention pin.
         with self.assertRaises(ValueError):other._save_output('x')
     def test_external_deletion_notified_then_capacity_is_available(self):
         c=self.collector(output_storage_mode='exclusive',output_quota_bytes=10)

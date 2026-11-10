@@ -41,10 +41,10 @@ class OptimizationTests(unittest.TestCase):
         self.conn=FakeConnection(['DATA\nrouter#'])
         self.assertTrue(c.execute('test','show version')['ok'])
         self.assertEqual(c.status()['connections_opened'],2)
-    def test_redaction_optional_but_errors_always_scrubbed(self):
+    def test_redaction_disabled_preserves_output_and_errors(self):
         c = self.collector(redaction_enabled=False)
         self.assertEqual(c.redact_output('password fixture-secret'),'password fixture-secret')
-        self.assertNotIn('fixture-secret',c.scrub_error('password fixture-secret'))
+        self.assertIn('fixture-secret',c.scrub_error('password fixture-secret'))
         oid=c._save_output('password fixture-secret')
         self.assertEqual(c.read_output(oid)['text'],'password fixture-secret')
     def test_process_store_is_separate_from_shared_store(self):

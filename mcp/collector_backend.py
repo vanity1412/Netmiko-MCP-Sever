@@ -31,6 +31,9 @@ _module_dir = str(Path(__file__).resolve().parent)
 if _module_dir not in sys.path:
     sys.path.insert(0, _module_dir)
 from result_status import normalize_result
+from output_storage import SharedOutputStorage
+from telemetry import (PhaseMetrics, measured_phase, time_connection_method,
+                       connection_measurements, current_connection_timings)
 import tempfile
 
 VERSION = "1.9.1"
@@ -147,6 +150,10 @@ def install_tofu():
         @functools.wraps(original)
         def build(conn):
             client = original(conn)
+            timings = conn._network_timings_ms = current_connection_timings()
+            time_connection_method(client, 'connect', 'ssh_connect_ms', timings)
+            time_connection_method(client, '_auth', 'authentication_ms', timings)
+            time_connection_method(conn, '_try_session_preparation', 'preparation_ms', timings)
             if conn.key_policy is paramiko.AutoAddPolicy or isinstance(conn.key_policy, paramiko.AutoAddPolicy):
                 client.set_missing_host_key_policy(PersistingPolicy(conn.alt_key_file or APP_HOME / 'known_hosts'))
             return client
@@ -224,8 +231,12 @@ def bounded_request(method):
     def call(self, *args, **kwargs):
         with self.request_budget():
             try:
-                return method(self, *args, **kwargs)
+                result = method(self, *args, **kwargs)
+                if isinstance(result, dict):
+                    result['timings_ms'] = dict(getattr(self._request, 'timings_ms', {}))
+                return result
             except Exception as exc:
+                exc._network_request_timings_ms = dict(getattr(self._request, 'timings_ms', {}))
                 if not hasattr(exc, '_network_error_stage'):
                     exc._network_error_stage = getattr(self._request, 'stage', 'unknown')
                 if exc._network_error_stage == 'command' and not hasattr(exc, '_network_command_sent'):
@@ -839,7 +850,8 @@ def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, 
     conn = None
     retained = False
     try:
-        conn = ConnectHandler(**params)
+        with connection_measurements() as connection_timings:
+            conn = ConnectHandler(**params)
         prompt = last_prompt(conn.find_prompt())
         if not prompt:
             return {'error': 'DetectionOutputVerificationError', 'error_category': 'output_verification',
@@ -864,7 +876,8 @@ def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, 
         return {"error": "AutodetectUnknown", "message": "No supported version signature in bounded probes"}
     except Exception as exc:
         # Never put library exception text/credentials on the worker wire.
-        return {**classify_error(exc, "autodetect"), "message": "Read-only detection probe failed"}
+        return {**classify_error(exc, "autodetect"), "message": "Read-only detection probe failed",
+                "connection_timings_ms": dict(locals().get('connection_timings', {}))}
     finally:
         if conn is not None and not retained:
             with contextlib.suppress(Exception):
@@ -957,7 +970,7 @@ class Collector:
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
         self.health_check_interval = bounded_int(self.defaults.get('health_check_interval_seconds'), 30, 0, 3600)
         self.auth_cooldown = bounded_int(self.defaults.get('auth_failure_cooldown_seconds'), 300, 0, 3600)
-        self.redaction_enabled = bool(self.defaults.get('redaction_enabled', True))
+        self.redaction_enabled = bool(self.defaults.get('redaction_enabled', False))
         self.prefer_inventory_driver = bool(self.defaults.get('prefer_inventory_driver', True))
         self.host_key_store_mode = self.defaults.get('host_key_store_mode', 'shared')
         if self.host_key_store_mode not in {'shared', 'process'}:
@@ -986,6 +999,7 @@ class Collector:
         self._session_evictions = 0
         self._stop = threading.Event()
         self._request = threading.local()
+        self._metrics = PhaseMetrics()
         self._ssh_slots = threading.BoundedSemaphore(self.max_workers)
         self._task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix='ssh-task')
         self.request_timeout = bounded_int(self.defaults.get('request_timeout_seconds'), 120, 1, 3600)
@@ -998,6 +1012,8 @@ class Collector:
         self.output_storage_mode = self.defaults.get('output_storage_mode', 'shared')
         if self.output_storage_mode not in {'shared', 'exclusive'}:
             raise ValueError('output_storage_mode must be shared or exclusive')
+        self._shared_outputs = SharedOutputStorage(self.output_dir) if self.output_storage_mode == 'shared' else None
+        self._storage_context = threading.local()
         self.output_cleanup_interval = bounded_int(self.defaults.get('output_cleanup_interval_seconds'), 30, 1, 3600)
         self._output_index = None
         self._output_total = 0
@@ -1136,7 +1152,7 @@ class Collector:
         return self.redact_output(message, force=True)[:400]
 
     def redact_output(self, message: str, *, force=False) -> str:
-        if not force and not self.redaction_enabled:
+        if not self.redaction_enabled:
             return message
         secrets = [os.environ.get(x, "") for x in ("NETWORK_SSH_PASSWORD", "NETWORK_SSH_SECRET")]
         for section in [self.defaults, *self.profiles.values(), *self.devices.values()]:
@@ -1147,6 +1163,8 @@ class Collector:
         return redact_text(message, [x for x in secrets if isinstance(x, str)])
 
     def _audit_command(self, command: Any) -> str:
+        if not self.redaction_enabled:
+            return str(command)[:500]
         text = self.scrub_error(str(command))[:500]
         # Redact common inline CLI secret forms without trying to interpret vendor syntax.
         text = re.sub(r"(?i)\b(password|passwd|secret|token|community|passphrase)\b(\s+|\s*=\s*)\S+",
@@ -1354,6 +1372,7 @@ class Collector:
             stderr('Autodetect disk cache unavailable; continuing with live detection')
         return None
 
+    @measured_phase('autodetect')
     def _resolve_platform_locked(self, params: dict[str, Any]) -> None:
         key = self._detect_key(params)
         with self._guard:
@@ -1397,8 +1416,10 @@ class Collector:
                     proxy = ProbeSession(wire_params, self._checkpoint, budget)
                 except ProbeFailure as exc:
                     # Also works when this backend is the __main__ module.
+                    self._connection_metrics(exc.details.get('connection_timings_ms', {}), failed=True)
                     raise CollectionError(exc.details) from None
                 guess = proxy.device_type
+                self._connection_metrics(getattr(proxy, '_network_timings_ms', {}))
                 ready_params = dict(params, device_type=guess)
         if self._custom_detect is None:
             try:
@@ -1415,6 +1436,7 @@ class Collector:
             self._detect_cache[key] = (time.monotonic(), guess)
         self._disk_detection(params, guess)
 
+    @measured_phase('pool_reservation')
     def _reserve_pool_entry(self, key, proxy=None):
         """Wait without holding global/session/SSH locks; reservation is atomic."""
         deadline = time.monotonic() + self._checkpoint()
@@ -1452,12 +1474,14 @@ class Collector:
             time.sleep(min(.02, max(0, deadline-time.monotonic())))
 
     def _adopt_probe(self, params, proxy):
+        proxy._network_fresh_probe = True
         _, evicted, accepted = self._reserve_pool_entry(self._session_key(params), proxy)
         if not accepted:
             proxy.close()
         if evicted:
             self._disconnect_entry(evicted)
 
+    @measured_phase('connect_prepare')
     def _open(self, params: dict[str, Any]) -> Any:
         remaining = self._checkpoint()
         params = dict(params)
@@ -1466,7 +1490,14 @@ class Collector:
         self._request.stage = 'connect'
         started = time.monotonic()
         auto_enable = params.pop('_auto_enable', False)
-        conn = self._connect(**params)
+        try:
+            with connection_measurements() as connection_timings:
+                conn = self._connect(**params)
+        except Exception as exc:
+            exc._network_timings_ms = dict(connection_timings)
+            self._connection_metrics(connection_timings, failed=True)
+            raise
+        self._connection_metrics(getattr(conn, '_network_timings_ms', {}))
         try:
             if auto_enable and params['device_type'].startswith('cisco_'):
                 conn.enable()
@@ -1575,6 +1606,7 @@ class Collector:
                     except Exception:
                         self._disconnect_entry(entry)
                 if entry["conn"] is None:
+                    self._request.session_reused = False
                     try:
                         if self._auth_failures.get(self._detect_key(params), 0) > time.monotonic():
                             raise PermissionError("Authentication previously failed; credential identity is cooling down")
@@ -1592,6 +1624,8 @@ class Collector:
                     with self._guard:
                         self._connections_opened += 1
                 else:
+                    self._request.session_reused = not getattr(entry['conn'], '_network_fresh_probe', False)
+                    entry['conn']._network_fresh_probe = False
                     with self._guard:
                         self._session_reuses += 1
                 try:
@@ -1643,6 +1677,8 @@ class Collector:
         if previous is None:
             self._request.context = (cancel or threading.Event(), time.monotonic() + (timeout or self.request_timeout))
             self._request.stage = 'queue'
+            self._request.timings_ms = {}
+            self._request.session_reused = False
         elif timeout is not None:
             self._request.context = (previous[0], min(previous[1], time.monotonic()+timeout))
         if connection_timeouts is not None:
@@ -1662,6 +1698,9 @@ class Collector:
         details = classify_error(exc, getattr(self._request, 'stage', 'unknown'))
         previous = getattr(exc, '_network_command_result', {})
         details = {**previous, **details}
+        details['timings_ms'] = dict(getattr(exc, '_network_request_timings_ms', getattr(self._request, 'timings_ms', {})))
+        if getattr(exc, '_network_timings_ms', None):
+            details['connection_timings_ms'] = dict(exc._network_timings_ms)
         details.update(ok=False, transport_ok=bool(getattr(exc,'_network_keep_session',False)), cli_ok=previous.get('cli_ok'), output_complete=previous.get('output_complete',False),
                        message=self.scrub_error(str(exc)))
         if hasattr(exc, '_network_keep_session'):
@@ -1697,10 +1736,35 @@ class Collector:
         return remaining
 
     @contextlib.contextmanager
+    def _measure(self, phase):
+        started = time.monotonic()
+        failed = False
+        try:
+            yield
+        except Exception:
+            failed = True
+            raise
+        finally:
+            elapsed = (time.monotonic()-started)*1000
+            self._metrics.add(phase, elapsed, failed)
+            timings = getattr(self._request, 'timings_ms', None)
+            if timings is not None:
+                timings[phase] = round(timings.get(phase, 0.) + elapsed, 3)
+
+    def _connection_metrics(self, timings, failed=False):
+        for phase, elapsed in timings.items():
+            self._metrics.add(phase.removesuffix('_ms'), elapsed, failed)
+            request_timings = getattr(self._request, 'timings_ms', None)
+            if request_timings is not None:
+                name = phase.removesuffix('_ms')
+                request_timings[name] = round(request_timings.get(name, 0.) + elapsed, 3)
+
+    @contextlib.contextmanager
     def _entry_lock(self, lock):
-        if not lock.acquire(blocking=False):
-            while not lock.acquire(timeout=min(.1, self._checkpoint())):
-                pass
+        with self._measure('ssh_slot_wait' if lock is self._ssh_slots else 'session_lock_wait'):
+            if not lock.acquire(blocking=False):
+                while not lock.acquire(timeout=min(.1, self._checkpoint())):
+                    pass
         try:
             self._checkpoint()
             yield
@@ -1719,7 +1783,10 @@ class Collector:
         with self._output_lock:
             self._active_outputs[output_id] = self._active_outputs.get(output_id, 0) + 1
         try:
-            yield self.output_dir / (output_id + ".txt")
+            # Regex workers are already protected by their parent's live lease.
+            guard = self._shared_outputs.lease(output_id, checkpoint=self._checkpoint) if self._shared_outputs and not getattr(self, '_regex_worker', False) else contextlib.nullcontext()
+            with guard:
+                yield self.output_dir / (output_id + ".txt")
         finally:
             with self._output_lock:
                 count = self._active_outputs.get(output_id, 1) - 1
@@ -1728,7 +1795,23 @@ class Collector:
                 else:
                     self._active_outputs.pop(output_id, None)
             # A prior quota pass may have skipped this active file.
-            self._cleanup_outputs(force=False)
+            # A cleanup failure must not replace output/a read error on exit.
+            try:
+                self._cleanup_outputs(force=False)
+            except Exception:
+                stderr('Output retention cleanup deferred; storage lock or filesystem unavailable')
+
+    @contextlib.contextmanager
+    def _storage_transaction(self):
+        with self._output_lock:
+            nested = getattr(self._storage_context, 'active', False)
+            guard = self._shared_outputs.transaction(self._checkpoint) if self._shared_outputs and not nested else contextlib.nullcontext()
+            with guard:
+                self._storage_context.active = True
+                try:
+                    yield
+                finally:
+                    self._storage_context.active = nested
 
     def _sync_output_index(self, force=False):
         now = time.monotonic()
@@ -1756,10 +1839,29 @@ class Collector:
                     self._output_total -= removed[1]
             self._output_pins.pop(output_id, None)
 
+    def retire_output(self, output_id):
+        """Remove scanner-owned scratch only after evidence was committed."""
+        oid = safe_output_id(output_id)
+        with self._storage_transaction():
+            if self._active_outputs.get(oid):
+                return False
+            guard = self._shared_outputs.lease(oid, timeout=0) if self._shared_outputs else contextlib.nullcontext()
+            try:
+                with guard:
+                    (self.output_dir / (oid + '.txt')).unlink(missing_ok=True)
+                    if self._shared_outputs:
+                        self._shared_outputs.forget(oid)
+                    self.forget_output(oid)
+                return True
+            except OSError:
+                return False
+
     def _cleanup_outputs(self, reserve_bytes=0, *, force=True):
         now = time.time()
         removed = freed = 0
-        with self._output_lock:
+        with self._storage_transaction():
+            if self._shared_outputs:
+                self._shared_outputs.clean_temporary()
             self._sync_output_index(force=force)
             pressure = self.output_quota and self._output_total + reserve_bytes > self.output_quota
             if not force and not pressure and time.monotonic() - self._output_cleaned < self.output_cleanup_interval:
@@ -1770,10 +1872,14 @@ class Collector:
                 pressure = self.output_quota and self._output_total + reserve_bytes > self.output_quota
                 if not expired and not pressure:
                     continue
-                if self._active_outputs.get(oid, 0) or self._output_pins.get(oid, 0) > now:
+                if self._active_outputs.get(oid, 0) or self._output_pins.get(oid, 0) > now or (self._shared_outputs and self._shared_outputs.pinned(oid, now)):
                     continue
                 try:
-                    (self.output_dir / (oid + '.txt')).unlink()
+                    guard = self._shared_outputs.lease(oid, timeout=0) if self._shared_outputs else contextlib.nullcontext()
+                    with guard:
+                        (self.output_dir / (oid + '.txt')).unlink()
+                        if self._shared_outputs:
+                            self._shared_outputs.forget(oid)
                 except FileNotFoundError:
                     pass
                 except OSError:
@@ -1784,6 +1890,7 @@ class Collector:
             self._output_cleaned = time.monotonic()
         return {'removed': removed, 'freed_bytes': freed}
 
+    @measured_phase('output_save')
     def _save_output(self, content, *, already_redacted=False):
         if not already_redacted:
             content = self.redact_output(content)
@@ -1793,15 +1900,23 @@ class Collector:
         stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         oid = stamp + '_' + uuid.uuid4().hex
         path = self.output_dir / (oid + '.txt')
-        with self._output_lock:
+        with self._storage_transaction():
             self._cleanup_outputs(size, force=False)
             if self.output_quota and self._output_total + size > self.output_quota:
                 raise ValueError('Output storage full; export evidence or wait for retention cleanup')
             try:
-                with path.open('x', encoding='utf-8', newline='\n') as handle:
+                temporary = self._shared_outputs.metadata / (oid + '.tmp') if self._shared_outputs else path.with_suffix('.tmp')
+                with temporary.open('x', encoding='utf-8', newline='\n') as handle:
                     handle.write(content)
+                    handle.flush()
+                if self._shared_outputs:
+                    self._shared_outputs.pin(oid, time.time() + 300)
+                temporary.replace(path)
             except Exception:
                 self._output_index = None  # Reconcile even a partial write next time.
+                if 'temporary' in locals():
+                    with contextlib.suppress(OSError):
+                        temporary.unlink(missing_ok=True)
                 raise
             now = time.time()
             self._output_index[oid] = (now, size)
@@ -1872,7 +1987,7 @@ class Collector:
             try:
                 data["output_id"] = self._save_output(output, already_redacted=True)
             except Exception as exc:
-                exc._network_command_result = dict(data, saved=False, output=output[:self.inline_max_chars], output_truncated=len(output)>self.inline_max_chars)
+                exc._network_command_result = dict(data, saved=False, output=output, output_truncated=False)
                 exc._network_error_stage = 'persistence'
                 exc._network_keep_session = bool(complete)
                 raise
@@ -1913,7 +2028,14 @@ class Collector:
         if preceding:
             preceding = self.redact_output(clean_terminal(preceding))
             if len(preceding) > self.inline_max_chars:
-                result['preceding_output_id'] = self._save_output(preceding, already_redacted=True)
+                try:
+                    result['preceding_output_id'] = self._save_output(preceding, already_redacted=True)
+                except Exception as exc:
+                    exc._network_command_result = dict(result, preceding_output=preceding)
+                    exc._network_error_stage = 'persistence'
+                    exc._network_keep_session = bool(result['output_complete'] and not failure)
+                    exc._network_command_sent = result['command_sent']
+                    raise
             else:
                 result['preceding_output'] = preceding
             result['preceding_output_association'] = 'unattributed; retained instead of discarded'
@@ -1921,8 +2043,12 @@ class Collector:
         if getattr(client, '_network_host_key_persisted', None) is False:
             result['warnings'] = ['SSH host key accepted; could not persist known_hosts']
         result.update(ssh_authenticated=True, cli_ready=True, driver_refreshed=bool(getattr(conn,"_network_driver_refreshed",False)))
+        result['timings_ms'] = dict(getattr(self._request, 'timings_ms', {}))
+        result['connection_timings_ms'] = {k: round(v, 3) for k, v in getattr(conn, '_network_timings_ms', {}).items()}
+        result['session_reused'] = bool(getattr(self._request, 'session_reused', False))
         return normalize_result(result)
 
+    @measured_phase('command')
     def _send(self, conn: Any, command: str, timeout: int, expect_string: str | None = None,
               use_timing: bool = False) -> tuple[Any, str | None]:
         timeout = min(timeout, self._checkpoint())
@@ -2110,6 +2236,8 @@ class Collector:
         detection_timeout = getattr(self._request, 'detection_timeout', None)
         def run_task(item: dict[str, Any]) -> dict[str, Any]:
             self._request.context = context
+            self._request.timings_ms = {}
+            self._request.session_reused = False
             self._request.connection_timeouts = connection_timeouts
             self._request.detection_timeout = detection_timeout
             try:
@@ -2296,7 +2424,7 @@ class Collector:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": not dead_session(v.get("conn")),
                          "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
+        return {"version": VERSION, "phase_metrics": self._metrics.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
                 "autodetect_timeout_seconds": self.autodetect_timeout, "autodetect_probes": self._detection_probes,
@@ -2319,6 +2447,10 @@ class Collector:
                 if entry.get("conn") is not None:
                     self._disconnect_entry(entry)
                     count += 1
+                with self._guard:
+                    # Preserve reservations owned by callers waiting for this lock.
+                    if not entry.get('borrowers') and self._sessions.get(key) is entry:
+                        self._sessions.pop(key, None)
         return {"closed": count}
 
 
@@ -2443,6 +2575,8 @@ def run_stdio(collector: Collector) -> None:
 
     def run(message, event, deadline):
         collector._request.context = (event, deadline)
+        collector._request.timings_ms = {}
+        collector._request.session_reused = False
         try:
             collector._checkpoint()
             emit(handle_rpc(message, collector))

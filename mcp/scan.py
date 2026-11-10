@@ -270,15 +270,10 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
         # Results and permanent evidence have already been committed above.
         if attempt.get('export_pending') or c.output_dir.resolve() != directory/'raw-output':
             return
-        with c._output_lock:
-            for result in attempt.get('result', {}).get('results', []):
-                oid = result.get('output_id')
-                if not oid or c._active_outputs.get(oid):
-                    continue
-                from collector_backend import safe_output_id
-                path = c.output_dir/(safe_output_id(oid)+'.txt')
-                with contextlib.suppress(OSError):
-                    path.unlink();c.forget_output(oid)
+        for result in attempt.get('result', {}).get('results', []):
+            oid = result.get('output_id')
+            if oid:
+                c.retire_output(oid)
     def summary():
         counts=collections.Counter(r['status'] for r in states.values())
         return {'total':len(tasks),'duplicates_removed':duplicates,

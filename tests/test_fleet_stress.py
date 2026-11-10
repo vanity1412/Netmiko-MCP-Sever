@@ -1,4 +1,4 @@
-"""500 virtual devices through the real scanner, persistence and resume pipeline."""
+"""500 and 2,500 virtual devices through scanner, persistence and resume."""
 import collections
 import hashlib
 import json
@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 import unittest
+
+from stress_resources import ResourceMonitor
 
 import paramiko
 from netmiko.exceptions import ReadTimeout
@@ -19,20 +21,35 @@ import scan
 
 class FleetStressTests(unittest.TestCase):
     def test_500_mixed_devices_with_faults_evidence_retry_and_resume(self):
+        self.run_fleet(500)
+
+    def test_2500_mixed_devices_with_resources_cleanup_and_resume(self):
+        self.run_fleet(2500)
+
+    def run_fleet(self, device_count):
         with tempfile.TemporaryDirectory(prefix='noc-stress-') as temporary:
             directory = Path(temporary) / 'job'
             calls = collections.Counter()
             lock = threading.Lock()
+            resources = {'live_connections': 0, 'peak_connections': 0}
             devices = {f'fixture-{i:03}': {'host': f'198.18.{i // 250}.{i % 250 + 1}',
-                                         'device_type': 'cisco_ios'} for i in range(500)}
+                                         'device_type': 'cisco_ios'} for i in range(device_count)}
             reverse = {v['host']: int(k.split('-')[-1]) for k, v in devices.items()}
 
             class Connection:
                 closed = False
-                def __init__(self, index, attempt): self.index, self.attempt, self.sequence = index, attempt, 0
+                def __init__(self, index, attempt):
+                    self.index, self.attempt, self.sequence = index, attempt, 0
+                    with lock:
+                        resources['live_connections'] += 1
+                        resources['peak_connections'] = max(resources['peak_connections'], resources['live_connections'])
                 def find_prompt(self): return f'fixture-{self.index:03}#'
                 def is_alive(self): return not self.closed
-                def disconnect(self): self.closed = True
+                def disconnect(self):
+                    with lock:
+                        if not self.closed:
+                            self.closed = True
+                            resources['live_connections'] -= 1
                 def send_command(self, command, **kwargs):
                     self.sequence += 1
                     mode = self.index % 10
@@ -56,13 +73,15 @@ class FleetStressTests(unittest.TestCase):
                 return Connection(index, attempt)
 
             collector = backend.Collector({'defaults': {'output_dir': str(directory / 'raw-output'),
-                'max_workers': 16, 'max_sessions': 32, 'session_sweep_seconds': 0}, 'devices': devices}, connect_factory=factory)
+                'max_workers': 16, 'max_sessions': 32, 'session_sweep_seconds': 0,
+                'output_storage_mode': 'exclusive'}, 'devices': devices}, connect_factory=factory)
             try:
                 tasks = [{'target': target, 'commands': ['show version', 'show interfaces description']} for target in devices]
-                result = scan.run_scan(collector, tasks, directory, workers=16, slow_workers=4)
-                self.assertEqual((result['success'], result['partial'], result['failed'], result['unknown']), (300, 50, 150, 0))
+                with ResourceMonitor(collector) as monitor:
+                    result = scan.run_scan(collector, tasks, directory, workers=16, slow_workers=4)
+                self.assertEqual((result['success'], result['partial'], result['failed'], result['unknown']), (device_count*6//10, device_count//10, device_count*3//10, 0))
                 records = [json.loads(p.read_text(encoding='utf-8')) for p in (directory / 'results').glob('*.json')]
-                self.assertEqual(len(records), 500)
+                self.assertEqual(len(records), device_count)
                 proofs = 0
                 for record in records:
                     index = int(record['target'].split('-')[-1])
@@ -76,7 +95,7 @@ class FleetStressTests(unittest.TestCase):
                             self.assertEqual(hashlib.sha256(payload).hexdigest(), proof['sha256'])
                             if b'fixture-tag=' in payload:
                                 self.assertIn(f'fixture-tag={index:03}'.encode(), payload)
-                                self.assertNotIn(f'fixture-tag={(index+1)%500:03}'.encode(), payload)
+                                self.assertNotIn(f'fixture-tag={(index+1)%device_count:03}'.encode(), payload)
                             proofs += 1
                         for command in attempt['result'].get('results', []):
                             if command['ok']: self.assertTrue(command['output_complete'])
@@ -88,14 +107,28 @@ class FleetStressTests(unittest.TestCase):
                 with (directory / proof['file']).open('ab') as handle: handle.write(b'corrupted')
                 with self.assertRaisesRegex(ValueError, 'evidence changed'):
                     scan.run_scan(collector, tasks, directory, workers=16, slow_workers=4)
-                report = {'virtual_devices': 500, 'success_expected_and_actual': 300,
-                          'partial_expected_and_actual': 50, 'failed_expected_and_actual': 150,
+                report = {'virtual_devices': device_count, 'success_expected_and_actual': result['success'],
+                          'partial_expected_and_actual': result['partial'], 'failed_expected_and_actual': result['failed'],
                           'unexpected_states': 0, 'ssh_factory_calls': sum(calls.values()),
                           'evidence_files_hash_verified': proofs, 'cross_device_contamination': 0,
-                          'resume_reopened_connections': 0, 'corrupted_evidence_rejected': True}
+                          'resume_reopened_connections': 0, 'corrupted_evidence_rejected': True,
+                          'resources': monitor.report(), 'peak_open_connections': resources['peak_connections'],
+                          'phase_metrics': collector.status()['phase_metrics']}
+                self.assertLessEqual(resources['peak_connections'], collector.max_sessions)
+                self.assertLessEqual(monitor.peaks.get('sessions', 0), collector.max_sessions)
+                self.assertTrue(all(not e.get('borrowers') for e in collector._sessions.values()))
+                collector.shutdown()
+                self.assertEqual(resources['live_connections'], 0)
+                self.assertEqual(collector.status()['sessions'], [])
+                self.assertTrue(all(not t.is_alive() for t in collector._task_pool._threads))
+                report.update(sessions_after_shutdown=0, live_connections_after_shutdown=0,
+                              resources_after_shutdown=__import__('stress_resources').process_resources())
                 destination = os.environ.get('SSH_STRESS_REPORT')
                 if destination:
-                    Path(destination).write_text(json.dumps(report, indent=2), encoding='utf-8')
+                    path = Path(destination)
+                    reports = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+                    reports[str(device_count)] = report
+                    path.write_text(json.dumps(reports, indent=2), encoding='utf-8')
             finally:
                 collector.shutdown()
 

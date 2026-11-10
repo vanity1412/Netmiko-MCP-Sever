@@ -124,7 +124,17 @@ Lỗi export evidence giữ raw output và export_pending. --retry-status unknow
 
 ## Storage và giới hạn
 
-output_storage_mode=shared mặc định đối soát thư mục; exclusive dùng index RAM cho một Collector sở hữu thư mục. Scanner dùng scratch riêng, quota/TTL và checksum checkpoint vẫn giữ. Không dùng exclusive cho nhiều process cùng ghi. Quota shared chưa có transaction toàn cục. Mỗi session probe giữ thêm process/thread; max_sessions mặc định 64, không tự tăng concurrency hoặc thay ownership worker.
+`output_storage_mode=shared` dùng khóa OS liên tiến trình để đồng bộ kiểm tra quota, ghi file và cleanup. File được ghi tạm rồi publish bằng atomic replace. Thời hạn bảo vệ output mới 300 giây được lưu trong `.storage/`; lease OS bảo vệ file đang đọc/search/export kể cả khi process khác cleanup. Process chết sẽ nhả khóa OS. Khóa chờ tối đa 5 giây và tuân theo request deadline/cancel; lỗi lưu được báo riêng, không tự gửi lại CLI.
+
+Các process dùng chung thư mục cần cùng quota/TTL và cùng phiên bản có cơ chế khóa này. `exclusive` dùng index RAM cho một Collector sở hữu thư mục; không dùng cho nhiều process cùng ghi. Scanner có scratch riêng, quota/TTL và checksum checkpoint vẫn giữ. Khóa lease dùng 64 stripe cố định để giới hạn số file khóa; va chạm stripe có thể trì hoãn cleanup hoặc serialize lượt đọc. Không xóa file khóa khi process còn chạy. Quota áp dụng cho output `.txt`, không gồm audit log và metadata khóa.
+
+Mặc định `redaction_enabled=false`: nội dung CLI, evidence, structured output, preparation evidence và nội dung lỗi/audit được giữ nguyên, kể cả username/password/hash/secret/token. Cấu hình cũ đặt rõ `redaction_enabled=true` vẫn có thể chủ động bật che dữ liệu. Khi ghi file thất bại, response lỗi giữ toàn bộ output đã nhận thay vì cắt thành preview; response lỗi lớn vì vậy có thể tốn RAM/băng thông. Reader vẫn chuẩn hóa ANSI/pager như trước; dữ liệu là transcript CLI đã chuẩn hóa, không phải bản chụp byte của SSH transport.
+
+## Đo hiệu năng SSH
+
+`ssh_status.phase_metrics` trả count, failures, total_ms và p50/p95 của tối đa 128 mẫu gần nhất mỗi pha. Kết quả thực thi có `timings_ms`, `connection_timings_ms`, `session_reused`; không thêm tool hoặc input schema. Có các pha chờ slot/session, pool reservation, connect+prepare, autodetect, command và output_save. `ssh_connect` đo lời gọi Paramiko connect (gồm handshake và auth); `authentication` đo `_auth`; `preparation` đo Netmiko preparation, kể cả sau redispatch. Các pha lồng nhau, không cộng chúng để suy ra tổng thời gian. Phương thức tùy biến/mock không có hook thì không có số đo auth; không suy diễn bằng 0. Thống kê `failures` đếm exception của pha, không thay thế trạng thái CLI.
+
+`connection_timings_ms` mô tả lần tạo transport, vẫn được đính kèm khi reuse; `timings_ms` đo công việc trong request hiện tại. Không phát sinh SSH để đo và không tăng worker/timeout. Mỗi session probe giữ thêm process/thread; max_sessions mặc định 64. Chưa có số đo để kết luận tăng tốc trên thiết bị production.
 
 ## Kiểm thử và tài liệu
 
@@ -132,7 +142,7 @@ output_storage_mode=shared mặc định đối soát thư mục; exclusive dùn
 python -m unittest discover -s tests -v
 ```
 
-Tests gồm protocol, phiên SSH localhost, chế độ cấu hình, câu hỏi/phản hồi, partial output, retry/resume, evidence và stress chức năng thiết bị ảo. Không có benchmark trong đợt thay đổi này và chưa chạy cấu hình trên firmware production.
+Tests gồm protocol, phiên SSH localhost, chế độ cấu hình, câu hỏi/phản hồi, partial output, retry/resume, evidence, tranh chấp storage bằng subprocess thật và stress 500/2.500 thiết bị ảo. Stress đo RAM, CPU, thread/handle, số session/connection và cleanup; kiểm tra timeout, resume, SHA-256 và dữ liệu không lẫn đích. Đây là mock SSH qua scanner thật, không phải benchmark handshake/AAA của hàng nghìn thiết bị thật. Đặt `SSH_STRESS_REPORT` tới file JSON ngoài repository để lưu báo cáo cả hai quy mô. Chưa chạy production.
 
 Python wrapper: CLIConnection là tên mới, ReadOnlyConnection giữ để tương thích import cũ nhưng không còn lọc lệnh. Xem docs/ARCHITECTURE.md, docs/SCAN.md, AGENTS.md và CHANGELOG.md.
 
