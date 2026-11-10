@@ -50,6 +50,7 @@ def main():
     config = backend.load_inventory_csv(backend.load_config(str(config_path)), str(inventory_path))
     config.setdefault('defaults', {})['alt_key_file'] = str(ROOT / 'mcp' / 'ssh' / 'known_hosts')
     config['defaults']['alt_host_keys'] = True
+    config['defaults'].setdefault('autodetect_cache_file', str(ROOT / 'runtime/data/netmiko/autodetect.sqlite3'))
     if args.output_dir:
         output_path = Path(args.output_dir)
         config['defaults']['output_dir'] = str(output_path if output_path.is_absolute() else ROOT / output_path)

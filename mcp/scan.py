@@ -229,7 +229,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 from collector_backend import safe_output_id
                 path = c.output_dir/(safe_output_id(oid)+'.txt')
                 with contextlib.suppress(OSError):
-                    path.unlink();c._output_pins.pop(oid, None)
+                    path.unlink();c.forget_output(oid)
     def summary():
         counts=collections.Counter(r['status'] for r in states.values())
         return {'total':len(tasks),'duplicates_removed':duplicates,
@@ -293,9 +293,10 @@ def main():
         prepare_environment()
     config=load_inventory_csv(load_config(args.config),args.inventory_csv)
     root=Path(__file__).resolve().parents[1]
+    config.setdefault('defaults', {}).setdefault('autodetect_cache_file', str(root/'runtime/data/netmiko/autodetect.sqlite3'))
     raw_directory = args.output.resolve()/'raw-output' if args.execute else root/'runtime/data/netmiko/outputs'
     config.setdefault('defaults',{}).update(alt_host_keys=True,alt_key_file=str(root/'mcp/ssh/known_hosts'),
-                                           output_dir=str(raw_directory))
+                                           output_dir=str(raw_directory), output_storage_mode='exclusive')
     collector=Collector(config)
     try:
         tasks=[{'target':alias} for alias in collector.devices] if args.all else json.loads(args.plan.read_text(encoding='utf-8-sig'))

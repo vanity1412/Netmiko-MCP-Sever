@@ -62,7 +62,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 Inventory, credential, known_hosts, runtime và output được cung cấp riêng tại môi trường triển khai, không được theo dõi trong Git. Dữ liệu lịch sử không đại diện cho phiên SSH hoặc trạng thái thiết bị hiện tại.
 
-## Chính sách hiện tại — 1.4.0
+## Chính sách hiện tại — 1.5.0
 
 - Backend, Python fallback và subprocess autodetect cùng chấp nhận host key mới/đổi, lưu theo SSH client dưới khóa file liên tiến trình. Lỗi ghi store tạo warning và không chặn kết nối.
 - Không patch AutoAddPolicy toàn cục; mỗi Netmiko client có policy giữ đường dẫn store riêng. File được đọc/merge lại khi đang giữ lock rồi atomic replace.
@@ -76,3 +76,5 @@ Inventory, credential, known_hosts, runtime và output được cung cấp riên
 CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần khai báo theo thiết bị, không tự đoán hoặc thử tất cả credential. Bootstrap không bắt cặp credential toàn cục khi profile đã có credential riêng.
 
 Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, store theo process, cooldown và ưu tiên driver inventory) được mô tả trong README.md. Output redaction có thể tắt; thông báo lỗi và audit command vẫn được che.
+
+1.5.0: SQLite lưu driver đã xác minh theo hash endpoint/auth/route và TTL; tách cache driver khỏi location known_hosts để các job dùng cùng cache. Output exclusive có index RAM, quota check mỗi ghi và reconcile định kỳ; shared vẫn đối soát file. Không chuyển transport qua process: probe còn giữ hard deadline riêng.

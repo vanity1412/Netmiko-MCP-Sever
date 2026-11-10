@@ -20,13 +20,14 @@ from pathlib import Path
 import re
 import sys
 import subprocess
+import sqlite3
 import threading
 import time
 import traceback
 import uuid
 from typing import Any, Callable
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 APP_HOME = Path(os.environ.get("NETWORK_MCP_DATA_DIR") or ((Path(os.environ["LOCALAPPDATA"]) / "GooseNetworkCollector") if os.environ.get("LOCALAPPDATA") else (Path.home() / ".goose-network-collector")))
@@ -696,6 +697,9 @@ class Collector:
         self.sweep_interval = bounded_int(self.defaults.get("session_sweep_seconds"), 60, 0, 3600)
         self.autodetect_timeout = bounded_int(self.defaults.get("autodetect_timeout_seconds"), 20, 1, 120)
         self.detect_cache_ttl = bounded_int(self.defaults.get("autodetect_cache_seconds"), 28800, 1, 604800)
+        cache_file = self.defaults.get('autodetect_cache_file') or (APP_HOME / 'autodetect.sqlite3' if connect_factory is None else None)
+        self.detection_cache_file = Path(cache_file).expanduser() if cache_file and self.defaults.get('autodetect_persistent_cache', True) else None
+        self._persistent_detection_hits = 0
         self._detect_cache: dict[tuple[Any, ...], tuple[float, str]] = {}
         self._detection_locks: dict[tuple[Any, ...], list[Any]] = {}
         self._detection_probes = 0
@@ -714,6 +718,14 @@ class Collector:
         self.output_ttl = bounded_int(self.defaults.get("output_ttl_seconds"), 604800, 0, 31_536_000)
         self.output_quota = bounded_int(self.defaults.get("output_quota_bytes"), 1_073_741_824, 0, 1_099_511_627_776)
         self._output_lock = threading.RLock()
+        self.output_storage_mode = self.defaults.get('output_storage_mode', 'shared')
+        if self.output_storage_mode not in {'shared', 'exclusive'}:
+            raise ValueError('output_storage_mode must be shared or exclusive')
+        self.output_cleanup_interval = bounded_int(self.defaults.get('output_cleanup_interval_seconds'), 30, 1, 3600)
+        self._output_index = None
+        self._output_total = 0
+        self._output_synced = 0.0
+        self._output_cleaned = 0.0
         self._active_outputs: dict[str, int] = {}
         self._output_pins: dict[str, float] = {}
         self.audit_enabled = bool(self.defaults.get("audit_enabled", True))
@@ -1038,6 +1050,28 @@ class Collector:
                 if not entry[1]:
                     self._detection_locks.pop(key, None)
 
+    def _disk_detection(self, params, driver=None):
+        if self.detection_cache_file is None:
+            return None
+        # Persistence-file location and command timeouts do not change the remote driver.
+        identity = {k: params.get(k) for k in ('host','port','username','password','secret','use_keys','key_file','allow_agent','ssh_config_file','disabled_algorithms')}
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode('utf-8')).hexdigest()
+        now = time.time()
+        try:
+            self.detection_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with contextlib.closing(sqlite3.connect(str(self.detection_cache_file), timeout=.2)) as db, db:
+                db.execute('CREATE TABLE IF NOT EXISTS detection_v1 (identity TEXT PRIMARY KEY, driver TEXT NOT NULL, verified_at REAL NOT NULL, expires_at REAL NOT NULL)')
+                if driver is not None:
+                    db.execute('DELETE FROM detection_v1 WHERE expires_at <= ?', (now,))
+                    db.execute('INSERT OR REPLACE INTO detection_v1 VALUES (?, ?, ?, ?)', (digest, driver, now, now + self.detect_cache_ttl))
+                    return None
+                row = db.execute('SELECT driver, verified_at, expires_at FROM detection_v1 WHERE identity=?', (digest,)).fetchone()
+                if row and row[1] <= now < min(row[2], row[1] + self.detect_cache_ttl) and row[0] in {'juniper_junos','cisco_ios','cisco_xr','cisco_nxos','huawei','linux'}:
+                    return row[0], min(row[2], row[1] + self.detect_cache_ttl) - now
+        except (OSError, sqlite3.Error):
+            stderr('Autodetect disk cache unavailable; continuing with live detection')
+        return None
+
     def _resolve_platform_locked(self, params: dict[str, Any]) -> None:
         key = self._detect_key(params)
         with self._guard:
@@ -1046,6 +1080,15 @@ class Collector:
                 params["device_type"] = cached[1]
                 self._detection_cache_hits += 1
                 return
+        disk_entry = self._disk_detection(params)
+        if disk_entry:
+            disk_driver, remaining_ttl = disk_entry
+            with self._guard:
+                self._detect_cache[key] = (time.monotonic() - (self.detect_cache_ttl - remaining_ttl), disk_driver)
+                self._persistent_detection_hits += 1
+            params['device_type'] = disk_driver
+            return
+        with self._guard:
             self._detection_probes += 1
         with self._entry_lock(self._ssh_slots):
             self._request.stage = 'autodetect'
@@ -1099,6 +1142,7 @@ class Collector:
             if len(self._detect_cache) >= 256:
                 self._detect_cache.pop(min(self._detect_cache, key=lambda k: self._detect_cache[k][0]))
             self._detect_cache[key] = (time.monotonic(), guess)
+        self._disk_detection(params, guess)
 
     def _open(self, params: dict[str, Any]) -> Any:
         remaining = self._checkpoint()
@@ -1339,62 +1383,86 @@ class Collector:
                 else:
                     self._active_outputs.pop(output_id, None)
             # A prior quota pass may have skipped this active file.
-            self._cleanup_outputs()
+            self._cleanup_outputs(force=False)
 
-    def _cleanup_outputs(self, reserve_bytes: int = 0) -> dict[str, int]:
-        """Delete expired files first, then oldest files over quota; skip active files."""
-        now = time.time()
-        removed = 0
-        freed = 0
+    def _sync_output_index(self, force=False):
+        now = time.monotonic()
+        if not force and self._output_index is not None and self.output_storage_mode == 'exclusive' and now - self._output_synced < self.output_cleanup_interval:
+            return
+        index = {}
+        for path in self.output_dir.glob('*.txt'):
+            if not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z_[a-f0-9]{32}', path.stem):
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            index[path.stem] = (stat.st_mtime, stat.st_size)
+        self._output_index = index
+        self._output_total = sum(size for _, size in index.values())
+        self._output_synced = now
+
+    def forget_output(self, output_id):
+        """Notify exclusive storage accounting after the scanner retires scratch output."""
         with self._output_lock:
-            files = []
-            for path in self.output_dir.glob("*.txt"):
-                output_id = path.stem
-                if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z_[a-f0-9]{32}", output_id):
-                    continue
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                files.append((stat.st_mtime, stat.st_size, output_id, path))
-            total = sum(item[1] for item in files)
-            for mtime, size, output_id, path in sorted(files):
-                expired = bool(self.output_ttl and now - mtime > self.output_ttl)
-                over_quota = bool(self.output_quota and total + reserve_bytes > self.output_quota)
-                if not expired and not over_quota:
-                    continue
-                if self._active_outputs.get(output_id, 0) or self._output_pins.get(output_id, 0) > now:
-                    continue
-                try:
-                    path.unlink()
-                    self._output_pins.pop(output_id, None)
-                    total -= size
-                    removed += 1
-                    freed += size
-                except OSError:
-                    pass
-        return {"removed": removed, "freed_bytes": freed}
+            if self._output_index is not None:
+                removed = self._output_index.pop(output_id, None)
+                if removed:
+                    self._output_total -= removed[1]
+            self._output_pins.pop(output_id, None)
 
-    def _save_output(self, content: str, *, already_redacted=False) -> str:
+    def _cleanup_outputs(self, reserve_bytes=0, *, force=True):
+        now = time.time()
+        removed = freed = 0
+        with self._output_lock:
+            self._sync_output_index(force=force)
+            pressure = self.output_quota and self._output_total + reserve_bytes > self.output_quota
+            if not force and not pressure and time.monotonic() - self._output_cleaned < self.output_cleanup_interval:
+                return {'removed': 0, 'freed_bytes': 0}
+            files = sorted((mtime, size, oid) for oid, (mtime, size) in self._output_index.items())
+            for mtime, size, oid in files:
+                expired = self.output_ttl and now - mtime > self.output_ttl
+                pressure = self.output_quota and self._output_total + reserve_bytes > self.output_quota
+                if not expired and not pressure:
+                    continue
+                if self._active_outputs.get(oid, 0) or self._output_pins.get(oid, 0) > now:
+                    continue
+                try:
+                    (self.output_dir / (oid + '.txt')).unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    continue
+                self.forget_output(oid)
+                removed += 1
+                freed += size
+            self._output_cleaned = time.monotonic()
+        return {'removed': removed, 'freed_bytes': freed}
+
+    def _save_output(self, content, *, already_redacted=False):
         if not already_redacted:
             content = self.redact_output(content)
-        content_bytes = len(content.encode("utf-8"))
-        if self.output_quota and content_bytes > self.output_quota:
-            raise ValueError("Output exceeds storage quota; no output_id was issued")
-        self._cleanup_outputs(content_bytes)
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        output_id = stamp + "_" + uuid.uuid4().hex
-        path = self.output_dir / (output_id + ".txt")
+        size = len(content.encode('utf-8'))
+        if self.output_quota and size > self.output_quota:
+            raise ValueError('Output exceeds storage quota; no output_id was issued')
+        stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        oid = stamp + '_' + uuid.uuid4().hex
+        path = self.output_dir / (oid + '.txt')
         with self._output_lock:
-            # Fail clearly instead of issuing an ID that cleanup immediately removes.
-            total = sum(p.stat().st_size for p in self.output_dir.glob("*.txt") if re.fullmatch(r"[0-9]{8}T[0-9]{6}Z_[a-f0-9]{32}", p.stem))
-            if self.output_quota and total + content_bytes > self.output_quota:
-                raise ValueError("Output storage full; export evidence or wait for retention cleanup")
-            with open(path, "x", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
-            self._output_pins[output_id] = time.time() + 300
-        self._cleanup_outputs()
-        return output_id
+            self._cleanup_outputs(size, force=False)
+            if self.output_quota and self._output_total + size > self.output_quota:
+                raise ValueError('Output storage full; export evidence or wait for retention cleanup')
+            try:
+                with path.open('x', encoding='utf-8', newline='\n') as handle:
+                    handle.write(content)
+            except Exception:
+                self._output_index = None  # Reconcile even a partial write next time.
+                raise
+            now = time.time()
+            self._output_index[oid] = (now, size)
+            self._output_total += size
+            self._output_pins[oid] = now + 300
+        return oid
 
     def _result(self, target: str, command: str, output: Any, elapsed: float, save_output: bool = False,
                 prompt_pattern: str | None = None, interactive: bool = False) -> dict[str, Any]:
@@ -1780,7 +1848,7 @@ class Collector:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": v.get("conn") is not None,
                          "leased": v.get("borrowers", 0), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
+        return {"version": VERSION, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
                 "autodetect_timeout_seconds": self.autodetect_timeout, "autodetect_probes": self._detection_probes,

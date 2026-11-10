@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.4.0**, giữ nguyên **10 MCP tool**.
+MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.5.0**, giữ nguyên **10 MCP tool**.
 
 ## Cấu trúc
 
@@ -75,3 +75,11 @@ Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thi
 | host_key_store_mode | shared | process |
 
 Cấu hình mẫu ưu tiên tốc độ và trả/lưu output không che bí mật. Đặt redaction_enabled=true nếu muốn che dữ liệu output. Error và audit command luôn được che. Mode process ghi known_hosts.<PID>, không tự hợp nhất sang file chung; dùng shared nếu cần một store thống nhất. Prompt được cache trong phiên, không tái sử dụng mù qua kết nối mới. Đặt prefer_inventory_driver=false để yêu cầu dò lại dù inventory đã có driver. Quiet ngắn có thể cần tăng lại trên thiết bị gửi dữ liệu bất thường; điều kiện prompt cuối và kiểm tra CLI vẫn được giữ.
+
+## Lưu output và cache driver — 1.5.0
+
+- `output_storage_mode`: `shared` mặc định, đối soát thư mục khi lưu; `exclusive` dùng index dung lượng trong RAM cho thư mục do một Collector sở hữu. Scanner/validator tự dùng exclusive với scratch riêng của job.
+- `output_cleanup_interval_seconds`: mặc định 30s. Exclusive không glob mỗi lần ghi; quota vẫn kiểm tra trước mọi lần ghi, cleanup ngay khi thiếu chỗ. Reconcile định kỳ hoặc khi gọi cleanup tường minh; restart đọc lại index từ file. File đang được đọc hoặc đang pin được bảo vệ. Không dùng exclusive nếu nhiều Collector/process cùng ghi một thư mục. Shared vẫn cần thư mục riêng nếu yêu cầu quota cứng giữa nhiều process; không có global quota transaction.
+- `autodetect_persistent_cache`: mặc định true. Bootstrap/scanner/validator dùng chung `runtime/data/netmiko/autodetect.sqlite3`; `autodetect_cache_file` cho phép đổi đường dẫn. Direct Collector dùng APP_HOME nếu không khai báo path.
+- SQLite chỉ lưu hash identity, driver và thời điểm; không lưu credential rõ. Cache theo host/port/credential/route options, hết hạn theo TTL autodetect (mặc định 8 giờ). Chỉ ghi sau probe thành công. Cache lỗi/khóa/bị hỏng sẽ fallback dò thật; không chặn SSH vì lỗi cache. Driver chỉ định rõ vẫn ưu tiên và không cần disk lookup. Cache không tự sửa inventory và có thể cũ nếu thiết bị bị thay trong khoảng TTL; tắt cache persistent và khởi động Collector mới hoặc chỉ định driver đúng khi cần kiểm chứng lại.
+- Probe vẫn ở process riêng để giữ hard deadline. Chưa chia sẻ transport probe sang process thu thập; tái sử dụng cùng session đòi hỏi thiết kế ownership/cancellation khác.

@@ -17,7 +17,10 @@
     "redaction_enabled": false,
     "prefer_inventory_driver": true,
     "auth_failure_cooldown_seconds": 30,
-    "host_key_store_mode": "process"
+    "host_key_store_mode": "process",
+    "output_storage_mode": "shared",
+    "output_cleanup_interval_seconds": 30,
+    "autodetect_persistent_cache": true
   },
   "profiles": {},
   "devices": {}

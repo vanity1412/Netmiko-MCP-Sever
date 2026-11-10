@@ -1,4 +1,4 @@
-# Quét inventory — Netmiko MCP 1.4.0
+# Quét inventory — Netmiko MCP 1.5.0
 
 Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
 
@@ -62,7 +62,7 @@ Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo v�
 
 Copy mcp/collector_backend.py, mcp/bootstrap.py, mcp/scan.py; giữ mcp/readonly_client.py bản đã bắt buộc device_type. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Source mới cần process MCP mới; kiểm tra ssh_status.version=1.4.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.5.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
 ## Kiểm tra diện rộng và tình huống lỗi
 
@@ -74,3 +74,5 @@ python -m unittest discover -s tests -v
 Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity reachable, phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. TCP mở không đồng nghĩa SSH thành công. Không có banner vẫn được thử SSH trong mẫu để ghi nhận lỗi handshake thực tế. Log transport nằm trong ssh-transport.log.
 
 Tests có fault injection, replay 2.000 cách chia chunk, 500 thiết bị ảo qua scanner/persistence/resume và SSH localhost với driver thật. Stress cố tình tạo auth reject/timeout, EOF, CLI error và partial output; kiểm tra kết quả đúng oracle, không lấy tỷ lệ success của fixture làm tỷ lệ production. Dữ liệu --More--/[confirm] ở giữa config/log phải được giữ nguyên. Lỗi ghi output là storage_error và không gây retry SSH. EOF được phát hiện sớm; channel chưa hoàn chỉnh không được tái sử dụng.
+
+Scanner dùng output index exclusive cho scratch riêng và thông báo khi xóa scratch. Các entry driver đã dò thành công được cache tại runtime/data/netmiko/autodetect.sqlite3 để lần chạy sau tái sử dụng trong TTL; lỗi cache quay về probe thật.

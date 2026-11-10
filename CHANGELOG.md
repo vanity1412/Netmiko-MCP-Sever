@@ -1,3 +1,10 @@
+# 1.5.0 - Output storage accounting and persistent driver cache
+
+- Output quota accounting under one thread lock; remove repeated directory scans in a single save.
+- Exclusive output index for scanner scratch/continuous collectors with periodic reconciliation, quota-pressure cleanup and explicit retirement notification. Shared mode retains directory reconciliation.
+- Persistent verified autodetect results in SQLite, TTL and identity scoped, optional and fail-open to live probing on cache errors; common path for bootstrap/scanner/validator.
+- Retain isolated detection process and its hard deadline; probe transport reuse is not implemented in this release.
+
 # 1.4.0 - Collection performance options
 
 - Prefer a concrete inventory driver over autodetect by default; configurable override.
