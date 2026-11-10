@@ -22,7 +22,10 @@ class ProbeSession:
     def __init__(self, params, checkpoint, timeout):
         self._lock = threading.RLock()
         self._checkpoint = checkpoint
-        self._messages = queue.Queue()
+        self._messages = queue.Queue(maxsize=16)
+        self._reader_stop = threading.Event()
+        self._reader_done = threading.Event()
+        self._interrupted_message = None
         self._process = subprocess.Popen([sys.executable, '-u', str(Path(__file__).resolve())],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding='utf-8', bufsize=1)
@@ -31,11 +34,23 @@ class ProbeSession:
         def receive():
             try:
                 for line in self._process.stdout:
-                    self._messages.put(json.loads(line))
+                    message = json.loads(line)
+                    queued = False
+                    while not self._reader_stop.is_set():
+                        try:
+                            self._messages.put(message, timeout=.05)
+                            queued = True
+                            break
+                        except queue.Full:
+                            continue
+                    if self._reader_stop.is_set():
+                        if not queued: self._interrupted_message = message
+                        break
             except (ValueError, OSError):
                 pass
             finally:
-                self._messages.put({'event':'eof'})
+                self._reader_done.set()
+                with contextlib.suppress(queue.Full): self._messages.put_nowait({'event':'eof'})
         self._reader = threading.Thread(target=receive, daemon=True)
         self._reader.start()
         try:
@@ -53,7 +68,8 @@ class ProbeSession:
 
     def _rpc(self, request, timeout, checkpoint):
         deadline = time.monotonic() + timeout
-        partial = []
+        from collector_backend import OutputBuffer, strip_pager_spans
+        partial = OutputBuffer()
         from collector_backend import classify_error, clean_terminal
         with self._lock:
             try:
@@ -70,12 +86,15 @@ class ProbeSession:
                     try:
                         message = self._messages.get(timeout=min(.02,left))
                     except queue.Empty:
+                        if self._reader_done.is_set(): raise EOFError('SSH worker response ended')
                         continue
                     if message.get('event') == 'data':
                         partial.append(message['data'])
                     elif message.get('event') == 'eof':
                         raise EOFError('SSH worker exited before completing response')
                     else:
+                        if message.get('streamed_output'):
+                            message['output'] = clean_terminal(strip_pager_spans(partial.value(), message.get('pager_spans',[])))
                         return message
             except Exception as exc:
                 self.close()
@@ -89,9 +108,13 @@ class ProbeSession:
                         break
                     if queued.get('event') == 'data':
                         partial.append(queued['data'])
+                if self._interrupted_message and self._interrupted_message.get('event') == 'data':
+                    partial.append(self._interrupted_message['data'])
                 failure = classify_error(exc, 'command')
                 failure['message'] = 'SSH worker interrupted; streamed partial output retained'
-                return {'output':clean_terminal(''.join(partial)), 'failure':failure}
+                return {'output':clean_terminal(partial.value()), 'failure':failure}
+            finally:
+                partial.close()
 
     def collect_in_worker(self, command, timeout, pattern, quiet, checkpoint):
         self._network_command_sent = True
@@ -111,6 +134,7 @@ class ProbeSession:
 
     def close(self):
         self.remote_conn.closed = True
+        self._reader_stop.set()
         with contextlib.suppress(Exception):
             if self._process.poll() is None:
                 self._process.kill()
@@ -132,6 +156,9 @@ def main():
     conn = None
     def emit(value):
         print(json.dumps(value, ensure_ascii=True), flush=True)
+    def stream(data):
+        for offset in range(0,len(data),65536):
+            emit({'event':'data','data':data[offset:offset+65536]})
     try:
         first = json.loads(sys.stdin.readline())
         params = first['params']
@@ -161,10 +188,11 @@ def main():
             elif request['op'] == 'collect':
                 output, failure = b.read_cli_output(conn, request['command'], request['timeout'],
                     request['pattern'], quiet=request['quiet'],
-                    on_data=lambda data:emit({'event':'data','data':data}))
-                emit({'output':output,'failure':failure,'command_sent':getattr(conn,'_network_command_sent',True),
+                    on_data=stream)
+                emit({'streamed_output':True,'pager_spans':getattr(conn,'_network_pager_spans',[]),'failure':failure,'command_sent':getattr(conn,'_network_command_sent',True),
                       'preceding_output':getattr(conn,'_network_preceding_output',''),
                       'prompt':getattr(conn,'_network_prompt_text',None)})
+                del output
             else:
                 raise ValueError('Unknown SSH worker operation')
     except Exception as exc:

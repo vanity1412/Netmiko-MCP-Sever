@@ -1,4 +1,12 @@
-# Kiến trúc hiện tại — 1.7.0
+# Kiến trúc hiện tại — 1.8.0
+
+result_status.py chuẩn hóa kết quả thực thi theo status/fault_status/data_state/execution_state, không thay schema tool hoặc trạng thái checkpoint cũ. Reader dùng OutputBuffer (spool) và metadata pager spans; worker queue hữu hạn và không gửi lại toàn text ở gói cuối. Sau I/O vẫn tạo string cho verification/redaction/parse. Các lỗi file buffer được phân loại persistence.
+
+Lease wrapper chỉ refresh driver suy ra từ cache/session khi lỗi preparation xảy ra trước yield, sau khi lease cũ đã được giải phóng. Nó invalidate RAM/SQLite, bỏ qua stale disk entry trong lần probe cưỡng bức và chỉ thử một lần. TCP/auth/CLI lỗi và driver tường minh không kích hoạt fallback này. Session đang hoạt động được ưu tiên hơn cache và không bị probe vào câu hỏi đang chờ.
+
+Execute đơn có một recovery cho truy vấn đọc mất transport; dữ liệu cũ giữ trong previous_attempt hoặc response hiện tại nếu không còn budget. Scanner dùng execute_many và tự sở hữu retry để không retry chồng. Metadata command_sent/replay_safe và lỗi thật được giữ; cấu hình chưa rõ kết quả không tự chạy lại. Xem README cho bảng trạng thái và giới hạn.
+
+# Luồng nền tảng — 1.7.0
 
 MCP giữ nguyên 10 schema. Agent chọn CLI đọc/cấu hình; backend kiểm tra framing, identity, lease và kết quả, không áp policy nội dung. Cập nhật này không benchmark hoặc đổi pool/storage.
 

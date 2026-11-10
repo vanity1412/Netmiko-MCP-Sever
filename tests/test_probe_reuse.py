@@ -111,7 +111,10 @@ class ReuseOnly(unittest.TestCase):
         try:result=c.execute('local','hostname',read_timeout=10)
         finally:timer.cancel()
         self.assertFalse(result['ok'])
-        self.assertEqual(result['error_category'],'connection_lost')
+        self.assertEqual(result['recovery_attempts'],1)
+        self.assertEqual(result['previous_attempt']['error_category'],'connection_lost')
+        self.assertEqual(result['error_category'],'read_timeout')
+        self.assertFalse(result['output_complete'])
         self.assertIn('partial-hostname',result['output'])
     def test_disk_cache_hit_opens_only_collection_session(self):
         c=self.collector('autodetect');c.execute('local','uname -s');c.shutdown()

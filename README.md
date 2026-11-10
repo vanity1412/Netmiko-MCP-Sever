@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-Backend **1.7.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.8.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
 
@@ -21,7 +21,7 @@ python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/devic
 python mcp/collector_backend.py --check
 ```
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.7.0.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.0.
 
 ## Session, driver và profile
 
@@ -76,3 +76,33 @@ python -m unittest discover -s tests -v
 Tests gồm protocol, phiên SSH localhost, chế độ cấu hình, câu hỏi/phản hồi, partial output, retry/resume, evidence và stress chức năng thiết bị ảo. Không có benchmark trong đợt thay đổi này và chưa chạy cấu hình trên firmware production.
 
 Python wrapper: CLIConnection là tên mới, ReadOnlyConnection giữ để tương thích import cũ nhưng không còn lọc lệnh. Xem docs/ARCHITECTURE.md, docs/SCAN.md, AGENTS.md và CHANGELOG.md.
+
+## Trạng thái và độ tin cậy — 1.8.0
+
+Kết quả thực thi thêm status chuẩn; giữ nguyên ok, error_category, output_complete và schema 10 tool. Các tool inventory/status/read-output không phải thao tác CLI nên giữ cấu trúc metadata hiện có. Checkpoint scanner vẫn dùng status chữ thường để tương thích job cũ; mỗi attempt có result_status chuẩn.
+
+| status | Ý nghĩa |
+|---|---|
+| SUCCESS | CLI response đầy đủ và không có lỗi được nhận diện |
+| PARTIAL | Có dữ liệu hoặc một phần batch thành công, chưa đầy đủ |
+| CONNECT_ERROR | Lỗi DNS/TCP/banner/transport/key exchange/host key |
+| AUTH_ERROR | Xác thực bị từ chối hoặc phương thức không phù hợp |
+| CLI_ERROR | Response có lỗi CLI theo envelope/driver |
+| PARSE_ERROR | Không phân tích được dữ liệu đã thu thập |
+| TIMEOUT | Hết thời gian; xem error_stage và error_category để biết pha |
+| STORAGE_ERROR | Lỗi buffer/archive; không coi là SSH thành công |
+| AWAITING_INPUT | Chờ phản hồi rõ ràng từ agent |
+| CANCELLED | Request bị hủy |
+| UNKNOWN | Không thể kết luận kết quả, đặc biệt lệnh cấu hình có thể đã chạy |
+
+fault_status giữ nguyên nhóm nguyên nhân khi status=UNKNOWN. data_state=FULL/PARTIAL/NONE mô tả dữ liệu của attempt hiện tại; execution_state=COMPLETED/AWAITING_INPUT/NOT_SENT/UNCERTAIN/UNKNOWN mô tả độ chắc chắn trao đổi CLI. COMPLETED/SUCCESS không chứng minh cấu hình đã áp dụng đúng ý định; agent vẫn kiểm tra trạng thái thiết bị. previous_attempt giữ bằng chứng trước recovery. Storage failure có thể chỉ trả preview với output_truncated=true nếu không thể lưu dữ liệu lớn.
+
+Verification bổ sung envelope Junos/Cisco/Huawei và RPC error XML; Error: trong nội dung config/log có header không tự thành lỗi CLI. Vẫn là heuristic, cần kiểm chứng firmware/định dạng cụ thể, không tuyên bố nhận diện mọi CLI error.
+
+MCP execute đơn tự recovery tối đa một lần khi mất transport và lệnh được nhận diện là truy vấn đọc. Cấu hình không tự replay. Execute_many không có recovery lồng: scanner sở hữu retry batch như trước. Nếu recovery hết budget/cancel hoặc reconnect tiếp theo thất bại, dữ liệu lần đầu vẫn được giữ. Session chết được nhận diện bằng trạng thái local/worker process trước reuse; không thêm health probe mỗi lệnh.
+
+Session đã xác minh được ưu tiên trước driver cache. Nếu cache dẫn tới lỗi preparation/prompt trước khi gửi command, backend bỏ entry RAM/SQLite và probe lại tối đa một lần trong request budget, sau khi nhả lease/semaphore cũ. Khi DB không xóa được entry, lần refresh vẫn bỏ qua entry cũ. Không đổi driver inventory/chỉ định rõ, không refresh vì lỗi auth, TCP, algorithm hoặc lỗi CLI sau khi đã gửi command. ssh_status.driver_cache_refreshes và result.driver_refreshed cung cấp bằng chứng refresh.
+
+Reader dùng spool 1 MiB rồi chuyển xuống temporary file. Worker truyền chunk tối đa 64 Ki ký tự qua queue hữu hạn và chỉ trả metadata/pager spans ở cuối, không gửi lặp cả output. Hỗ trợ thêm footer Press any key to continue (Q to quit) và --More-- or (q)uit; không gửi phím cho câu hỏi xác nhận thông thường. API cuối vẫn materialize text để normalize/verify/redact/parse, nên đây không phải bảo đảm RAM hằng số cho mọi kích thước output. Lỗi temporary storage được báo là lỗi lưu trữ. Không benchmark hoặc tự tăng worker.
+
+Copy toàn bộ mcp/ khi cập nhật, gồm result_status.py; restart MCP. Kiểm thử phát triển chỉ dùng mock và SSH localhost, chưa cấu hình production.

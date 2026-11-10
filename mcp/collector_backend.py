@@ -26,8 +26,14 @@ import time
 import traceback
 import uuid
 from typing import Any, Callable
+# File-based embedders load this backend without installing a package.
+_module_dir = str(Path(__file__).resolve().parent)
+if _module_dir not in sys.path:
+    sys.path.insert(0, _module_dir)
+from result_status import normalize_result
+import tempfile
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -38,7 +44,7 @@ KNOWN_KEYS = {"host", "port", "device_type", "username", "password", "secret", "
 
 
 _TOFU_LOCK = threading.Lock()
-PAGER_RE = re.compile(r'(?i)(?:<--- More --->|--- MORE ---|---- More ----|---\(more[^\r\n)]*\)---|--\s*More\s*--(?:[ \t]*\(\d+%\))?)')
+PAGER_RE = re.compile(r'(?i)(?:Press any key to continue \(Q to quit\)|--More-- or \(q\)uit|-- More --, next page: Space, next line: Enter, quit: Control-C|<--- More --->|--- MORE ---|---- More ----|---\(more[^\r\n)]*\)---|--\s*More\s*--(?:[ \t]*\(\d+%\))?)')
 CONFIRM_RE = re.compile(r'(?i)(?:\[(?:yes/no|y/n|confirm)\]|\((?:yes/no|y/n)\))')
 
 
@@ -222,6 +228,8 @@ def bounded_request(method):
             except Exception as exc:
                 if not hasattr(exc, '_network_error_stage'):
                     exc._network_error_stage = getattr(self._request, 'stage', 'unknown')
+                if exc._network_error_stage == 'command' and not hasattr(exc, '_network_command_sent'):
+                    exc._network_command_sent = getattr(self._request, 'command_sent', None)
                 raise
     return call
 
@@ -605,6 +613,47 @@ def output_container_open(command, text):
     return False
 
 
+class OutputBuffer:
+    def __init__(self):
+        self.file = tempfile.SpooledTemporaryFile(max_size=1024*1024, mode='w+t', encoding='utf-8', newline='')
+    def append(self, data):
+        try: self.file.write(data)
+        except OSError as exc:
+            exc._network_error_stage = 'persistence'
+            raise
+    def value(self):
+        try:
+            self.file.seek(0)
+            value = self.file.read()
+            self.file.seek(0, 2)
+            return value
+        except OSError as exc:
+            exc._network_error_stage = 'persistence'
+            raise
+    def close(self):
+        with contextlib.suppress(OSError): self.file.close()
+
+
+def strip_pager_spans(raw, spans):
+    parts, previous = [], 0
+    for start, end in sorted(spans):
+        parts.extend((raw[previous:start], ' ' * (end-start)))
+        previous = end
+    parts.append(raw[previous:])
+    return ''.join(parts)
+
+
+def dead_session(conn):
+    if conn is None: return True
+    proc = getattr(conn, '_process', None)
+    if proc is not None and proc.poll() is not None: return True
+    channel = getattr(conn, 'remote_conn', None)
+    transport = getattr(channel, 'transport', None)
+    return bool(getattr(conn,'alive',True) is False or getattr(conn,'closed',False) is True or
+                (channel is not None and (getattr(channel,'closed',False) or getattr(channel,'eof_received',False))) or
+                (transport is not None and not transport.is_active()))
+
+
 def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03, on_data=None):
     """Read one command without re-sending it; retain partial data on failure.
 
@@ -613,7 +662,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     output when send_command raises ReadTimeout. The caller owns the session lease.
     """
     deadline = time.monotonic() + timeout
-    chunks, tail, received = [], '', 0
+    chunks, tail, received = OutputBuffer(), '', 0
     handled_pagers = {}
     last_data = time.monotonic()
     failure = None
@@ -656,7 +705,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
             cleaned = clean_terminal(tail)
-            if pending_interaction(cleaned) and not output_container_open(command, ''.join(chunks)):
+            if pending_interaction(cleaned) and not output_container_open(command, chunks.value()):
                 break
             pagers = list(PAGER_RE.finditer(tail))
             if pagers and ending_matches(PAGER_RE.pattern + r'[ \t]*', cleaned):
@@ -665,28 +714,23 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 if marker_id not in handled_pagers:
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
-            elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not output_container_open(command, ''.join(chunks)):
+            elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not output_container_open(command, chunks.value()):
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
                 if channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False)):
-                    if ending_matches(pattern, cleaned) and not output_container_open(command, ''.join(chunks)):
+                    if ending_matches(pattern, cleaned) and not output_container_open(command, chunks.value()):
                         break
                     raise EOFError('SSH channel closed before ending prompt')
             time.sleep(min(.01, max(0, deadline - time.monotonic())))
     except Exception as exc:
         failure = classify_error(exc, 'command')
         failure['message'] = 'Command interrupted; partial output retained'
-    raw = ''.join(chunks)
+    raw = chunks.value()
+    chunks.close()
+    conn._network_pager_spans = list(handled_pagers.items())
     if handled_pagers:
-        # Blank only the actual footer spans. Equal-width blanks preserve terminal
-        # backspace erasure without deleting literal --More-- text in real data.
-        parts, previous = [], 0
-        for start, end in sorted(handled_pagers.items()):
-            parts.extend((raw[previous:start], ' ' * (end - start)))
-            previous = end
-        parts.append(raw[previous:])
-        raw = ''.join(parts)
+        raw = strip_pager_spans(raw, conn._network_pager_spans)
     output = clean_terminal(raw)
     if failure is None and ending_matches(device_pattern, output) and not output_container_open(command, output):
         prompt = last_prompt(output)
@@ -840,6 +884,7 @@ class Collector:
         cache_file = self.defaults.get('autodetect_cache_file') or (APP_HOME / 'autodetect.sqlite3' if connect_factory is None else None)
         self.detection_cache_file = Path(cache_file).expanduser() if cache_file and self.defaults.get('autodetect_persistent_cache', True) else None
         self._persistent_detection_hits = 0
+        self._driver_cache_refreshes = 0
         self._detect_cache: dict[tuple[Any, ...], tuple[float, str]] = {}
         self._detection_locks: dict[tuple[Any, ...], list[Any]] = {}
         self._detection_probes = 0
@@ -1142,6 +1187,14 @@ class Collector:
         if params["device_type"] == "generic_termserver":
             params["device_type"] = "autodetect"
         if params["device_type"] != "autodetect":
+            self._request.driver_source = "explicit"
+            return
+        identity = self._detect_key(params)
+        with self._guard:
+            live = [(k,e) for k,e in self._sessions.items() if k[:2]+k[3:] == identity and not self._expired(e,time.monotonic()) and not dead_session(e.get("conn"))]
+        if len(live) == 1:
+            params["device_type"] = live[0][0][2]
+            self._request.driver_source = "session"
             return
         # Serialize probes for the same identity only; a slow device must not
         # hold up detection of every other device. Reference counts bound state.
@@ -1165,7 +1218,7 @@ class Collector:
                 if not entry[1]:
                     self._detection_locks.pop(key, None)
 
-    def _disk_detection(self, params, driver=None):
+    def _disk_detection(self, params, driver=None, invalidate=False):
         if self.detection_cache_file is None:
             return None
         # Persistence-file location and command timeouts do not change the remote driver.
@@ -1176,6 +1229,9 @@ class Collector:
             self.detection_cache_file.parent.mkdir(parents=True, exist_ok=True)
             with contextlib.closing(sqlite3.connect(str(self.detection_cache_file), timeout=.2)) as db, db:
                 db.execute('CREATE TABLE IF NOT EXISTS detection_v1 (identity TEXT PRIMARY KEY, driver TEXT NOT NULL, verified_at REAL NOT NULL, expires_at REAL NOT NULL)')
+                if invalidate:
+                    db.execute('DELETE FROM detection_v1 WHERE identity=?', (digest,))
+                    return None
                 if driver is not None:
                     db.execute('DELETE FROM detection_v1 WHERE expires_at <= ?', (now,))
                     db.execute('INSERT OR REPLACE INTO detection_v1 VALUES (?, ?, ?, ?)', (digest, driver, now, now + self.detect_cache_ttl))
@@ -1191,19 +1247,22 @@ class Collector:
         key = self._detect_key(params)
         with self._guard:
             cached = self._detect_cache.get(key)
-            if cached and time.monotonic() - cached[0] < self.detect_cache_ttl:
+            if cached and not getattr(self._request, 'force_driver_probe', False) and time.monotonic() - cached[0] < self.detect_cache_ttl:
                 params["device_type"] = cached[1]
+                self._request.driver_source = "ram_cache"
                 self._detection_cache_hits += 1
                 return
-        disk_entry = self._disk_detection(params)
+        disk_entry = None if getattr(self._request, 'force_driver_probe', False) else self._disk_detection(params)
         if disk_entry:
             disk_driver, remaining_ttl = disk_entry
             with self._guard:
                 self._detect_cache[key] = (time.monotonic() - (self.detect_cache_ttl - remaining_ttl), disk_driver)
                 self._persistent_detection_hits += 1
+            self._request.driver_source = 'disk_cache'
             params['device_type'] = disk_driver
             return
         with self._guard:
+            self._request.driver_source = "probe"
             self._detection_probes += 1
         with self._entry_lock(self._ssh_slots):
             self._request.stage = 'autodetect'
@@ -1330,7 +1389,34 @@ class Collector:
             yield conn
 
     @contextlib.contextmanager
-    def _lease_inner(self, target: str, device_type: str | None = None, profile: str | None = None):
+    def _lease_inner(self, target, device_type=None, profile=None):
+        yielded = False
+        try:
+            with self._lease_once(target, device_type, profile) as conn:
+                yielded = True
+                yield conn
+        except Exception as exc:
+            source = getattr(self._request, 'driver_source', 'explicit')
+            category = classify_error(exc, getattr(exc, '_network_error_stage', 'connect'))['error_category']
+            if yielded or source not in {'ram_cache','disk_cache','session'} or category not in {'output_verification','read_timeout'}:
+                raise
+            params = self._get_settings(target, device_type, profile)
+            with self._guard:
+                self._detect_cache.pop(self._detect_key(params), None)
+                self._driver_cache_refreshes += 1
+            self._disk_detection(params, invalidate=True)
+            self._checkpoint()
+            old_force = getattr(self._request, 'force_driver_probe', False)
+            self._request.force_driver_probe = True
+            try:
+                with self._lease_once(target, device_type, profile) as conn:
+                    conn._network_driver_refreshed = True
+                    yield conn
+            finally:
+                self._request.force_driver_probe = old_force
+
+    @contextlib.contextmanager
+    def _lease_once(self, target: str, device_type: str | None = None, profile: str | None = None):
         self._checkpoint()
         params = self._get_settings(target, device_type, profile)
         self._resolve_platform(params)
@@ -1360,7 +1446,7 @@ class Collector:
                 if entry["conn"] is not None:
                     try:
                         channel = getattr(entry['conn'], 'remote_conn', None)
-                        dead = (getattr(entry['conn'], 'alive', True) is False or getattr(entry['conn'], 'closed', False) is True or (channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False))))
+                        dead = dead_session(entry['conn'])
                         transport = getattr(channel, 'transport', None)
                         if transport is not None and not transport.is_active():
                             dead = True
@@ -1457,17 +1543,26 @@ class Collector:
 
     def failure_result(self, exc, target=None, command=None):
         details = classify_error(exc, getattr(self._request, 'stage', 'unknown'))
-        details.update(ok=False, transport_ok=False, cli_ok=None, output_complete=False,
+        previous = getattr(exc, '_network_command_result', {})
+        details = {**previous, **details}
+        details.update(ok=False, transport_ok=bool(getattr(exc,'_network_keep_session',False)), cli_ok=previous.get('cli_ok'), output_complete=previous.get('output_complete',False),
                        message=self.scrub_error(str(exc)))
         if hasattr(exc, '_network_keep_session'):
             details['session_reusable'] = bool(exc._network_keep_session)
         details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt', 'persistence'} else None
         details['cli_ready'] = True if details['error_stage'] in {'command', 'persistence'} else None
+        details['command_sent'] = getattr(exc, '_network_command_sent', True if getattr(exc,'_network_keep_session',False) else None) if details['error_stage'] in {'command','persistence','parsing'} else False
+        if details.get('command'):
+            details['replay_safe'] = is_replay_safe(details['command'])
+        if getattr(exc, '_network_read_failure', None):
+            details.update(transport_ok=False, read_error_category=exc._network_read_failure.get('error_category'))
+        if command is not None:
+            details['replay_safe'] = is_replay_safe(command)
         if target is not None:
             details['target'] = target
         if command is not None:
             details['command'] = self.redact_output(command)
-        return details
+        return normalize_result(details)
 
     def _checkpoint(self) -> float:
         context = getattr(self._request, 'context', None)
@@ -1595,7 +1690,7 @@ class Collector:
         return oid
 
     def _result(self, target: str, command: str, output: Any, elapsed: float, save_output: bool = False,
-                prompt_pattern: str | None = None, interactive: bool = False) -> dict[str, Any]:
+                prompt_pattern: str | None = None, interactive: bool = False, device_type: str = "") -> dict[str, Any]:
         if not isinstance(output, str):
             output = json.dumps(output, ensure_ascii=False)
         output = clean_terminal(output)
@@ -1611,7 +1706,16 @@ class Collector:
             r'name or service not known|temporary failure in name resolution|operation not permitted|'
             r'permission denied|invalid|unrecognized|cannot)[^\n]*|'
             r'usage:[ \t]*(?:ping|traceroute|tracert|tracepath|ip|ss|getent)\b[^\n]*)', output)
-        if re.match(r'^(?:show logging|show log|display logbuffer)\b', command, re.I):
+        vendor_patterns = {
+            'juniper': r'(?im)^\s*(?:error:|syntax error|commit failed)[^\n]*',
+            'huawei': r'(?im)^\s*(?:Error:|Failure:|Error\[\d+\]:)[^\n]*',
+            'cisco': r'(?im)^\s*(?:% ?(?:Authorization|Permission|Command rejected|Invalid)|ERROR:)[^\n]*'}
+        for family, vendor_pattern in vendor_patterns.items():
+            if device_type.startswith(family):
+                errors += re.findall(vendor_pattern, output)
+        if '<rpc-error' in output and '<error-severity>error</error-severity>' in output:
+            errors.append('RPC error response')
+        if re.match(r'^(?:show logging|show log|display logbuffer|show configuration|show running-config|show startup-config|display current-configuration)\b', command, re.I):
             first = next((line.strip() for line in output.splitlines() if line.strip() and command not in line), '')
             errors = [line for line in errors if not (line.strip().lower().startswith('error:') and line.strip() != first)]
         if re.match(r'^show\s+bgp\s+neighbors?\b', command.strip(), re.I) and re.search(r'(?m)^Peer:\s+', output):
@@ -1635,6 +1739,7 @@ class Collector:
             try:
                 data["output_id"] = self._save_output(output, already_redacted=True)
             except Exception as exc:
+                exc._network_command_result = dict(data, saved=False, output=output[:self.inline_max_chars], output_truncated=len(output)>self.inline_max_chars)
                 exc._network_error_stage = 'persistence'
                 exc._network_keep_session = bool(complete)
                 raise
@@ -1644,16 +1749,25 @@ class Collector:
         else:
             data["output"] = output
             data["saved"] = False
-        return data
+        return normalize_result(data)
 
     def _command_result(self, conn, target, command, output, elapsed, save_output, pattern):
         # Custom expectations may end a read early, but only the actual device
         # prompt can establish completion for every public execution method.
-        result = self._result(target, command, output, elapsed, save_output,
-                              getattr(conn, '_network_prompt_regex', None) or pattern)
         failure = getattr(conn, '_network_read_failure', None)
+        try:
+            result = self._result(target, command, output, elapsed, save_output,
+                                  getattr(conn, '_network_prompt_regex', None) or pattern, device_type=getattr(conn,'device_type',''))
+        except Exception as exc:
+            exc._network_command_sent = bool(getattr(conn, '_network_command_sent', True))
+            if failure:
+                exc._network_keep_session = False
+                exc._network_read_failure = failure
+                if hasattr(exc, '_network_command_result'):
+                    exc._network_command_result['output_complete'] = False
+            raise
         if failure:
-            result.update(failure, ok=False)
+            result.update(failure, ok=False, output_complete=False)
             if failure.get('error_category') == 'connection_lost':
                 result['transport_ok'] = False
         result['command_sent'] = bool(getattr(conn, '_network_command_sent', True))
@@ -1673,12 +1787,14 @@ class Collector:
         client = getattr(conn, 'remote_conn_pre', None)
         if getattr(client, '_network_host_key_persisted', None) is False:
             result['warnings'] = ['SSH host key accepted; could not persist known_hosts']
-        return result
+        result.update(ssh_authenticated=True, cli_ready=True, driver_refreshed=bool(getattr(conn,"_network_driver_refreshed",False)))
+        return normalize_result(result)
 
     def _send(self, conn: Any, command: str, timeout: int, expect_string: str | None = None,
               use_timing: bool = False) -> tuple[Any, str | None]:
         timeout = min(timeout, self._checkpoint())
         self._request.stage = 'command'
+        self._request.command_sent = False
         pattern = expect_string or getattr(conn, "_network_prompt_regex", None)
         if pattern:
             if len(pattern) > 1000:
@@ -1700,6 +1816,7 @@ class Collector:
             conn._network_read_failure = failure
             return output, pattern
         conn._network_command_sent = True
+        self._request.command_sent = True
         if use_timing:
             output = conn.send_command_timing(command, read_timeout=timeout, strip_prompt=False, strip_command=False, cmd_verify=False)
         else:
@@ -1711,7 +1828,29 @@ class Collector:
         return output, pattern
 
     @bounded_request
-    def execute(self, target: str, command: str, device_type: str | None = None, profile: str | None = None,
+    def execute(self, target, command, device_type=None, profile=None, read_timeout=None,
+                expect_string=None, use_timing=False, save_output=False, use_textfsm=False):
+        options = dict(target=target,command=command,device_type=device_type,profile=profile,
+                       read_timeout=read_timeout,expect_string=expect_string,use_timing=use_timing,
+                       save_output=save_output,use_textfsm=use_textfsm)
+        result = self._execute_once(**options)
+        if result.get('error_category') == 'connection_lost' and is_replay_safe(command) and not result.get('awaiting_input'):
+            previous = result
+            try:
+                self._checkpoint()
+            except Exception as exc:
+                result.update(classify_error(exc, 'command'), recovery_attempts=0,
+                              recovery_skipped='request budget or cancellation', previous_error_category='connection_lost')
+                return normalize_result(result)
+            try:
+                result = self._execute_once(**options)
+            except Exception as exc:
+                result = self.failure_result(exc, target, command)
+            result.update(recovery_attempts=1,previous_attempt=previous)
+        return normalize_result(result)
+
+    @bounded_request
+    def _execute_once(self, target: str, command: str, device_type: str | None = None, profile: str | None = None,
                 read_timeout: int | None = None, expect_string: str | None = None, use_timing: bool = False,
                 save_output: bool = False, use_textfsm: bool = False) -> dict[str, Any]:
         command = safe_command(command)
@@ -1731,7 +1870,7 @@ class Collector:
                 except Exception as exc:
                     result.update(ok=False, error=type(exc).__name__, error_category='parsing_error',
                                   error_stage='parsing', retryable=False, message='Parsing failed; raw output retained')
-                    return result
+                    return normalize_result(result)
                 if not isinstance(structured, str):
                     result["structured_output"] = self.redact_structured(structured)
                     # Preserve the legacy JSON-string output representation for parsed results.
@@ -1770,9 +1909,9 @@ class Collector:
                     # The connection is potentially out of sync; do not continue blindly.
                     failed = self.failure_result(exc, target, cmd)
                     failed.update(command_sent=bool(getattr(conn, '_network_command_sent', True)), replay_safe=is_replay_safe(cmd))
-                    results.append(failed)
+                    results.append(normalize_result(failed))
                     raise BatchError(results)
-        return {"target": target, "results": results, "ok": True, "total": len(commands), "successes": len(results)}
+        return normalize_result({"target": target, "results": results, "ok": True, "total": len(commands), "successes": len(results)})
 
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
@@ -1797,10 +1936,10 @@ class Collector:
                     if checked.get('awaiting_input'):
                         if step_index + 1 < len(steps):
                             continue
-                        return {**checked, 'steps': results}
+                        return normalize_result({**checked, 'steps': results})
                     if not checked['output_complete'] or getattr(conn, '_network_read_failure', None):
                         self._disconnect_connection(conn)
-                    return {**checked, 'steps': results}
+                    return normalize_result({**checked, 'steps': results})
             result = self._result(target, "[interactive: %d steps]" % len(steps), "\n".join(chunks), time.monotonic()-started,
                                   save_output, getattr(conn, "_network_prompt_regex", None), interactive=True)
             # Each step already applied its command-specific CLI checks (including
@@ -1812,7 +1951,7 @@ class Collector:
             if not result["output_complete"]:
                 self._disconnect_connection(conn)
             result['steps'] = results
-        return result
+        return normalize_result(result)
 
     @bounded_request
     def parallel(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1856,8 +1995,8 @@ class Collector:
         successes = sum(x.get("ok", False) is True for x in results)
         for item, result in zip(tasks, results):
             self.audit("ssh_parallel.task", item, bool(result.get("ok")), result.get("elapsed_ms", 0) / 1000, result.get("error"))
-        return {"total": len(results), "successes": successes, "failures": len(results)-successes,
-                "ok": successes == len(results), "partial_failure": 0 < successes < len(results), "results": results}
+        return normalize_result({"total": len(results), "successes": successes, "failures": len(results)-successes,
+                "ok": successes == len(results), "partial_failure": 0 < successes < len(results), "results": results})
 
     def read_output(self, output_id: str, offset: int = 0, limit: int = 200) -> dict[str, Any]:
         offset = bounded_int(offset, 0, 0, 20_000_000)
@@ -2022,9 +2161,9 @@ class Collector:
 
     def status(self) -> dict[str, Any]:
         with self._guard:
-            sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": v.get("conn") is not None,
+            sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": not dead_session(v.get("conn")),
                          "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
+        return {"version": VERSION, "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
                 "autodetect_timeout_seconds": self.autodetect_timeout, "autodetect_probes": self._detection_probes,
@@ -2137,12 +2276,12 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
                     audit_error = str(output.get("error") or "One or more commands/tasks failed verification")
             except BatchError as exc:
                 audit_error = type(exc).__name__ + ": " + str(exc)
-                result = {"content": [{"type": "text", "text": json.dumps({"ok": False, "results": exc.results}, ensure_ascii=False)}], "isError": True}
+                result = {"content": [{"type": "text", "text": json.dumps(normalize_result({"ok": False, "results": exc.results}), ensure_ascii=False)}], "isError": True}
             except Exception as exc:
                 # Tool errors belong in tool result (not broken JSON-RPC). Never dump locals or tracebacks.
                 msg = collector.scrub_error(str(exc))
                 audit_error = type(exc).__name__ + ": " + msg
-                result = {"content": [{"type": "text", "text": json.dumps(collector.failure_result(exc, args.get("target")), ensure_ascii=False)}], "isError": True}
+                result = {"content": [{"type": "text", "text": json.dumps(collector.failure_result(exc, args.get("target"), args.get("command")), ensure_ascii=False)}], "isError": True}
             collector.audit(name, args, not result["isError"], time.monotonic() - started, audit_error)
             return rpc_response(rid, result)
         return rpc_error(rid, -32601, "Method not found")

@@ -110,6 +110,9 @@ class ResumeTests(unittest.TestCase):
         before=dict(self.calls)
         self.assertEqual(self.run_job(tasks,retry_statuses={'unknown'})['success'],1)
         self.assertEqual(dict(self.calls),before)
+        latest=self.records()[0]['attempts'][-1]
+        self.assertEqual(latest['result_status'],'SUCCESS')
+        self.assertIsNone(latest['error_category'])
     def test_corrupt_evidence_is_rejected_even_for_selected_retry(self):
         tasks=[{'target':'good','commands':['show version']}];self.run_job(tasks)
         evidence=next((self.job/'bang-chung').glob('*.txt'));evidence.write_text('corrupt')

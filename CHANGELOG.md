@@ -1,3 +1,13 @@
+# 1.8.0 - Canonical status, guarded recovery and bounded reader buffering
+
+- Add canonical execution/fault/data/execution-state fields without changing ten MCP schemas or lowercase scanner checkpoint states.
+- Supplement Junos/Cisco/Huawei verification and RPC errors while retaining config/log error text as data where applicable; report mixed transport/storage uncertainty accurately.
+- Reuse verified sessions before cache lookup; detect exited worker processes locally. Refresh inferred driver cache at most once after preparation verification/read failure, never after explicit driver/auth/network/command errors; bypass stale DB entries even if invalidation is unavailable.
+- Recover observational single-command transport loss once, retaining first-attempt data through deadline or failed reconnect. Never automatically replay configuration; scanner batch retry remains separate.
+- Spool reader/partial buffers above 1 MiB, bound worker queue and wire chunks, and reconstruct canonical pager-cleaned output without a duplicate full-output frame. Final text processing still materializes output.
+- Extend pager footer support and add deterministic/loopback regressions for status, stale caches, recovery, configuration uncertainty and large Unicode hashes. No production SSH or parallel benchmark.
+- Validation: full suite of 242 tests passed; final reliability/status (24) and execution/resume (20) regressions passed after follow-up edge-case fixes. Python 3.10 syntax checked; runtime Python 3.14.6 / Netmiko 4.7.0.
+
 # 1.7.0 - Agent-controlled configuration CLI, reader and targeted resume
 
 - Remove vendor command allowlists/denylists and implicit command rewrites; retain framing checks only. Keep all ten MCP schemas; update descriptions and agent guidance. Legacy Python imports remain compatible.

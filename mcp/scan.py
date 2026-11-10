@@ -17,6 +17,7 @@ import shutil
 import threading
 import time
 import uuid
+from result_status import normalize_result
 from collector_backend import Collector, BatchError, safe_command, readonly_command, bounded_int, is_replay_safe, MAX_COMMANDS
 
 DEFAULT_COMMANDS = {'juniper_junos':['show version'], 'cisco_ios':['show version'],
@@ -125,6 +126,7 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
             outcome = {'ok':False,'results':exc.results}
         except Exception as exc:
             outcome = collector.failure_result(exc,task['target'])
+    outcome = normalize_result(outcome)
     checked = outcome.get('results',[])
     next_command = command_offset
     for index, checked_result in enumerate(checked):
@@ -140,12 +142,12 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
               'error_category':failure.get('error_category',failure.get('error','cli_error')) if status!='success' else None,
               'retryable':bool(failure.get('retryable')) and retry_safe,
               'command_sent':command_sent,'safe_to_retry':retry_safe,'next_command_index':next_command,
-              'command_offset':command_offset,'result':collector.redact_structured(outcome)}
+              'command_offset':command_offset,'result_status':outcome['status'],'result':collector.redact_structured(outcome)}
     # Persistence failure is a job failure, never a false success.
     try:
         result['evidence'] = _proofs(collector,outcome,directory,task['task_id'],number)
     except Exception as exc:
-        result.update(collection_status=status,status='unknown',export_pending=True,evidence=[],
+        result.update(collection_status=status,status='unknown',result_status='STORAGE_ERROR',export_pending=True,evidence=[],
                       retryable=False,error_category='storage_error',export_error=type(exc).__name__)
     return result
 
@@ -215,6 +217,10 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                         latest['export_pending'] = False
                         record['status'] = latest['collection_status']
                         latest['status'] = record['status']
+                        restored = normalize_result(latest['result'])
+                        latest['result_status'] = restored['status']
+                        failed = next((r for r in reversed(restored.get('results', [])) if not r.get('ok')), restored)
+                        latest['error_category'] = failed.get('error_category') if not restored.get('ok') else None
                         atomic_json(path,record)
                     except Exception as exc:
                         record.update(status='unknown',message='Evidence export still pending: '+type(exc).__name__)

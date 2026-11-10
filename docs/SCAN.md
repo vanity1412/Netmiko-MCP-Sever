@@ -1,3 +1,7 @@
+# Scanner 1.8.0
+
+Giữ status checkpoint chữ thường (success/partial/failed/unknown) và toàn bộ evidence/resume. Attempt thêm result_status chuẩn hóa từ kết quả CLI; export pending là STORAGE_ERROR. Kết quả command có data_state và execution_state để agent phân biệt dữ liệu dở dang với tác động cấu hình chưa chắc chắn. Không thêm retry lồng vào execute_many. README 1.8.0 mô tả status và cơ chế refresh driver trước command.
+
 # Scanner 1.7.0 — cập nhật hành vi
 
 Không lọc nội dung lệnh; plan có thể chứa cấu hình. Agent chịu trách nhiệm phạm vi thay đổi. Dùng tool interact cho chuỗi câu hỏi/phản hồi, scanner execute_many dừng ở awaiting_input, không gửi phản hồi ngầm.
