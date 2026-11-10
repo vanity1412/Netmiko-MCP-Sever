@@ -33,6 +33,8 @@ def normalize_result(result):
         for key in ('error','error_category','error_stage','message','retryable'):
             result.pop(key, None)
         category = ''
+    if category != 'cli_error':
+        result.pop('error_reason', None)
     result['data_state'] = 'FULL' if complete else ('PARTIAL' if has_data else 'NONE')
     if result.get('awaiting_input'):
         status = 'AWAITING_INPUT'

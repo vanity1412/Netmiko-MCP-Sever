@@ -1,3 +1,10 @@
+## 1.9.1 — 2026-11-10
+
+- Add CLI error_reason permission_denied/syntax_error/command_failed; preserve CLI_ERROR, error_category, session/retry behavior and all ten tool schemas.
+- Recognize explicit CLI/shell permission diagnostics and access-denied RPC error tags; clear stale CLI reasons when status changes to success/non-CLI failure.
+- Add mcp/WORKFLOW.md and AGENTS.md link for evidence-based recovery, authentication/permission separation, pending input, storage/parser recovery and post-command goal verification.
+- Keep Reader, pool, semaphore, credential loading and connection architecture unchanged. Validate with mock/vendor fixtures and SSH localhost.
+
 ## 1.9.0 — 2026-11-10
 
 - Add shared credentials.json loader with multiple named profiles, password/key/agent authentication and relative key paths.

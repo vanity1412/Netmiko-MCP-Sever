@@ -33,7 +33,7 @@ if _module_dir not in sys.path:
 from result_status import normalize_result
 import tempfile
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -466,6 +466,18 @@ def command_prompt_pattern(conn, command, exact):
             pattern = r'(?m)^(?:' + re.escape(stem) + '|' + re.escape(rename[1]) + r')(?:\([^()\r\n]*\))?[#>][ \t]*\r?$'
         return pattern
     return exact
+
+
+# Used only on recognized CLI diagnostic lines, never as a command filter.
+PERMISSION_DENIAL_RE = re.compile(
+    r'\b(?:permission denied|access[ -]denied|command authorization failed|'
+    r'authori[sz]ation (?:failed|denied)|not authori[sz]ed|operation not permitted|'
+    r'insufficient (?:user )?(?:privileges?|permissions?|access)|not enough privileges|'
+    r'(?:do|does) not have (?:the )?(?:required )?(?:permissions?|privileges?|access)|'
+    r'no permission)\b', re.I)
+CLI_SYNTAX_RE = re.compile(
+    r'\b(?:invalid (?:input|command|interface)|unknown command|ambiguous command|'
+    r'incomplete command|unrecognized command|syntax error|command not found)\b', re.I)
 
 
 def clean_terminal(text: str) -> str:
@@ -1797,6 +1809,12 @@ class Collector:
             r'name or service not known|temporary failure in name resolution|operation not permitted|'
             r'permission denied|invalid|unrecognized|cannot)[^\n]*|'
             r'usage:[ \t]*(?:ping|traceroute|tracert|tracepath|ip|ss|getent)\b[^\n]*)', output)
+        # Common shell diagnostics and explicit device denial lines absent from
+        # the legacy CLI list. Do not infer a denial from arbitrary output prose.
+        errors += re.findall(
+            r'(?im)^[ \t]*(?:%[ \t]*(?:This command is not authorized|Access denied)[^\n]*|'
+            r'(?:-?(?:bash|sh|zsh|ash|dash)|cat|ls|grep|awk|sed|head|tail|find|sudo):'
+            r'[^\n]*[ \t](?:Permission denied|Operation not permitted)[^\n]*)', output)
         vendor_patterns = {
             'juniper': r'(?im)^\s*(?:error:|syntax error|commit failed)[^\n]*',
             'huawei': r'(?im)^\s*(?:Error:|Failure:|Error\[\d+\]:)[^\n]*',
@@ -1806,6 +1824,9 @@ class Collector:
                 errors += re.findall(vendor_pattern, output)
         if '<rpc-error' in output and '<error-severity>error</error-severity>' in output:
             errors.append('RPC error response')
+            for rpc in re.findall(r'<rpc-error\b[^>]*>(.*?)</rpc-error>', output, re.S):
+                if '<error-severity>error</error-severity>' in rpc and re.search(r'<error-tag>access-denied</error-tag>', rpc):
+                    errors.append('RPC access denied')
         if re.match(r'^(?:show logging|show log|display logbuffer|show configuration|show running-config|show startup-config|display current-configuration)\b', command, re.I):
             first = next((line.strip() for line in output.splitlines() if line.strip() and command not in line), '')
             errors = [line for line in errors if not (line.strip().lower().startswith('error:') and line.strip() != first)]
@@ -1816,6 +1837,7 @@ class Collector:
             complete = False
         echo = interactive or command_echo_line(command, output) is not None
         cli_ok = not bool(errors)
+        denied = next((line for line in errors if PERMISSION_DENIAL_RE.search(line)), None)
         output = self.redact_output(output)
         size = len(output)
         data: dict[str, Any] = {"target": target, "command": self.redact_output(command), "ok": bool(cli_ok and complete), "transport_ok": True,
@@ -1825,7 +1847,10 @@ class Collector:
             data["error"] = "CliError" if not cli_ok else "OutputVerificationError"
             data.update(error_category='cli_error' if not cli_ok else 'output_verification',
                         error_stage='cli' if not cli_ok else 'verification', retryable=False)
-            data["message"] = self.scrub_error(errors[0]) if errors else "Ending prompt not verified or pager/confirmation remains; output is incomplete"
+            if not cli_ok:
+                data['error_reason'] = ('permission_denied' if denied else
+                                        'syntax_error' if any(CLI_SYNTAX_RE.search(line) for line in errors) else 'command_failed')
+            data["message"] = self.scrub_error(denied or errors[0]) if errors else "Ending prompt not verified or pager/confirmation remains; output is incomplete"
         if save_output or size > self.inline_max_chars:
             try:
                 data["output_id"] = self._save_output(output, already_redacted=True)

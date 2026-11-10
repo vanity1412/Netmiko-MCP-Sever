@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-Backend **1.9.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.9.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
 
@@ -21,7 +21,13 @@ python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/devic
 python mcp/collector_backend.py --check
 ```
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.0.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.1.
+
+## Permission Detection và Agent Workflow — 1.9.1
+
+Lỗi CLI giữ `status=CLI_ERROR` và `error_category=cli_error`, bổ sung `error_reason`: `permission_denied` (thiếu quyền), `syntax_error` (cú pháp được nhận diện), `command_failed` (lỗi CLI khác). Lỗi auth SSH vẫn là AUTH_ERROR. Phân loại dựa trên diagnostic CLI/RPC đã nhận diện, vẫn mang tính heuristic và giữ evidence để agent đối chiếu. Lỗi thiếu quyền có prompt hoàn tất không tự đóng session hoặc retry.
+
+Agent áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md), được liên kết từ AGENTS.md: đọc từng kết quả, tránh retry chồng, xử lý câu hỏi/evidence và kiểm chứng mục tiêu sau cấu hình. Client không tự đọc AGENTS.md cần đưa hai file này vào instructions/context của agent. Backend không tự chạy workflow và không thay schema 10 tools, Reader, pool, semaphore hay cơ chế retry hiện có.
 
 ## Credential dùng chung — 1.9.0
 

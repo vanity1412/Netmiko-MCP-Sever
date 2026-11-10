@@ -1,3 +1,9 @@
+# Permission diagnostics and agent workflow — 1.9.1
+
+CLI response classification adds error_reason=permission_denied/syntax_error/command_failed while retaining CLI_ERROR and error_category=cli_error. Normalization removes stale reasons on success or non-CLI failure. Existing batch stop, session retention and retry behavior stay unchanged. Permission classification uses recognized diagnostic lines and access-denied RPC error tags, not arbitrary payload words; it remains heuristic.
+
+[mcp/WORKFLOW.md](../mcp/WORKFLOW.md) guides agents through evidence, fault status, recovery limits and post-command checks; AGENTS.md links it. This Markdown is agent guidance, not a new backend execution stage or runtime orchestrator. No new tool/input schema or connection architecture changes.
+
 # Shared credentials — 1.9.0
 
 load_config is the shared credential loading boundary for bootstrap, direct backend, scanner and fleet validator. External profile auth replaces inline auth atomically while preserving connection-only fields. Credential files stay local/ignored, are read once at startup and never appear in MCP tool schemas. Each process owns its own session pool. See [credential setup](CREDENTIALS.md).

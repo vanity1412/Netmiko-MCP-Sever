@@ -15,6 +15,8 @@ Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: thực thi CLI, 
 
 ## Khi thao tác thiết bị
 
+- Đọc và áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md) khi xử lý kết quả, phục hồi lỗi và kiểm chứng mục tiêu. Workflow không tự chạy trong backend; giữ nguyên 10 tools.
+
 - Dùng alias/IP/hostname do người dùng yêu cầu. Chọn driver từ inventory hoặc autodetect; không cần thêm target vào CSV.
 - Tận dụng session, dùng batch và song song có giới hạn. Tool không lọc nội dung lệnh. Agent quyết định lệnh đọc/cấu hình theo yêu cầu người dùng; không tự chạy production trong test phát triển.
 - Chỉ coi thu thập thành công khi CLI không báo lỗi và output có prompt cuối. Echo không bắt buộc. Thiếu output hoặc không truy cập được không đồng nghĩa dịch vụ down.
