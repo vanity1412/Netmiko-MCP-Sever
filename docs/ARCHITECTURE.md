@@ -63,7 +63,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 Inventory, credential, known_hosts, runtime và output được cung cấp riêng tại môi trường triển khai, không được theo dõi trong Git. Dữ liệu lịch sử không đại diện cho phiên SSH hoặc trạng thái thiết bị hiện tại.
 
-## Chính sách hiện tại — 1.6.0
+## Chính sách hiện tại — 1.6.1
 
 - Backend, Python fallback và subprocess autodetect cùng chấp nhận host key mới/đổi, lưu theo SSH client dưới khóa file liên tiến trình. Lỗi ghi store tạo warning và không chặn kết nối.
 - Không patch AutoAddPolicy toàn cục; mỗi Netmiko client có policy giữ đường dẫn store riêng. File được đọc/merge lại khi đang giữ lock rồi atomic replace.
@@ -72,7 +72,7 @@ Inventory, credential, known_hosts, runtime và output được cung cấp riên
 - EOF/closed channel được phát hiện ngay. Chỉ các footer pager thực sự được xử lý mới bị loại khỏi output; chuỗi giống pager trong dữ liệu vẫn giữ nguyên. Câu hỏi password/confirmation dừng thu thập mà không gửi phản hồi.
 - global_cmd_verify mặc định false cho session preparation; wrapper terminal-width đọc tới prompt thay vì đợi echo. Kiểm chứng output lệnh thu thập vẫn dựa vào prompt cuối.
 - CLI error thật khác lỗi xác minh output. Chưa đọc account không có nghĩa account rỗng.
-- Scanner có fast/slow lanes; retry tối đa một lần cho TCP/banner/read/auth timeout. Authentication rejected/auth_method vẫn cooldown 5 phút và không retry. Resume bỏ qua failed/partial đã lưu.
+- Scanner có fast/slow lanes; retry tối đa một lần cho TCP/banner/read/auth timeout. Authentication rejected/auth_method dùng auth_failure_cooldown_seconds và không retry. Resume bỏ qua failed/partial đã lưu.
 
 CSV hỗ trợ profile tùy chọn; thiếu dùng default. Mapping thật cần khai báo theo thiết bị, không tự đoán hoặc thử tất cả credential. Bootstrap không bắt cặp credential toàn cục khi profile đã có credential riêng.
 
@@ -83,3 +83,5 @@ Các tùy chọn tối ưu 1.4.0 (quiet, health check định kỳ, redaction, s
 1.6.0: `ProbeSession` sở hữu worker từ lúc SSH bắt đầu đến khi session đóng. Worker dùng `detection_worker(connection_sink=...)` và redispatch cùng Netmiko object; parent đưa proxy vào pool theo đúng identity driver/credential/endpoint. Không serialize hay chuyển SSH socket giữa process. Session lease vẫn tuần tự hóa CLI; semaphore giới hạn công việc SSH đang hoạt động. Cache hit không probe và mở phiên thu thập trực tiếp khi pool chưa có phiên.
 
 Worker truyền chunk ngay khi reader nhận được, rồi trả output đã xử lý pager và failure. Parent chỉ nhận kết quả cuối khi vẫn còn request budget; EOF/hard timeout/cancel trả partial kèm failure dù partial chứa prompt. Thời gian kill/reap process là phần cleanup có giới hạn. TTL/eviction/close/shutdown đóng worker qua cùng lifecycle của session pool. Mỗi phiên probe giữ một process + receiver thread, cần cân nhắc RAM khi tăng max_sessions. `--detect-worker` một lần và custom detect factory vẫn tương thích; custom factory không hỗ trợ giữ lại phiên.
+
+1.6.1: chế độ compatible mặc định hoặc strict chủ động; profile CLI options tách khỏi kwargs SSH, auto_enable Cisco tùy chọn. Reader kiểm tra banner configuration trước khi chấp nhận prompt. Parser/persistence chỉ giữ session đã đồng bộ; slow-lane transient retry tối đa hai attempt. Xem README cho phạm vi và giới hạn.

@@ -1,4 +1,4 @@
-# Quét inventory — Netmiko MCP 1.6.0
+# Quét inventory — Netmiko MCP 1.6.1
 
 Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
 
@@ -38,7 +38,7 @@ BRANCH-01,192.0.2.1,cisco_ios,branch
 - Tổng worker mặc định16, tối đa32 và không vượt max_workers của collector; gồm lượt chậm mặc định4. Tối thiểu2 slot để có hai lane. Detection và collection cùng dùng semaphore SSH toàn collector. Một transport vẫn serialize từng lệnh.
 - Mỗi thiết bị lấy đủ batch trước khi chuyển sang đích tiếp. Kết quả và bằng chứng được ghi tăng dần, không chờ toàn nhóm hoặc lượt chậm hoàn tất.
 - Fast: deadline90s/thiết bị; TCP10s, banner15s, auth30s, read45s. Slow: deadline240s; TCP30s, banner45s, auth60s, read120s. Probe autodetect trong scanner được phép tối đa min(deadline,120s), thay vì trần20s của lời gọi MCP thông thường. Nếu probe hết hard deadline mà chưa xác định được pha auth, không tự retry mù; target đã biết chậm nên đặt lane slow ngay từ đầu. Đây là ngân sách của job, không phải cam kết thời gian thực tế; Netmiko I/O cancellation vẫn cooperative. Điều chỉnh deadline qua --fast-timeout/--slow-timeout, read timeout riêng trong plan. Chúng không sửa config thiết bị hoặc config cục bộ.
-- Chỉ retry tối đa một lần ở lane chậm cho connect_timeout/banner_timeout/read_timeout/auth_timeout/connection_lost/handshake_incomplete đã phân loại. Auth timeout không kích hoạt cooldown 5 phút; xác thực bị từ chối/auth_method vẫn có cooldown và không retry. Không retry algorithm_mismatch, CLI error hoặc lỗi không rõ nguyên nhân. Deadline chưa rõ pha không bị coi là TCP timeout để retry mù.
+- Chỉ retry tối đa một lần ở lane chậm (kể cả task bắt đầu tại slow lane) cho connect_timeout/banner_timeout/read_timeout/auth_timeout/connection_lost/handshake_incomplete đã phân loại. Auth timeout không kích hoạt cooldown 5 phút; xác thực bị từ chối/auth_method dùng auth_failure_cooldown_seconds và không retry. Không retry algorithm_mismatch, CLI error hoặc lỗi không rõ nguyên nhân. Deadline chưa rõ pha không bị coi là TCP timeout để retry mù.
 - Thiết bị chậm vẫn có kết quả riêng: success, partial, failed hoặc unknown; pending là chưa chạy, không phải thành công. Không biến timeout/auth thành interface down hoặc số đo0.
 - Host key mới/đổi được chấp nhận và lưu atomic dưới khóa liên tiến trình. Lỗi persistence tạo warning và không làm SSH thất bại. Không tự đổi credential hoặc bật thuật toán cũ toàn mạng.
 - Luồng đọc Netmiko channel không chờ echo; chỉ kết thúc thành công khi có prompt cuối. Tự gửi Space tại pager, không gửi phản hồi confirmation. Timeout giữ output dở dang làm bằng chứng và dừng batch. Session đầy đủ không echo vẫn được reuse.
@@ -60,9 +60,9 @@ Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo v�
 
 ## Cập nhật bộ công ty
 
-Copy mcp/collector_backend.py, mcp/bootstrap.py, mcp/scan.py; giữ mcp/readonly_client.py bản đã bắt buộc device_type. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
+Copy toàn bộ thư mục mcp/, gồm probe_session.py; giữ cấu hình devices.json riêng. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Source mới cần process MCP mới; kiểm tra ssh_status.version=1.5.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.6.1. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
 ## Kiểm tra diện rộng và tình huống lỗi
 

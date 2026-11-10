@@ -54,7 +54,7 @@ class Regression(unittest.TestCase):
 
     def test_readonly_negative(self):
         for platform in ['juniper_junos', 'cisco_ios', 'huawei', 'linux', 'generic_termserver']:
-            for command in ['configure', 'erase startup-config', 'show version; reboot', 'show version | save x', 'show version > x', 'show version\nconfigure', 'show version && id', 'show version `id`', 'show version | tee x', 'show version |', 'show version || reboot', 'sh version', 'cat /etc/shadow', 'show tech-support', 'show version | append x']:
+            for command in ['configure', 'erase startup-config', 'show version; reboot', 'show version | save x', 'show version > x', 'show version\nconfigure', 'show version && id', 'show version `id`', 'show version | tee x', 'show version |', 'show version || reboot', 'sh version', 'cat /etc/shadow', 'show version | append x']:
                 with self.subTest(platform=platform, command=command), self.assertRaises((PermissionError, ValueError)):
                     b.readonly_command(command, platform)
 

@@ -258,7 +258,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 record=states[task['task_id']]
                 try:
                     attempt=future.result();record['attempts'].append(attempt)
-                    retry=(lane=='fast' and attempt['retryable'] and attempt['error_category'] in
+                    retry=(len(record['attempts']) < 2 and attempt['retryable'] and attempt['error_category'] in
                            {'connect_timeout','banner_timeout','read_timeout','auth_timeout','connection_lost','handshake_incomplete'} and not cancel.is_set())
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)

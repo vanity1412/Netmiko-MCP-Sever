@@ -129,11 +129,14 @@ def main():
     try:
         first = json.loads(sys.stdin.readline())
         params = first['params']
+        auto_enable = params.pop('_auto_enable', False)
         # Install the same tolerant vendor preparation as the parent collector.
         b.install_tolerant_preparation()
         retained = []
         def keep(connection, driver):
             redispatch(connection, device_type=driver, session_prep=True)
+            if auto_enable and driver.startswith('cisco_'):
+                connection.enable()
             retained.append(connection)
         result = b.detection_worker(params, connection_sink=keep)
         if result.get('error'):

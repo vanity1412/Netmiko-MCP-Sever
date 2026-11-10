@@ -1,3 +1,12 @@
+# 1.6.1 - NOC compatibility and collection correctness
+
+- Guard embedded prompt lines inside Cisco configuration banners; expand pager variants and privilege-error recognition.
+- Preserve literal credentials, accept CSV SSH port and encrypted-key/encoding compatibility parameters.
+- Apply CLI read/quiet profile options separately from Netmiko kwargs; explicit compatible/strict host-key modes and optional Cisco enable.
+- Expand reviewed NOC aliases/filters; preserve healthy sessions on parser, synchronized persistence and interact CLI errors.
+- Preserve execution timeout context across parallel tasks; bounded transient retry for initial slow-lane tasks.
+- Add compatibility regressions including real localhost SSH banner collision, strict keys, profiles and session retention. Existing ten MCP schemas remain unchanged.
+
 # 1.6.0 - Reuse the probe SSH session for collection
 
 - Keep the isolated SSH worker alive after a verified probe, redispatch the same connection to the detected driver, and adopt its proxy into the session pool; avoid a second login on cold autodetect.

@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.6.0**, giữ nguyên **10 MCP tool**.
+MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.6.1**, giữ nguyên **10 MCP tool**.
 
 ## Cấu trúc
 
@@ -93,3 +93,17 @@ Parent giám sát hard deadline cho toàn bộ probe + chuẩn bị CLI và từ
 Worker được đóng khi session hết TTL, bị eviction, gọi close hoặc shutdown. Mỗi phiên được tạo bằng probe giữ thêm một Python process và một receiver thread; số phiên theo `max_sessions` (mặc định 64). Cần tính RAM trước khi nâng giới hạn lớn. Khi cập nhật, copy cả thư mục `mcp/` và khởi động lại MCP. Kiểm thử phát triển dùng SSH localhost cho sáu driver; chưa đo trên thiết bị production.
 
 Reader thu thập giải mã tăng dần theo từng SSH channel, giữ ký tự Unicode bị chia giữa các packet. Không đổi encoding mặc định của Netmiko; byte không hợp lệ theo encoding vẫn bị bỏ qua như trước.
+
+## Tương thích NOC — 1.6.1
+
+- `ssh_mode: compatible` mặc định: key mới/đổi vẫn kết nối và được lưu; đổi key có thông báo fingerprint. `ssh_mode: strict` bật kiểm tra key đã biết; chuẩn bị file `alt_key_file` trước, dùng store shared để dùng cùng file thay vì store theo PID. Mode có thể chọn theo profile/device. Các cờ host-key cũ không thay thế ssh_mode.
+- CSV nhận thêm cột `port`. Credential literal giữ nguyên; `${ENV_NAME}` nguyên chuỗi vẫn lấy từ environment. Key passphrase dùng `passphrase`; thêm `encoding`, `disable_sha2_fix`, `blocking_timeout`, `session_timeout`.
+- Profile/device hỗ trợ `read_timeout`, `prompt_quiet_seconds`, `timing_quiet_seconds`; kwargs CLI được tách khỏi constructor Netmiko. Tham số read_timeout của tool vẫn ưu tiên. Ví dụ profile slow: `{"read_timeout":120,"auth_timeout":60,"prompt_quiet_seconds":0.15}`.
+- `auto_enable: true` chủ động gọi enable cho Cisco, dùng secret đã cấu hình; mặc định false. Không áp dụng enable cho Junos.
+- Hỗ trợ `show run`, `display cu`, `show tech-support`, filter có regex escape và Junos display inheritance no-comments. Vẫn chặn thay đổi cấu hình/ghi file và shell operators.
+- Reader không kết thúc ở prompt nằm trong Cisco banner chưa đóng; hỗ trợ thêm pager ASA và dạng --- MORE ---. Kiểm chứng CLI vẫn là heuristic, không bảo đảm nhận diện mọi firmware/prompt tùy biến.
+- Lỗi parser giữ raw result và phiên; lỗi lưu file chỉ giữ phiên khi output đã kết thúc đầy đủ, không có read failure. CLI error đầy đủ trong interact giữ phiên. Storage failure vẫn là failure, không báo saved/success giả.
+- Scanner retry tối đa hai attempt cho transient error, kể cả task bắt đầu ở slow lane. Auth reject không retry. Retry vẫn chạy lại batch lệnh đọc; chưa có resume theo từng lệnh.
+- Parallel giữ connection-timeout và detection-budget overrides. Giới hạn worker/RAM hiện tại vẫn được giữ; không tăng concurrency tự động.
+
+Cập nhật cả thư mục mcp và restart MCP. Tests dùng mock và SSH localhost; chưa xác minh firmware production. Prompt giống dữ liệu ngoài các banner nhận diện được vẫn cần profile/validation phù hợp; không bỏ kiểm chứng để tăng tỷ lệ success.

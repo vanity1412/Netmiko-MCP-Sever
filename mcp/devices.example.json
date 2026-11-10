@@ -1,6 +1,8 @@
 {
   "defaults": {
     "device_type": "autodetect",
+    "ssh_mode": "compatible",
+    "auto_enable": false,
     "ssh_strict": false,
     "system_host_keys": false,
     "alt_host_keys": false,
