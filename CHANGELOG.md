@@ -1,3 +1,10 @@
+## 1.9.0 — 2026-11-10
+
+- Add shared credentials.json loader with multiple named profiles, password/key/agent authentication and relative key paths.
+- Support --credentials-file, NETWORK_MCP_CREDENTIALS_FILE, config reference and optional sibling discovery across launchers/scanner/fleet validator.
+- Replace profile auth as a complete bundle while retaining connection settings; reject malformed/incomplete explicit files without silent global fallback.
+- Keep legacy config/environment/ssh.txt support, all ten MCP schemas and per-process session pools. Publish credential examples/docs; ignore local credential files.
+
 ## 1.8.2 — 2026-11-10
 
 - Wait for session pool capacity with deadline/cancellation; adopt probe sessions outside the SSH semaphore.

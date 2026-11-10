@@ -30,3 +30,8 @@ htmlcov/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Shared local SSH accounts (examples remain public)
+credentials.json
+credentials.*.json
+!credentials.example.json

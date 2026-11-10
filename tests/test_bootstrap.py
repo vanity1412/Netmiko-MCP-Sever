@@ -32,7 +32,7 @@ class Contract(unittest.TestCase):
    self.assertEqual(Path(d['alt_key_file']),root/'mcp/ssh/known_hosts')
  def bootstrap_case(self,defaults):
   config={'defaults':copy.deepcopy(defaults),'profiles':{}}
-  backend=SimpleNamespace(load_config=lambda path:config,load_inventory_csv=lambda c,path:c,Collector=Mock(),run_stdio=Mock())
+  backend=SimpleNamespace(load_config=lambda path,**kw:config,load_inventory_csv=lambda c,path:c,Collector=Mock(),run_stdio=Mock())
   with patch.object(bootstrap.importlib.util,'spec_from_file_location'),patch.object(bootstrap.importlib.util,'module_from_spec',return_value=backend),patch.dict('os.environ',{'NETWORK_SSH_USER':'MOCK','NETWORK_SSH_PASSWORD':'MOCK'}),patch.object(sys,'argv',['bootstrap.py','--config','MOCK.json','--inventory-csv','MOCK.csv']):
    bootstrap.main()
   result=backend.Collector.call_args.args[0]['defaults']

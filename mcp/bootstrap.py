@@ -34,6 +34,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
     parser.add_argument('--inventory-csv', required=True)
+    parser.add_argument('--credentials-file', help='Shared credential JSON; relative to config directory')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--output-dir', help='Optional isolated evidence directory; credentials/inventory unchanged')
     args = parser.parse_args()
@@ -47,7 +48,7 @@ def main():
         config_path = ROOT / config_path
     if not inventory_path.is_absolute():
         inventory_path = ROOT / inventory_path
-    config = backend.load_inventory_csv(backend.load_config(str(config_path)), str(inventory_path))
+    config = backend.load_inventory_csv(backend.load_config(str(config_path), credentials_file=args.credentials_file), str(inventory_path))
     config.setdefault('defaults', {})['alt_key_file'] = str(ROOT / 'mcp' / 'ssh' / 'known_hosts')
     config['defaults']['alt_host_keys'] = True
     config['defaults'].setdefault('autodetect_cache_file', str(ROOT / 'runtime/data/netmiko/autodetect.sqlite3'))

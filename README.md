@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-Backend **1.8.2**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.9.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
 
@@ -12,16 +12,20 @@ Agent chịu trách nhiệm phạm vi lệnh và thay đổi cấu hình mà ng�
 
 ## Cài và chạy
 
-Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json; cung cấp inventory riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
+Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json và mcp/credentials.example.json thành mcp/credentials.json; cung cấp inventory riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
 
-Đặt NETWORK_SSH_USER và NETWORK_SSH_PASSWORD trong môi trường MCP, hoặc credential profiles. Bootstrap fallback cặp đầu tiên trong input/ssh.txt khi thiếu cặp môi trường. Không đưa credential, inventory, known_hosts, runtime hoặc output lên Git.
+Khuyến nghị điền tài khoản theo profile trong file private credentials.json để mọi MCP client dùng chung. Cấu hình cũ qua NETWORK_SSH_USER/NETWORK_SSH_PASSWORD hoặc inline profiles vẫn được hỗ trợ. Bootstrap fallback cặp đầu tiên trong input/ssh.txt khi thiếu cặp môi trường. Không đưa credential, inventory, known_hosts, runtime hoặc output lên Git.
 
 ```powershell
 python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv
 python mcp/collector_backend.py --check
 ```
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.2.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.0.
+
+## Credential dùng chung — 1.9.0
+
+`devices.json` giữ tham số kết nối, `device.csv` chọn profile, `credentials.json` giữ tài khoản. Backend tự tìm file cạnh config; có thể dùng `--credentials-file` hoặc `NETWORK_MCP_CREDENTIALS_FILE` để chỉ tới file dùng chung ngoài repository. Profile ngoài thay trọn bộ auth, giữ cấu hình driver/timeout; file được chỉ định sai sẽ báo rõ, không dùng nhầm global. Các client giữ session pool riêng và cùng đọc một nguồn credential khi khởi động. Xem [hướng dẫn đầy đủ](docs/CREDENTIALS.md).
 
 ## Session, driver và profile
 
@@ -125,4 +129,4 @@ Muốn chủ động kế thừa credential từng trường, đặt inherit_cre
 
 Ví dụ profile đầy đủ: {"username":"${SITE_SSH_USER}","password":"${SITE_SSH_PASSWORD}"}; key: {"username":"site-user","key_file":"/private/site-key"}; kế thừa chủ động: {"username":"site-user","inherit_credentials":true}.
 
-Không thêm loader credentials.json trong phiên bản này. Có thể đặt toàn bộ config private ngoài repository rồi cho các client MCP cùng trỏ --config tới đó. Không đưa credential vào Git hoặc cấu hình client công khai. Cập nhật mcp/ và restart MCP.
+Từ 1.9.0 có loader credentials.json dùng chung cho mọi client. Xem [cấu trúc, ưu tiên và chuyển đổi credential](docs/CREDENTIALS.md). Không đưa credential vào Git hoặc launcher client công khai. Restart MCP sau khi thay file tài khoản.

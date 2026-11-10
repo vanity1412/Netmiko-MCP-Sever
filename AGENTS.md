@@ -7,7 +7,7 @@ Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: thực thi CLI, 
 ## Chạy dự án
 
 - Cài dependency: `python -m pip install -r requirements.txt`.
-- Cấu hình riêng: copy `mcp/devices.example.json` thành `mcp/devices.json`; cấp credential qua environment hoặc profile. Inventory CSV dùng `name,ip,netmiko_device_type`, tùy chọn `profile`.
+- Cấu hình riêng: copy `mcp/devices.example.json` thành `mcp/devices.json`; copy `mcp/credentials.example.json` thành `mcp/credentials.json` và cấp tài khoản theo profile; environment/inline legacy vẫn được hỗ trợ. Xem `docs/CREDENTIALS.md`. Inventory CSV dùng `name,ip,netmiko_device_type`, tùy chọn `profile`.
 - MCP: `python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv`.
 - Kiểm tra version/dependency: `python mcp/collector_backend.py --check`.
 - Test: `python -m unittest discover -s tests -v`. Chỉ dùng mock và SSH localhost; không cần inventory/credential production.

@@ -1,3 +1,7 @@
+# Shared credentials — 1.9.0
+
+load_config is the shared credential loading boundary for bootstrap, direct backend, scanner and fleet validator. External profile auth replaces inline auth atomically while preserving connection-only fields. Credential files stay local/ignored, are read once at startup and never appear in MCP tool schemas. Each process owns its own session pool. See [credential setup](CREDENTIALS.md).
+
 # Reliability 1.8.2
 
 Pool capacity waits now obey the request deadline/cancellation without holding the registry lock or SSH semaphore. Probe adoption waits after releasing its SSH slot; leased entries are never evicted.

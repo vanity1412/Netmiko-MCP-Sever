@@ -6,8 +6,6 @@
     "ssh_strict": false,
     "system_host_keys": false,
     "alt_host_keys": false,
-    "username": "${NETWORK_SSH_USER}",
-    "password": "${NETWORK_SSH_PASSWORD}",
     "session_ttl_seconds": 28800,
     "session_max_age_seconds": 43200,
     "max_sessions": 64,
@@ -24,6 +22,12 @@
     "output_cleanup_interval_seconds": 30,
     "autodetect_persistent_cache": true
   },
-  "profiles": {},
-  "devices": {}
+  "profiles": {
+    "default": {},
+    "site_b": {
+      "conn_timeout": 20
+    }
+  },
+  "devices": {},
+  "credentials_file": "credentials.json"
 }

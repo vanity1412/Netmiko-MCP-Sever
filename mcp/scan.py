@@ -354,6 +354,7 @@ def main():
     source.add_argument('--plan',type=Path,help='JSON task array: target, commands, device_type, profile, read_timeout, lane')
     parser.add_argument('--commands-file',type=Path,help='JSON device_type -> commands; defaults collect version only')
     parser.add_argument('--config',default='mcp/devices.json')
+    parser.add_argument('--credentials-file',help='Shared credential JSON; relative to config directory')
     parser.add_argument('--inventory-csv',default='input/device.csv')
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--workers',type=int,default=16)
@@ -369,7 +370,7 @@ def main():
     if args.execute:
         from bootstrap import prepare_environment
         prepare_environment()
-    config=load_inventory_csv(load_config(args.config),args.inventory_csv)
+    config=load_inventory_csv(load_config(args.config,args.credentials_file),args.inventory_csv)
     root=Path(__file__).resolve().parents[1]
     config.setdefault('defaults', {}).setdefault('autodetect_cache_file', str(root/'runtime/data/netmiko/autodetect.sqlite3'))
     raw_directory = args.output.resolve()/'raw-output' if args.execute else root/'runtime/data/netmiko/outputs'

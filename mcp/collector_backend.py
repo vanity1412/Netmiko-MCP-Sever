@@ -33,7 +33,7 @@ if _module_dir not in sys.path:
 from result_status import normalize_result
 import tempfile
 
-VERSION = "1.8.2"
+VERSION = "1.9.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -260,16 +260,67 @@ def expand_env(value: Any, field=None) -> Any:
     return value
 
 
-def load_config(path: str | None) -> dict[str, Any]:
-    if path and Path(path).is_file():
-        with open(path, "r", encoding="utf-8-sig") as file:
-            config = json.load(file)
+CREDENTIAL_FIELDS = {'username', 'password', 'secret', 'use_keys', 'key_file', 'allow_agent', 'passphrase'}
+
+
+def load_config(path: str | None, credentials_file: str | None = None) -> dict[str, Any]:
+    """Load connection settings and an optional client-independent credential file.
+
+    Explicit argument > environment > config reference > sibling credentials.json.
+    Relative references resolve against the config, never a client's working dir.
+    Credential bundles replace inline auth atomically, retaining connection fields.
+    """
+    base = Path(path).expanduser().resolve().parent if path else Path(__file__).resolve().parent
+    config = {}
+    if path:
+        with Path(path).expanduser().open('r', encoding='utf-8-sig') as handle:
+            config = json.load(handle)
         if not isinstance(config, dict):
-            raise ValueError("Configuration must be a JSON object")
-        return expand_env(config)
-    if path and not Path(path).is_file():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    return {}
+            raise ValueError('Configuration must be a JSON object')
+        config = expand_env(config)
+    reference = credentials_file or os.environ.get('NETWORK_MCP_CREDENTIALS_FILE') or config.get('credentials_file')
+    if reference is not None and (not isinstance(reference, str) or not reference.strip()):
+        raise ValueError('credentials_file must be a nonempty path string')
+    source = Path(os.path.expandvars(os.path.expanduser(reference))) if reference else base/'credentials.json'
+    if not source.is_absolute():
+        source = base/source
+    if not reference and not source.is_file():
+        return config
+    try:
+        with source.open('r', encoding='utf-8-sig') as handle:
+            private = json.load(handle)
+    except json.JSONDecodeError:
+        raise ValueError('Invalid credentials JSON; expected a profiles object') from None
+    if not isinstance(private, dict) or set(private) != {'profiles'} or not isinstance(private['profiles'], dict):
+        raise ValueError('Credential file must contain only a profiles object')
+    profiles = config.setdefault('profiles', {})
+    if not isinstance(profiles, dict):
+        raise ValueError('profiles must be a JSON object')
+    for name, raw in private['profiles'].items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(raw, dict):
+            raise ValueError('Credential profile names and objects must be valid')
+        if set(raw) - CREDENTIAL_FIELDS:
+            raise ValueError(f'Credential profile {name} contains unsupported fields; put connection settings in devices.json')
+        auth = expand_env(raw)
+        for key, value in auth.items():
+            expected = bool if key in {'allow_agent', 'use_keys'} else str
+            if not isinstance(value, expected):
+                raise ValueError(f'Invalid credential field type in profile {name}: {key}')
+        if not auth.get('username') or not (auth.get('password') or auth.get('key_file') or auth.get('use_keys') or auth.get('allow_agent')):
+            raise ValueError(f'Incomplete credential profile {name}: supply username plus password/key/agent')
+        if auth.get('key_file'):
+            key_path = Path(auth['key_file'])
+            auth['key_file'] = str(key_path if key_path.is_absolute() else (source.parent/key_path).resolve())
+        existing = profiles.get(name, {})
+        if not isinstance(existing, dict):
+            raise ValueError(f'Invalid connection profile {name}')
+        merged = {key:value for key,value in existing.items() if key not in CREDENTIAL_FIELDS and key != 'inherit_credentials'}
+        merged.update(auth)
+        # An external bundle cannot accidentally inherit a legacy password or enable secret.
+        merged.setdefault('password', '')
+        merged.setdefault('secret', '')
+        profiles[name] = merged
+    return config
 
 
 def load_inventory_csv(config: dict[str, Any], path: str | None) -> dict[str, Any]:
@@ -2432,6 +2483,7 @@ def main() -> int:
         return 0
     parser = argparse.ArgumentParser(description="Generic Netmiko SSH MCP collector for Goose")
     parser.add_argument("--config", default=os.environ.get("NETWORK_MCP_CONFIG"))
+    parser.add_argument("--credentials-file", help="Shared SSH credential JSON; relative to config directory")
     parser.add_argument("--inventory-csv", default=os.environ.get("NETWORK_MCP_INVENTORY_CSV"))
     parser.add_argument("--check", action="store_true", help="Check Python and Netmiko dependency")
     parser.add_argument("--version", action="store_true")
@@ -2452,7 +2504,7 @@ def main() -> int:
             print(json.dumps({"ok": False, "message": "netmiko missing", "python": sys.version.split()[0]}))
             return 2
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, args.credentials_file)
         config = load_inventory_csv(config, args.inventory_csv)
         collector = Collector(config)
         run_stdio(collector)

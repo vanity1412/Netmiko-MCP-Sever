@@ -130,6 +130,7 @@ def validate(config, directory, *, execute=False, timeout=2, probe_workers=64, s
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default='mcp/devices.json')
+    parser.add_argument('--credentials-file', help='Shared credential JSON; relative to config directory')
     parser.add_argument('--inventory-csv', default='input/device.csv')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--execute', action='store_true', help='SSH into reachable sample; otherwise TCP/banner only')
@@ -143,7 +144,7 @@ def main():
     prepare_environment()
     args.output.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=str(args.output / 'ssh-transport.log'), level=logging.WARNING)
-    config = load_inventory_csv(load_config(args.config), args.inventory_csv)
+    config = load_inventory_csv(load_config(args.config, args.credentials_file), args.inventory_csv)
     print(json.dumps(validate(config, args.output, execute=args.execute, timeout=args.tcp_timeout,
                               probe_workers=args.probe_workers, ssh_workers=args.ssh_workers, ssh_limit=args.ssh_limit)))
 
