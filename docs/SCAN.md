@@ -44,7 +44,7 @@ python mcp/scan.py --all --output output/SCAN-VERSION --workers 16 --slow-worker
 
 Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu khác, dùng `--commands-file mcp/scan-commands.example.json` hoặc plan có `commands` riêng. Nội dung lệnh do agent quyết định; chỉ kiểm tra framing. `--all` lấy alias từ config sau khi merge CSV; các task cùng identity và cùng lệnh được loại trùng. Cùng IP nhưng khác driver/profile kết nối vẫn là task riêng khi tham số thực tế khác.
 
-Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể. Sửa các target ví dụ thành target thật đã xác minh. Plan chỉ nhận target, commands, device_type, profile, read_timeout, lane. Target ngoài inventory được gọi bằng IP/hostname và driver tường minh/autodetect; không tự thêm CSV.
+Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể. Sửa các target ví dụ thành target thật đã xác minh. CSV thiếu cột netmiko_device_type hoặc ô driver trống sẽ dùng autodetect; driver đã điền được giữ nguyên. Plan chỉ nhận target, commands, device_type, profile, read_timeout, lane. Target ngoài inventory được gọi bằng IP/hostname và driver tường minh/autodetect; không tự thêm CSV.
 
 `lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json hoặc credentials.json, không chứa username/password trong plan. Có thể chọn profile qua cột CSV `profile`; bỏ trống dùng `default`. Profile khai báo credential riêng hoạt động khi không có credential toàn cục. Environment và cặp đầu tiên trong input/ssh.txt vẫn là nguồn fallback; không tự thử lần lượt các cặp credential.
 

@@ -349,17 +349,17 @@ def load_inventory_csv(config: dict[str, Any], path: str | None) -> dict[str, An
         raise FileNotFoundError(f"Inventory CSV not found: {csv_path}")
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    required = {"name", "ip", "netmiko_device_type"}
+    required = {"name", "ip"}
     if not rows or not required.issubset(rows[0]):
-        raise ValueError("Inventory CSV requires name, ip and netmiko_device_type columns")
+        raise ValueError("Inventory CSV requires name and ip columns; netmiko_device_type is optional")
     devices = dict(config.get("devices", {}))
     warnings = list(config.get("inventory_warnings") or [])
     for number, row in enumerate(rows, 2):
         name = (row.get("name") or "").strip()
         host = (row.get("ip") or "").strip()
-        device_type = (row.get("netmiko_device_type") or "").strip()
+        device_type = (row.get("netmiko_device_type") or "").strip() or "autodetect"
         profile = (row.get("profile") or "").strip() or "default"
-        if not name or not host or not device_type:
+        if not name or not host:
             raise ValueError(f"Invalid inventory CSV row {number}")
         if name in devices:
             existing = devices[name]

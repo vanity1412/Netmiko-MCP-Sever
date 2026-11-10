@@ -13,6 +13,10 @@ Codex / Claude / OpenCode / Goose / MCP client khác
 
 Chia sẻ file tài khoản không chia sẻ session pool giữa các tiến trình. Không cần thêm tool, dịch vụ credential hay framework. File được đọc một lần khi khởi động; thay credential thì restart các MCP đang dùng. Không tự thử tuần tự nhiều profile khi xác thực thất bại.
 
+## File mẫu mặc định và nhiều tài khoản
+
+`mcp/credentials.example.json` và `mcp/devices.example.json` chỉ có profile `default`. Copy khi cài mới, sau đó cấp tài khoản default hoặc hai biến NETWORK_SSH_USER/NETWORK_SSH_PASSWORD. Không cần SITE_B_SSH_USER/SITE_B_SSH_PASSWORD. Các profile `site_b`, key/agent trong ví dụ dưới đây là tùy chọn: chỉ thêm khi thực sự cần và có đủ thông tin. Loader kiểm tra mọi profile trong credential file, kể cả profile chưa có thiết bị sử dụng; không giữ profile mẫu chưa điền.
+
 ## File cần chuẩn bị
 
 Copy `mcp/credentials.example.json` thành `mcp/credentials.json` rồi điền tài khoản. File thực tế nằm ngoài Git; chỉ file example được publish. Có thể để file ở một đường dẫn ngoài repository để nhiều checkout/client dùng chung. Checkout phát triển có thể có file private trống `{"profiles": {}}`; file trống chưa cung cấp tài khoản nào và vẫn cho phép cấu hình cũ hoạt động.

@@ -102,7 +102,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV tùy chọn. 
 
 ## Dữ liệu triển khai riêng (không đi kèm source công khai)
 
-- input/device.csv: tối thiểu name,ip,netmiko_device_type.
+- input/device.csv: bắt buộc name,ip; netmiko_device_type tùy chọn (trống/thiếu dùng autodetect).
 - input/ssh.txt: nguồn credential fallback, không đưa lên Git.
 - mcp/devices.json: cấu hình triển khai tạo từ devices.example.json.
 - mcp/ssh/known_hosts: trust store. Bootstrap/scanner/fallback trỏ tới file này.

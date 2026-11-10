@@ -2,6 +2,12 @@
 
 ## Unreleased — 2026-11-10
 
+- Simplify installation examples to one default credential profile; document optional multi-profile setup separately.
+- Accept omitted/blank CSV netmiko_device_type as autodetect; retain explicit inventory drivers and mandatory name/IP validation.
+- Add no-SSH STDIO install check and Windows/Linux Codex setup using venv Python and absolute paths. Clarify that MCP connectivity does not establish SSH reachability/authentication.
+- Correct current preparation-evidence redaction guidance; redaction remains disabled by default.
+- Validation: 80 focused onboarding/bootstrap/credential/compatibility/scanner tests passed, including six fresh-install/CSV regressions and localhost SSH; Python 3.10 syntax and local documentation links checked. No production SSH.
+
 - Synchronize shared output quota/cleanup/publication across MCP processes using bounded OS locks. Persist creation pins and protect live readers/search/export with bounded striped leases; process crashes release locks. Scanner retires committed scratch through the same storage protocol.
 - Default to unredacted CLI/evidence/structured data and error/audit content, preserving usernames, passwords, hashes, secrets and tokens. Explicit redaction_enabled=true remains supported. Preserve full received output in storage failures instead of returning only a preview.
 - Add bounded phase metrics and request/connection timings for connect/authentication/preparation/autodetect/command/output plus session reuse and slot/lease waits. Instrument existing methods without additional SSH, preserve vendor redispatch, and keep all ten tool schemas and Python 3.10+ compatibility.

@@ -12,9 +12,15 @@ Chỉ kiểm tra framing: mỗi command là string một dòng, không rỗng, t
 
 Agent chịu trách nhiệm phạm vi lệnh và thay đổi cấu hình mà người dùng yêu cầu. Các test phát triển chỉ dùng mock/SSH localhost.
 
+## Bắt đầu nhanh cho người mới
+
+Xem [cài mới Windows/Linux và kiểm tra không SSH](docs/SETUP.md), [kết nối Codex](docs/CODEX.md) và [credential nhiều profile](docs/CREDENTIALS.md). File mẫu mặc định chỉ có profile `default`.
+
+CSV bắt buộc `name,ip`; cột `netmiko_device_type` được khuyến nghị để tránh dò driver. Thiếu cột hoặc ô driver trống dùng `autodetect`; driver có sẵn được giữ nguyên. Không tự chạy các lệnh mẫu scanner chỉ để kết nối thiết bị đã biết driver.
+
 ## Cài và chạy
 
-Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json và mcp/credentials.example.json thành mcp/credentials.json; nếu dùng inventory CSV, cung cấp file riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
+Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json và mcp/credentials.example.json thành mcp/credentials.json; nếu dùng inventory CSV, cung cấp file riêng input/device.csv với name,ip và tùy chọn netmiko_device_type,profile,port; driver trống/thiếu dùng autodetect.
 
 Khuyến nghị điền tài khoản theo profile trong file private credentials.json để mọi MCP client dùng chung. Cấu hình cũ qua NETWORK_SSH_USER/NETWORK_SSH_PASSWORD hoặc inline profiles vẫn được hỗ trợ. Bootstrap fallback cặp đầu tiên trong input/ssh.txt khi thiếu cặp môi trường. Không đưa credential, inventory, known_hosts, runtime hoặc output lên Git.
 
@@ -88,7 +94,7 @@ ssh_mode mặc định compatible: nhận key mới/đổi, lưu atomic, ghi nh�
 
 Các cờ trên không hoạt động độc lập với `ssh_mode`; `false` không vô hiệu hóa strict. Compatible dùng policy tiếp nhận/lưu key riêng, nên `alt_host_keys=false` không tắt persistence. `ssh_mode` không truyền trực tiếp cho Netmiko. `alt_key_file` tùy chỉnh được giữ và chuẩn hóa thành đường dẫn tuyệt đối; `host_key_store_mode=process` thêm hậu tố PID chỉ trong compatible.
 
-Lỗi đọc/xác minh phản hồi trong các bước preparation Junos và terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang đã che credential; `preparation_command` chỉ rõ lệnh setup. Timeout và chính sách retry không thay đổi.
+Lỗi đọc/xác minh phản hồi trong các bước preparation Junos và terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang; chỉ che credential khi bật `redaction_enabled=true`; `preparation_command` chỉ rõ lệnh setup. Timeout và chính sách retry không thay đổi.
 
 Profile/device hỗ trợ read_timeout, prompt_quiet_seconds, timing_quiet_seconds; tham số tool tường minh ưu tiên. Connection options gồm conn_timeout, auth_timeout, banner_timeout, key_file, passphrase, encoding, disable_sha2_fix, disabled_algorithms và ssh_config_file. Credential literal giữ nguyên; chuỗi ${ENV_NAME} nguyên vẹn lấy từ environment. auto_enable=true chủ động gọi enable cho Cisco bằng secret backend; mặc định false.
 

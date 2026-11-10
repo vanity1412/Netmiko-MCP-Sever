@@ -23,10 +23,7 @@
     "autodetect_persistent_cache": true
   },
   "profiles": {
-    "default": {},
-    "site_b": {
-      "conn_timeout": 20
-    }
+    "default": {}
   },
   "devices": {},
   "credentials_file": "credentials.json"
