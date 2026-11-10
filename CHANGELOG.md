@@ -2,6 +2,10 @@
 
 ## Unreleased — 2026-11-10
 
+- Add optional boolean continue_on_error to ssh_execute_many (default false), forwarded for parallel batch tasks. Continue only complete synchronized CLI errors, never timeout/disconnect/pending input/storage failures. Still ten MCP tools; update the input contract deliberately.
+- Report unsent batch suffix commands as SKIPPED/NOT_SENT with command indexes and blocker index. Preserve aggregate failure/uncertainty, healthy-session retention and the scanner's real fault/prefix/checkpoint/resume behavior. Redaction remains disabled by default.
+- Validation: full suite 347 tests passed in 470.005 seconds, plus 21 focused batch/loopback/resume tests after the final blocker-index rebase fix. Includes 500/2,500 simulated devices; Python 3.10 syntax checked. No production SSH.
+
 - Simplify installation examples to one default credential profile; document optional multi-profile setup separately.
 - Accept omitted/blank CSV netmiko_device_type as autodetect; retain explicit inventory drivers and mandatory name/IP validation.
 - Add no-SSH STDIO install check and Windows/Linux Codex setup using venv Python and absolute paths. Clarify that MCP connectivity does not establish SSH reachability/authentication.

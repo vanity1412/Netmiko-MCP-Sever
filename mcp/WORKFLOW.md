@@ -23,6 +23,12 @@ flowchart TD
 
 Sau hành động phục hồi hoặc kiểm chứng, đọc lại kết quả theo cùng quy trình. Không tạo vòng thử vô hạn. CANCELLED kết thúc việc chạy; không tự khởi động lại.
 
+## Batch độc lập và SKIPPED
+
+- Mặc định ssh_execute_many dừng khi một lệnh lỗi. Với các lệnh đã xác định độc lập, agent có thể đặt continue_on_error=true; backend chỉ tiếp tục lỗi CLI có prompt/output đầy đủ và session đồng bộ. Không dùng để bỏ qua mất kết nối, timeout, câu hỏi hay tác động cấu hình chưa rõ.
+- SKIPPED nghĩa là lệnh chưa gửi do batch đã dừng, không phải thiết bị trả lỗi. Xem blocked_by_command_index để tìm lệnh gây dừng, giữ nguyên lỗi và evidence của lệnh đó. Không kết luận dữ liệu rỗng từ lệnh SKIPPED; không báo toàn batch thành công nếu có CLI_ERROR/SKIPPED.
+- Không tự retry batch có cấu hình; scanner vẫn dùng mặc định dừng và resume theo prefix đã kiểm chứng.
+
 ## 1. Đọc kết quả trước khi quyết định
 
 - Xem `status`, `fault_status`, `error_category`, `error_stage`, `error_reason`, `retryable`, `command_sent`, `replay_safe`, `execution_state`, `output_complete`, `data_state` khi các field này có mặt. Không suy ra thành công chỉ từ prompt, SSH login hoặc một phần output.

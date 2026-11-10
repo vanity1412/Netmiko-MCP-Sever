@@ -131,11 +131,13 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
     next_command = command_offset
     for index, checked_result in enumerate(checked):
         checked_result['command_index'] = command_offset + index
+        if checked_result.get('skipped') and 'blocked_by_command_index' in checked_result:
+            checked_result['blocked_by_command_index'] += command_offset
         if checked_result.get('ok') and next_command == command_offset + index:
             next_command += 1
     command_sent = any(r.get('command_sent', True) for r in checked)
     retry_safe = all(not r.get('command_sent', True) or is_replay_safe(r.get('command','')) for r in checked)
-    failure = next((r for r in reversed(checked) if not r.get('ok')), outcome)
+    failure = next((r for r in reversed(checked) if not r.get('ok') and not r.get('skipped')), outcome)
     status = 'success' if outcome.get('ok') else ('partial' if any(r.get('ok') for r in checked) else 'failed')
     result = {'attempt':number,'lane':lane,'status':status,'started_at':started,'finished_at':stamp(),
               'elapsed_ms':round((time.monotonic()-clock)*1000,2),

@@ -1,3 +1,7 @@
+# Batch continuation và kết quả chưa gửi
+
+User-authorized optional input `continue_on_error` mở rộng riêng ssh_execute_many, vẫn 10 tools. Mặc định false. True chỉ tiếp tục lỗi CLI đã đọc đủ và transport đồng bộ; không tiếp tục timeout/disconnect/storage/pending input. Mỗi suffix chưa gửi có skipped=true và status SKIPPED; BatchError.last_result xác định lệnh thực thi cuối để session retention không đọc nhầm entry SKIPPED. Scanner lấy nguyên nhân lỗi từ entry đã thử, giữ prefix/resume cũ và không bật continuation. Contract test được cập nhật duy nhất optional boolean này. Xem README để biết ví dụ.
+
 # Cải tiến storage, evidence và đo hiệu năng
 
 Shared output dùng output_storage.py: transaction OS liên tiến trình bao quanh quota/cleanup/publish; pin 300 giây được lưu xuống đĩa, 64 stripe lock bảo vệ reader/search/export. Atomic publish không để lộ file .txt ghi dở. Scanner retire scratch qua cùng khóa, chỉ sau khi evidence đã được lưu. Exclusive vẫn dành cho một Collector. Cần restart mọi process dùng chung thư mục và dùng cùng quota/TTL; process bản cũ không tham gia khóa mới.

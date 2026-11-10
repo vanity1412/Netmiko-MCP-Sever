@@ -1,5 +1,10 @@
 """Additive result vocabulary; legacy ok/error_category/checkpoint fields remain."""
 def normalize_result(result):
+    if result.get('skipped') is True:
+        result.update(ok=False, status='SKIPPED', fault_status='SKIPPED',
+                      data_state='NONE', execution_state='NOT_SENT', command_sent=False,
+                      output_complete=False, retryable=False, awaiting_input=False)
+        return result
     category = result.get('error_category', '')
     children = result.get('results', result.get('steps', []))
     sequential_steps = 'steps' in result and 'results' not in result
@@ -57,7 +62,9 @@ def normalize_result(result):
         status = 'CONNECT_ERROR'
     elif children:
         good = any(c.get('ok') for c in children)
-        statuses = {c.get('status') for c in children if not c.get('ok')}
+        statuses = {c.get('status') for c in children if not c.get('ok') and not c.get('skipped')}
+        if not statuses:
+            statuses = {'SKIPPED'}
         status = 'PARTIAL' if good else (next(iter(statuses)) if len(statuses) == 1 else 'UNKNOWN')
     else:
         status = 'PARTIAL' if has_data else 'UNKNOWN'

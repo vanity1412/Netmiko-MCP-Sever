@@ -2,7 +2,21 @@
 
 Giấy phép: [MIT](LICENSE).
 
-Backend **1.9.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.9.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ **10 MCP tools**; `ssh_execute_many` thêm tùy chọn `continue_on_error` không bắt buộc.
+
+## Batch: tiếp tục sau lỗi CLI và lệnh chưa gửi
+
+`ssh_execute_many` mặc định `continue_on_error=false`: dừng ở lệnh không thành công. Kết quả giữ các lệnh đã thực thi và thêm một entry `SKIPPED` cho từng lệnh còn lại chưa gửi, có `command_index` (zero-based), `blocked_by_command_index`, `command_sent=false`, `execution_state=NOT_SENT`, `data_state=NONE`. Lỗi validation/kết nối trước khi vào batch vẫn trả lỗi khởi tạo, không tạo transcript giả cho các lệnh.
+
+Agent có thể bật `continue_on_error=true` cho các lệnh độc lập:
+
+```json
+{"target":"LAB-A","commands":["show version","show clock","show interfaces"],"continue_on_error":true}
+```
+
+Chỉ chạy tiếp nếu lỗi thuộc CLI, transport còn khỏe, output đã đầy đủ, không chờ câu trả lời và reader không có lỗi. Timeout, disconnect, dữ liệu chưa hoàn tất, lỗi storage và câu hỏi tương tác vẫn dừng, phần chưa gửi là SKIPPED. Cấu hình có tác động không chắc chắn không được tự replay. Tham số này không phân tích tính độc lập của câu lệnh: agent phải xác định context/phạm vi; mặc định dừng vẫn phù hợp chuỗi cấu hình phụ thuộc.
+
+Có SUCCESS và CLI_ERROR thì batch là PARTIAL, không phải SUCCESS; tất cả lỗi CLI thì là CLI_ERROR. SKIPPED không thay thế nguyên nhân lỗi của lệnh đã chạy. Lỗi CLI đã đọc đủ vẫn có thể giữ session để dùng tiếp. `ssh_parallel` cũng chuyển tiếp tùy chọn này cho task có `commands`. Scanner chưa bật tùy chọn này; vẫn dừng theo prefix, checkpoint/resume bỏ qua các entry SKIPPED và giữ lỗi thật. Không thay đổi mặc định không che dữ liệu.
 
 ## Thực thi do agent quyết định
 
@@ -33,7 +47,7 @@ python mcp/collector_backend.py --check
 
 Bootstrap chỉ đặt mặc định khi chưa có cấu hình: `NETWORK_MCP_DATA_DIR=runtime/data/netmiko`, `alt_key_file=mcp/ssh/known_hosts`, `alt_host_keys=true`. Giá trị environment và `defaults` do người dùng đặt được giữ nguyên tại bootstrap, kể cả `alt_host_keys=false`. Khi kết nối, backend suy ra các cờ kiểm tra host key từ `ssh_mode` theo bảng dưới.
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.1.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; giữ launcher OpenCode Web và refresh tool catalog để nhận optional continue_on_error. Kiểm tra ssh_status.version=1.9.1.
 
 ## Cài mới không có inventory và kết nối MCP client
 
@@ -112,7 +126,7 @@ Kết quả có prompt không chứng minh cấu hình đúng ý định: valida
 
 Thiết bị hỏi yes/no, confirm, password hoặc destination/source filename trả ok=false, awaiting_input=true và giữ session. Không tự gửi yes/Enter, không gửi driver cleanup vào câu hỏi. Lỗi CLI có prompt đầy đủ khác với phiên còn đang chờ input.
 
-Dùng ssh_interact với các bước rõ ràng, ví dụ ["write memory", "yes"]. Chuỗi rỗng là Enter, chỉ được gửi khi agent cung cấp. Hoặc gọi ssh_execute để xem câu hỏi rồi gửi phản hồi ở lời gọi tiếp theo, cùng identity. expect_string có thể chỉ định prompt tương tác khác; match custom expect chưa phải hoàn tất lệnh. Execute_many dừng ở lỗi/câu hỏi để agent kiểm tra; không coi lệnh tiếp theo là câu trả lời ngầm.
+Dùng ssh_interact với các bước rõ ràng, ví dụ ["write memory", "yes"]. Chuỗi rỗng là Enter, chỉ được gửi khi agent cung cấp. Hoặc gọi ssh_execute để xem câu hỏi rồi gửi phản hồi ở lời gọi tiếp theo, cùng identity. expect_string có thể chỉ định prompt tương tác khác; match custom expect chưa phải hoàn tất lệnh. Execute_many mặc định dừng ở lỗi, và luôn dừng ở câu hỏi để agent kiểm tra; không coi lệnh tiếp theo là câu trả lời ngầm.
 
 ## Retry và resume
 
@@ -138,7 +152,7 @@ Mặc định `redaction_enabled=false`: nội dung CLI, evidence, structured ou
 
 ## Đo hiệu năng SSH
 
-`ssh_status.phase_metrics` trả count, failures, total_ms và p50/p95 của tối đa 128 mẫu gần nhất mỗi pha. Kết quả thực thi có `timings_ms`, `connection_timings_ms`, `session_reused`; không thêm tool hoặc input schema. Có các pha chờ slot/session, pool reservation, connect+prepare, autodetect, command và output_save. `ssh_connect` đo lời gọi Paramiko connect (gồm handshake và auth); `authentication` đo `_auth`; `preparation` đo Netmiko preparation, kể cả sau redispatch. Các pha lồng nhau, không cộng chúng để suy ra tổng thời gian. Phương thức tùy biến/mock không có hook thì không có số đo auth; không suy diễn bằng 0. Thống kê `failures` đếm exception của pha, không thay thế trạng thái CLI.
+`ssh_status.phase_metrics` trả count, failures, total_ms và p50/p95 của tối đa 128 mẫu gần nhất mỗi pha. Kết quả thực thi có `timings_ms`, `connection_timings_ms`, `session_reused`; phần đo không thêm tool hoặc input schema. Có các pha chờ slot/session, pool reservation, connect+prepare, autodetect, command và output_save. `ssh_connect` đo lời gọi Paramiko connect (gồm handshake và auth); `authentication` đo `_auth`; `preparation` đo Netmiko preparation, kể cả sau redispatch. Các pha lồng nhau, không cộng chúng để suy ra tổng thời gian. Phương thức tùy biến/mock không có hook thì không có số đo auth; không suy diễn bằng 0. Thống kê `failures` đếm exception của pha, không thay thế trạng thái CLI.
 
 `connection_timings_ms` mô tả lần tạo transport, vẫn được đính kèm khi reuse; `timings_ms` đo công việc trong request hiện tại. Không phát sinh SSH để đo và không tăng worker/timeout. Mỗi session probe giữ thêm process/thread; max_sessions mặc định 64. Chưa có số đo để kết luận tăng tốc trên thiết bị production.
 

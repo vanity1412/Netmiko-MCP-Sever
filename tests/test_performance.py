@@ -22,7 +22,7 @@ class Performance(unittest.TestCase):
    fake=f.Fake();self.connections.append((params,fake));return fake
   self.c=b.Collector({'defaults':{'device_type':'juniper_junos','output_dir':str(self.directory/'raw'),'max_workers':4,'session_sweep_seconds':0},'devices':{'MOCK':{'host':'mock-host','device_type':'juniper_junos'}}},connect_factory=connect)
  def tearDown(self):self.c.shutdown();self.tmp.cleanup()
- def test_tools_names_and_schemas_unchanged(self):
+ def test_tools_contract_with_optional_continue_on_error(self):
   baseline=json.loads(Path(__file__).with_name('tool-schema-v1.json').read_text(encoding='utf-8'))
   self.assertEqual(baseline,[{'name':t['name'],'inputSchema':t['inputSchema']} for t in b.make_tool_list()])
  def test_ip_only_outside_inventory_previews_autodetect(self):
@@ -118,7 +118,7 @@ class Performance(unittest.TestCase):
   fake.send_command=send;self.c._connect=lambda **kw:fake
   with self.c.request_budget(timeout=.06):
    with self.assertRaises(b.BatchError) as caught:self.c.execute_many('MOCK',['show version','show interfaces','show system uptime'])
-  self.assertEqual(caught.exception.results[-1]['error_category'],'deadline')
+  self.assertEqual(caught.exception.last_result['error_category'],'deadline')
   self.assertNotIn('show system uptime',fake.commands)
   self.assertIsNone(getattr(self.c._request,'context',None))
  def task(self,target='MOCK',**kwargs):return dict(target=target,device_type='juniper_junos',commands=['show version'],**kwargs)

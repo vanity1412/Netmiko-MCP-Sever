@@ -192,7 +192,8 @@ class Regression(unittest.TestCase):
     def test_batch_stops(self):
         with self.assertRaises(b.BatchError) as err:
             self.c.execute_many('MOCK',['show version','show system bad','show interfaces'])
-        self.assertEqual(len(err.exception.results),2)
+        self.assertEqual(len(err.exception.results),3)
+        self.assertEqual(err.exception.results[2]["status"], "SKIPPED")
         self.assertNotIn('show interfaces', self.connections[-1].commands)
 
     def test_parallel_partial(self):

@@ -70,6 +70,9 @@
         },
         "expect_string": {
           "type": "string"
+        },
+        "continue_on_error": {
+          "type": "boolean"
         }
       },
       "required": [

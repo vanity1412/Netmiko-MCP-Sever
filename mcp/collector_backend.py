@@ -1631,9 +1631,9 @@ class Collector:
                 try:
                     yield entry["conn"]
                 except Exception as exc:
-                    verified_cli_failure = isinstance(exc, BatchError) and bool(exc.results) and exc.results[-1].get('error_category') == 'cli_error' and all(
-                        exc.results[-1].get(k) for k in ('transport_ok', 'output_complete'))
-                    keep = (bool(getattr(entry['conn'], '_network_awaiting_input', False)) or verified_cli_failure or getattr(exc, '_network_keep_session', False) or (isinstance(exc, BatchError) and bool(exc.results) and exc.results[-1].get('session_reusable', False))) and not getattr(entry['conn'], '_network_read_failure', None)
+                    verified_cli_failure = isinstance(exc, BatchError) and bool(exc.results) and exc.last_result.get('error_category') == 'cli_error' and all(
+                        exc.last_result.get(k) for k in ('transport_ok', 'output_complete'))
+                    keep = (bool(getattr(entry['conn'], '_network_awaiting_input', False)) or verified_cli_failure or getattr(exc, '_network_keep_session', False) or (isinstance(exc, BatchError) and bool(exc.results) and exc.last_result.get('session_reusable', False))) and not getattr(entry['conn'], '_network_read_failure', None)
                     if not keep:
                         self._disconnect_entry(entry, graceful=False)
                     raise
@@ -2146,31 +2146,52 @@ class Collector:
     @bounded_request
     def execute_many(self, target: str, commands: list[str], device_type: str | None = None, profile: str | None = None,
                      read_timeout: int | None = None, save_output: bool = False, use_timing: bool = False,
-                     expect_string: str | None = None) -> dict[str, Any]:
+                     expect_string: str | None = None, continue_on_error: bool = False) -> dict[str, Any]:
+        if not isinstance(continue_on_error, bool):
+            raise ValueError("continue_on_error must be boolean")
         if not isinstance(commands, list) or not 1 <= len(commands) <= MAX_COMMANDS:
             raise ValueError("commands must be an array containing 1 to 1000 commands")
         commands = [safe_command(c) for c in commands]
         commands = self._preflight(target, commands, device_type, profile)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         results = []
+
+        def stop(index):
+            for skipped_index in range(index + 1, len(commands)):
+                results.append(normalize_result({'target': target,
+                    'command': self.redact_output(commands[skipped_index]),
+                    'command_index': skipped_index, 'ok': False, 'skipped': True,
+                    'command_sent': False, 'output_complete': False, 'retryable': False,
+                    'skipped_reason': 'batch_stopped', 'blocked_by_command_index': index}))
+            raise BatchError(results)
+
         with self._lease(target, device_type, profile) as conn:
-            for cmd in commands:
+            for index, cmd in enumerate(commands):
                 start = time.monotonic()
+                conn._network_command_sent = False
                 try:
                     out, pattern = self._send(conn, cmd, timeout, expect_string, use_timing)
                     result = self._command_result(conn, target, cmd, out, time.monotonic()-start, save_output, pattern)
-                    results.append(result)
-                    if not result["ok"]:
-                        raise BatchError(results)
-                except BatchError:
-                    raise
                 except Exception as exc:
-                    # The connection is potentially out of sync; do not continue blindly.
                     failed = self.failure_result(exc, target, cmd)
-                    failed.update(command_sent=bool(getattr(conn, '_network_command_sent', True)), replay_safe=is_replay_safe(cmd))
+                    failed.update(command_index=index,
+                        command_sent=bool(getattr(conn, '_network_command_sent', False)),
+                        replay_safe=is_replay_safe(cmd))
                     results.append(normalize_result(failed))
-                    raise BatchError(results)
-        return normalize_result({"target": target, "results": results, "ok": True, "total": len(commands), "successes": len(results)})
+                    stop(index)
+                result['command_index'] = index
+                results.append(result)
+                if not result['ok']:
+                    synchronized_cli_error = (result.get('error_category') == 'cli_error'
+                        and result.get('transport_ok') is True and result.get('output_complete') is True
+                        and not result.get('awaiting_input') and not getattr(conn, '_network_read_failure', None)
+                        and not dead_session(conn))
+                    if not (continue_on_error and synchronized_cli_error):
+                        stop(index)
+        successes = sum(r.get('ok') is True for r in results)
+        return normalize_result({'target': target, 'results': results,
+            'ok': successes == len(commands), 'total': len(commands), 'successes': successes,
+            'failures': len(commands)-successes, 'continue_on_error': continue_on_error})
 
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
@@ -2243,7 +2264,7 @@ class Collector:
             try:
                 if "command" in item:
                     return self.execute(**{k: v for k,v in item.items() if k in {"target","command","device_type","profile","read_timeout","expect_string","use_timing","save_output","use_textfsm"}})
-                return self.execute_many(**{k: v for k,v in item.items() if k in {"target","commands","device_type","profile","read_timeout","use_timing","save_output","expect_string"}})
+                return self.execute_many(**{k: v for k,v in item.items() if k in {"target","commands","device_type","profile","read_timeout","use_timing","save_output","expect_string","continue_on_error"}})
             except BatchError as exc:
                 return {"target": item.get("target"), "ok": False, "results": exc.results, "error": "Batch interrupted after command failure"}
             except Exception as exc:
@@ -2457,12 +2478,13 @@ class Collector:
 class BatchError(Exception):
     def __init__(self, results: list[dict[str, Any]]):
         self.results = results
+        self.last_result = next((r for r in reversed(results) if not r.get("skipped")), {})
         super().__init__("A command failed during batch execution")
 
 
 TOOLS: dict[str, dict[str, Any]] = {
     "ssh_execute": {"description": "Execute an agent-selected CLI command over Netmiko SSH on a device alias, hostname or IP. Device type can be specified at call time; raw output is retained. Configuration commands are supported; inspect awaiting_input before replying.", "schema": {"target": "string", "command": "string", "device_type": "string", "profile": "string", "read_timeout": "integer", "expect_string": "string", "use_timing": "boolean", "save_output": "boolean", "use_textfsm": "boolean"}, "required": ["target", "command"], "method": "execute"},
-    "ssh_execute_many": {"description": "Run a sequence of agent-selected CLI commands on one device using the same SSH session. Stops if one command fails.", "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string"}, "required": ["target", "commands"], "method": "execute_many"},
+    "ssh_execute_many": {"description": "Run a sequence of agent-selected CLI commands on one device using the same SSH session. Stops on failure by default; continue_on_error continues only complete, synchronized CLI errors for agent-selected independent commands. Unsent suffix commands are SKIPPED.", "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string", "continue_on_error": "boolean"}, "required": ["target", "commands"], "method": "execute_many"},
     "ssh_interact": {"description": "Run explicit command/response steps with timing reads, including configuration modes and confirmation replies. No reply is sent unless provided by the agent. Verify each result.", "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
     "ssh_parallel": {"description": "Run independent SSH collections concurrently on many devices. Each task can have a DIFFERENT target, command or list of commands, optional vendor and profile. Output kept per task.", "schema": {"tasks": "array"}, "required": ["tasks"], "method": "parallel"},
     "ssh_read_output": {"description": "Read a slice of a saved CLI output by opaque output_id, offset (0-based LINE number), and limit (max lines). Useful for huge configs.", "schema": {"output_id": "string", "offset": "integer", "limit": "integer"}, "required": ["output_id"], "method": "read_output"},

@@ -71,7 +71,8 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(self.c.execute('mock','show version')['ok']);self.assertEqual(self.opens,1)
     def test_batch_stops_and_parallel_preserves_child_reason(self):
         with self.assertRaises(b.BatchError) as caught:self.c.execute_many('mock',['show accounts','show version'])
-        self.assertEqual(len(caught.exception.results),1)
+        self.assertEqual(len(caught.exception.results),2)
+        self.assertEqual(caught.exception.results[1]["status"],"SKIPPED")
         self.assertEqual(caught.exception.results[0]['error_reason'],'permission_denied')
         r=self.c.parallel([{'target':'mock','command':'show accounts'},{'target':'mock','command':'show version'}])
         self.assertEqual(r['status'],'PARTIAL');self.assertEqual(r['results'][0]['error_reason'],'permission_denied')

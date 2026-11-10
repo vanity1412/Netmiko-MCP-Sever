@@ -70,6 +70,10 @@ BRANCH-01,192.0.2.1,cisco_ios,branch
 - Luồng đọc Netmiko channel không chờ echo; chỉ kết thúc thành công khi có prompt cuối. Tự gửi Space tại pager, không gửi phản hồi confirmation. Timeout giữ output dở dang làm bằng chứng và dừng batch. Session đầy đủ không echo vẫn được reuse.
 - Không lọc nội dung CLI, không tự thêm count cho ping hoặc giới hạn số gói. Agent chọn lệnh và tham số trong phạm vi công việc; chỉ kiểm tra framing. Plan có thể chứa cấu hình; cấu hình chưa rõ kết quả không được tự replay.
 
+## Batch dừng và SKIPPED
+
+Scanner giữ continue_on_error=false. Nếu lệnh lỗi, các lệnh chưa gửi trong kết quả có status=SKIPPED và command_sent=false. Chúng không tạo evidence, không tiến next_command_index, không thay nguyên nhân retry và không làm mất trạng thái chưa rõ của cấu hình. Khi resume chuỗi đọc, tiếp tục từ prefix thành công đã xác minh; các lệnh SKIPPED chỉ được gửi khi chu kỳ resume cho phép chạy tới chúng. Không thêm continue_on_error vào plan scanner trong thay đổi này.
+
 ## Output và resume
 
 - scan-manifest.json: hash của kế hoạch/identity, không lưu credential.
