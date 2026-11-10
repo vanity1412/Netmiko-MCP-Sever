@@ -17,6 +17,31 @@ import test_execution_resume as resume
 from test_collector import Fake
 
 class ReaderCompletionTests(unittest.TestCase):
+    def test_log_prompt_followed_by_channel_eof_can_complete(self):
+        for command in ('show logging','show log messages','display logbuffer'):
+            with self.subTest(command=command):
+                clock=VirtualClock(); conn=TimelineChannel(clock,[(0,'row\nrouter#'),(.02,None)])
+                with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+                    output,failure=b.read_cli_output(conn,command,2,r'(?m)^router#$')
+                self.assertIsNone(failure)
+                self.assertEqual(output,'row\nrouter#')
+    def test_exact_prompt_in_log_with_point_seven_second_continuation_is_not_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock=VirtualClock()
+            conn=TimelineChannel(clock,[(0,'log header\nrouter#'),(.7,'\nremaining log data\nrouter#')])
+            c=b.Collector({'defaults':{'output_dir':directory,'session_sweep_seconds':0,
+                                      'device_type':'cisco_ios'}},connect_factory=lambda **kw:conn)
+            try:
+                with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+                    result=c.execute('192.0.2.1','show logging',read_timeout=2)
+                self.assertFalse(result['ok'])
+                self.assertFalse(result['output_complete'])
+                self.assertEqual(result['error_category'],'output_verification')
+                self.assertEqual(result['data_state'],'PARTIAL')
+                self.assertEqual(result['output'],'log header\nrouter#')
+                self.assertEqual(conn.writes,['show logging\n'])
+                self.assertTrue(conn.remote_conn.closed)
+            finally:c.shutdown()
     def test_late_log_rows_retained_but_not_certified(self):
         clock=VirtualClock();conn=TimelineChannel(clock,[(0,'historical data\nrouter#'),(.2,'\nLATE DATA\nrouter#')])
         with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):

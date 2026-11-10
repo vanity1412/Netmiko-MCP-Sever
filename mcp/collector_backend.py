@@ -730,6 +730,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     # continuation, and report ambiguity rather than certify such a transcript.
     quiet = max(quiet, .3)
     candidate = None
+    prompt_only_completion = False
     handled_pagers = {}
     last_data = time.monotonic()
     failure = None
@@ -789,6 +790,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
             elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not output_container_open(command, chunks.value()):
+                prompt_only_completion = True
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
@@ -806,6 +808,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     if handled_pagers:
         raw = strip_pager_spans(raw, conn._network_pager_spans)
     output = clean_terminal(raw)
+    if failure is None and prompt_only_completion and re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I):
+        failure = {'error_category': 'output_verification', 'retryable': False,
+                   'message': 'Log payload may contain the device prompt; quiet time alone cannot verify completion',
+                   'error_stage': 'command'}
     if failure is None and candidate is not None and candidate != hashlib.sha256(output.rstrip().encode('utf-8')).digest():
         failure = {'error_category': 'output_verification', 'retryable': False,
                    'message': 'Data continued after a prompt candidate; completion is uncertain',

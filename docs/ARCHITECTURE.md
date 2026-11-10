@@ -59,7 +59,7 @@ Python fallback → ReadOnlyConnection trong readonly_client.py → cùng Collec
 
 Scanner CLI → scan.py → Collector → kết quả từng task + bằng chứng + summary. Scanner không phải tool MCP thứ 11.
 
-bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu cặp NETWORK_SSH_USER/PASSWORD, fallback input/ssh.txt; hiện chỉ chọn cặp đầu tiên, không tự thử tất cả cặp. File devices.example.json chỉ có tham chiếu environment, không có credential thật.
+bootstrap.py nạp environment, cấu hình JSON và inventory CSV tùy chọn. Khi thiếu cặp NETWORK_SSH_USER/PASSWORD, fallback input/ssh.txt; hiện chỉ chọn cặp đầu tiên, không tự thử tất cả cặp. Credential mẫu dùng tham chiếu environment trong credentials.example.json, không có credential thật.
 
 ## Trách nhiệm và điểm cần tìm trong source
 
@@ -82,9 +82,9 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 ## 10 tool đang có
 
-- ssh_execute: một lệnh đọc.
-- ssh_execute_many: nhiều lệnh trên cùng thiết bị.
-- ssh_interact: các bước lệnh đọc; không nhận yes/Enter/confirmation tùy ý.
+- ssh_execute: một lệnh CLI do agent chọn, có thể đọc hoặc cấu hình.
+- ssh_execute_many: nhiều lệnh đọc/cấu hình trên cùng thiết bị.
+- ssh_interact: chuỗi lệnh/phản hồi rõ ràng; nhận yes/Enter do agent cung cấp, không tự trả lời.
 - ssh_parallel: nhiều task độc lập.
 - ssh_read_output, ssh_read_output_bytes: đọc output lớn theo dòng/byte.
 - ssh_search_output: tìm trong output đã lưu.
@@ -92,7 +92,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 - ssh_status: trạng thái collector/session.
 - ssh_close: đóng session.
 
-## Dữ liệu triển khai (đã sao chép dữ liệu thật từ bộ gốc)
+## Dữ liệu triển khai riêng (không đi kèm source công khai)
 
 - input/device.csv: tối thiểu name,ip,netmiko_device_type.
 - input/ssh.txt: nguồn credential fallback, không đưa lên Git.

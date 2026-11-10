@@ -1,4 +1,9 @@
+> Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
+
 ## 1.9.1 — 2026-11-10
+
+- Add MIT license. Correct outdated public setup/scanner documentation.
+- Treat quiet-time-only completion of recognized log commands as unverified; keep received output without increasing waits or automatically retrying. Add exact 0.7-second delayed-prompt regression and MCP stdio coverage; normal completion and channel-EOF checks remain.
 
 - Retain partial setup evidence for tolerant Junos/Cisco preparation failures; report preparation stage, CLI not ready and business command not sent. Redact setup evidence before returning MCP errors, including worker failures. Keep existing timeouts, retry decisions and architecture.
 - Add direct/worker stdio preparation regressions and assertions of final host-key options at the Netmiko boundary; document ssh_mode as the authority for verification flags without changing policy.

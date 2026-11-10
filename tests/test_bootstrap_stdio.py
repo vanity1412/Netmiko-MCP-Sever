@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 import paramiko
@@ -71,6 +72,11 @@ class BootstrapStdioTests(unittest.TestCase):
                     question = 'Select maintenance slot (A/B):'
                     server.responses.update({'hostname': response,
                         'request maintenance': lambda channel: channel.sendall(question.encode('utf-8'))})
+                    def delayed_log(channel):
+                        channel.sendall(('log header\n' + server.prompt).encode('utf-8'))
+                        time.sleep(.7)
+                        channel.sendall(('\nremaining log data\n' + server.prompt).encode('utf-8'))
+                    server.responses['show logging'] = delayed_log
                     config = {'defaults': {'device_type': 'linux', 'port': server.port,
                         'username': 'tester', 'password': 'loopback-only', 'session_sweep_seconds': 0,
                         'conn_timeout': 3, 'auth_timeout': 3, 'banner_timeout': 3,
@@ -100,6 +106,8 @@ class BootstrapStdioTests(unittest.TestCase):
                         requests.append({'id': 7, 'method': 'tools/call', 'params': {'name': 'ssh_execute',
                             'arguments': {'target': target, 'command': 'request maintenance',
                                 'use_timing': True, 'read_timeout': 1, 'save_output': True}}})
+                        requests.append({'id': 8, 'method': 'tools/call', 'params': {'name': 'ssh_execute',
+                            'arguments': {'target': target, 'command': 'show logging', 'read_timeout': 2}}})
                     wire = ''.join(json.dumps({'jsonrpc': '2.0', **request}, ensure_ascii=False) + '\n' for request in requests)
                     env = dict(os.environ, NETWORK_MCP_DATA_DIR=str(folder / 'data'),
                                NETWORK_SSH_USER='tester', NETWORK_SSH_PASSWORD='loopback-only')
@@ -139,6 +147,14 @@ class BootstrapStdioTests(unittest.TestCase):
                         saved = folder / 'data' / 'outputs' / (result['output_id'] + '.txt')
                         self.assertIn(question, saved.read_text(encoding='utf-8'))
                         self.assertEqual(server.commands.count('request maintenance'), 1)
+                        log = payload(8)
+                        self.assertTrue(replies[8]['result']['isError'])
+                        self.assertFalse(log['output_complete'])
+                        self.assertEqual(log['error_category'], 'output_verification')
+                        self.assertEqual(log['data_state'], 'PARTIAL')
+                        self.assertNotEqual(log['status'], 'SUCCESS')
+                        self.assertIn('log header', log['output'])
+                        self.assertEqual(server.commands.count('show logging'), 1)
                 finally:
                     server.close()
 

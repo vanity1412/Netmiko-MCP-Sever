@@ -1,5 +1,7 @@
 # Netmiko MCP Server
 
+Giấy phép: [MIT](LICENSE).
+
 Backend **1.9.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
@@ -12,7 +14,7 @@ Agent chịu trách nhiệm phạm vi lệnh và thay đổi cấu hình mà ng�
 
 ## Cài và chạy
 
-Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json và mcp/credentials.example.json thành mcp/credentials.json; cung cấp inventory riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
+Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json và mcp/credentials.example.json thành mcp/credentials.json; nếu dùng inventory CSV, cung cấp file riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
 
 Khuyến nghị điền tài khoản theo profile trong file private credentials.json để mọi MCP client dùng chung. Cấu hình cũ qua NETWORK_SSH_USER/NETWORK_SSH_PASSWORD hoặc inline profiles vẫn được hỗ trợ. Bootstrap fallback cặp đầu tiên trong input/ssh.txt khi thiếu cặp môi trường. Không đưa credential, inventory, known_hosts, runtime hoặc output lên Git.
 
@@ -26,6 +28,40 @@ python mcp/collector_backend.py --check
 Bootstrap chỉ đặt mặc định khi chưa có cấu hình: `NETWORK_MCP_DATA_DIR=runtime/data/netmiko`, `alt_key_file=mcp/ssh/known_hosts`, `alt_host_keys=true`. Giá trị environment và `defaults` do người dùng đặt được giữ nguyên tại bootstrap, kể cả `alt_host_keys=false`. Khi kết nối, backend suy ra các cờ kiểm tra host key từ `ssh_mode` theo bảng dưới.
 
 Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.1.
+
+## Cài mới không có inventory và kết nối MCP client
+
+Ví dụ PowerShell, chạy tại thư mục source đã tải:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item mcp/devices.example.json mcp/devices.json
+Copy-Item mcp/credentials.example.json mcp/credentials.json
+```
+
+Sửa file private `mcp/credentials.json` để chỉ giữ những profile thực sự dùng và cấp đủ tài khoản cho chúng. Ví dụ tối thiểu (thay placeholder trên máy của bạn):
+
+```json
+{"profiles":{"default":{"username":"YOUR_SSH_USER","password":"YOUR_SSH_PASSWORD"}}}
+```
+
+Giữ `devices: {}` và `credentials_file: "credentials.json"` trong config nếu dùng target động. Không cần tạo CSV. Nếu giữ các profile dùng `${ENV}` trong file example, phải cấp đủ biến môi trường cho từng profile; xem [cấu hình credential](docs/CREDENTIALS.md).
+
+```powershell
+.\.venv\Scripts\python.exe -u mcp/bootstrap.py --config mcp/devices.json
+```
+
+Đây là server stdio: khi chạy thủ công, tiến trình chờ JSON-RPC từ stdin. Trong MCP client, chọn transport stdio và cho client khởi chạy server. Mẫu command/args dưới đây cần thay đường dẫn tuyệt đối theo máy; vị trí đặt các trường tùy client:
+
+```json
+{
+  "command": "C:/NetmikoMCP/.venv/Scripts/python.exe",
+  "args": ["-u", "C:/NetmikoMCP/mcp/bootstrap.py", "--config", "C:/NetmikoMCP/mcp/devices.json"]
+}
+```
+
+Client thực hiện initialize rồi tools/list; cần thấy 10 tools. Gọi ssh_status để kiểm tra version 1.9.1. Sau khi được cấp phạm vi thiết bị thật, gọi ssh_execute với target, command, device_type và profile phù hợp. Việc khởi động/stdin thành công chưa chứng minh SSH thiết bị thật hoạt động.
 
 ## Permission Detection và Agent Workflow — 1.9.1
 
@@ -132,7 +168,7 @@ Copy toàn bộ mcp/ khi cập nhật, gồm result_status.py; restart MCP. Ki�
 
 ## Reliability — 1.8.2
 
-Pool đầy sẽ chờ theo deadline/cancel, không đẩy session đang được sử dụng ra ngoài. Reader chờ prompt ổn định tối thiểu 300 ms; dữ liệu tiếp tục sau prompt nghi ngờ được giữ lại và báo chưa xác nhận đầy đủ. ANSI/pager được chuẩn hóa trước khi so sánh.
+Pool đầy sẽ chờ theo deadline/cancel, không đẩy session đang được sử dụng ra ngoài. Reader chờ prompt ổn định tối thiểu 300 ms; dữ liệu tiếp tục sau prompt nghi ngờ được giữ lại và báo chưa xác nhận đầy đủ. ANSI/pager được chuẩn hóa trước khi so sánh. Với `show logging`, `show log ...` và `display logbuffer`, prompt cộng quiet time đơn thuần không đủ chứng minh hoàn tất: reader trả `output_verification`, `output_complete=false`, giữ dữ liệu đã nhận và không tự retry. Log đã đủ cũng có thể bị đánh dấu chưa xác minh. Kênh đóng sau prompt cho phép xác nhận điểm kết thúc; các kiểm tra lỗi/ambiguity còn lại vẫn áp dụng. Không tăng quiet time hoặc timeout. Phần dữ liệu đến sau lúc reader kết thúc chưa được thu thập; không coi dữ liệu partial là toàn bộ log. Quy tắc này không bảo đảm phát hiện prompt giả trong mọi loại CLI khác.
 
 Scanner thêm `--device-timeout 240`: ngân sách chung cho fast và retry slow, mặc định bằng `--slow-timeout`. Resume giữ thời gian đã dùng; explicit retry mở chu kỳ mới. Không tự replay cấu hình chưa rõ kết quả. Timeout trực tiếp vẫn phụ thuộc lời gọi Netmiko/OS trả về; metadata `device_budget_exceeded` ghi nhận vượt trần. Xem [chi tiết và giới hạn](docs/SCAN.md).
 

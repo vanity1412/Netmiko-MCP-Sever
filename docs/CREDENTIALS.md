@@ -75,4 +75,4 @@ Credential ngoài thay trọn bộ auth của profile cùng tên trong config; g
 python mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv --credentials-file "D:/NetworkPrivate/credentials.json" --check
 ```
 
-Check kiểm tra credential của thiết bị inventory, không xác nhận password đúng trên thiết bị. Chỉ xuất số lượng/profile, không xuất password. Không commit file private; không cần dán tài khoản vào chat. Resume vẫn kiểm chứng identity hiện có; đổi tài khoản có thể làm identity của kế hoạch khác đi.
+`--inventory-csv` có thể bỏ khi dùng bootstrap với target động hoặc chỉ có thiết bị trong config. Check kiểm tra credential của các thiết bị đã nạp, không xác nhận password đúng trên thiết bị. Nếu không có thiết bị, kết quả check không kiểm chứng credential của target động tương lai. Chỉ xuất số lượng/profile, không xuất password. Không commit file private; không cần dán tài khoản vào chat. Resume vẫn kiểm chứng identity hiện có; đổi tài khoản có thể làm identity của kế hoạch khác đi.

@@ -1,3 +1,7 @@
+# Scanner — Netmiko MCP 1.9.1
+
+Các mục phiên bản bên dưới mô tả hành vi kế thừa vẫn áp dụng; hướng dẫn chạy đã được đối chiếu với 1.9.1.
+
 # Reliability 1.8.2
 
 Pool capacity waits now obey the request deadline/cancellation without holding the registry lock or SSH semaphore. Probe adoption waits after releasing its SSH slot; leased entries are never evicted.
@@ -10,7 +14,7 @@ Deadlines are cooperative for direct Netmiko connections: a blocking library/OS 
 
 # Scanner 1.8.0
 
-Giữ status checkpoint chữ thường (success/partial/failed/unknown) và toàn bộ evidence/resume. Attempt thêm result_status chuẩn hóa từ kết quả CLI; export pending là STORAGE_ERROR. Kết quả command có data_state và execution_state để agent phân biệt dữ liệu dở dang với tác động cấu hình chưa chắc chắn. Không thêm retry lồng vào execute_many. README 1.8.0 mô tả status và cơ chế refresh driver trước command.
+Giữ status checkpoint chữ thường (success/partial/failed/unknown) và toàn bộ evidence/resume. Attempt thêm result_status chuẩn hóa từ kết quả CLI; export pending là STORAGE_ERROR. Kết quả command có data_state và execution_state để agent phân biệt dữ liệu dở dang với tác động cấu hình chưa chắc chắn. Không thêm retry lồng vào execute_many. README hiện tại mô tả status và cơ chế refresh driver trước command.
 
 # Scanner 1.7.0 — cập nhật hành vi
 
@@ -24,6 +28,8 @@ Không benchmark và không thay fast/slow pool trong bản này. Các mục rea
 
 ## Chạy từ thư mục gốc
 
+Scanner vẫn mặc định đọc `input/device.csv`, khác bootstrap cho phép bỏ CSV. Chuẩn bị file riêng trước khi chạy; các ví dụ không tự cung cấp inventory/credential production. Dùng `--config`, `--inventory-csv` và `--credentials-file` để chỉ định file riêng. Xem [credential](CREDENTIALS.md).
+
 Xem kế hoạch toàn inventory, **không SSH**:
 
 ```powershell
@@ -36,11 +42,11 @@ Khi đã sẵn sàng, chạy thật bằng cùng lệnh thêm `--execute`:
 python mcp/scan.py --all --output output/SCAN-VERSION --workers 16 --slow-workers 4 --execute
 ```
 
-Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu khác, dùng `--commands-file mcp/scan-commands.example.json` hoặc plan có `commands` riêng. Nội dung lệnh do agent quyết định; chỉ kiểm tra framing. `--all` lấy alias từ CSV; các task cùng identity và cùng lệnh được loại trùng. Cùng IP nhưng khác driver/profile kết nối vẫn là task riêng khi tham số thực tế khác.
+Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu khác, dùng `--commands-file mcp/scan-commands.example.json` hoặc plan có `commands` riêng. Nội dung lệnh do agent quyết định; chỉ kiểm tra framing. `--all` lấy alias từ config sau khi merge CSV; các task cùng identity và cùng lệnh được loại trùng. Cùng IP nhưng khác driver/profile kết nối vẫn là task riêng khi tham số thực tế khác.
 
 Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể. Sửa các target ví dụ thành target thật đã xác minh. Plan chỉ nhận target, commands, device_type, profile, read_timeout, lane. Target ngoài inventory được gọi bằng IP/hostname và driver tường minh/autodetect; không tự thêm CSV.
 
-`lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json, không chứa username/password trong plan. Có thể chọn profile qua cột CSV `profile`; bỏ trống dùng `default`. Profile khai báo credential riêng hoạt động khi không có credential toàn cục. Environment và cặp đầu tiên trong input/ssh.txt vẫn là nguồn fallback; không tự thử lần lượt các cặp credential.
+`lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json hoặc credentials.json, không chứa username/password trong plan. Có thể chọn profile qua cột CSV `profile`; bỏ trống dùng `default`. Profile khai báo credential riêng hoạt động khi không có credential toàn cục. Environment và cặp đầu tiên trong input/ssh.txt vẫn là nguồn fallback; không tự thử lần lượt các cặp credential.
 
 Ví dụ mapping (thay giá trị mẫu và đặt biến môi trường tương ứng):
 
@@ -62,7 +68,7 @@ BRANCH-01,192.0.2.1,cisco_ios,branch
 - Thiết bị chậm vẫn có kết quả riêng: success, partial, failed hoặc unknown; pending là chưa chạy, không phải thành công. Không biến timeout/auth thành interface down hoặc số đo0.
 - Host key mới/đổi được chấp nhận và lưu atomic dưới khóa liên tiến trình. Lỗi persistence tạo warning và không làm SSH thất bại. Không tự đổi credential hoặc bật thuật toán cũ toàn mạng.
 - Luồng đọc Netmiko channel không chờ echo; chỉ kết thúc thành công khi có prompt cuối. Tự gửi Space tại pager, không gửi phản hồi confirmation. Timeout giữ output dở dang làm bằng chứng và dừng batch. Session đầy đủ không echo vẫn được reuse.
-- Thêm các nhóm show/display NOC như NTP, MAC/STP, VRF, BFD, nguồn/quạt và lệnh ping/traceroute/tracert; Linux có ip route get, ip -s link show, getent hosts. Ping Junos/Linux không chỉ định số gói được thêm count 5/-c 5. Số gói tường minh giới hạn 1..20; flood/preload và lệnh cấu hình/ghi file vẫn bị từ chối.
+- Không lọc nội dung CLI, không tự thêm count cho ping hoặc giới hạn số gói. Agent chọn lệnh và tham số trong phạm vi công việc; chỉ kiểm tra framing. Plan có thể chứa cấu hình; cấu hình chưa rõ kết quả không được tự replay.
 
 ## Output và resume
 
@@ -76,13 +82,13 @@ Chạy lại cùng lệnh/output để resume. Job bỏ qua success/failed/parti
 
 scan.lock chặn hai process dùng cùng thư mục; crash có thể để lại lock. Chỉ gỡ lock thủ công sau khi xác minh process cũ đã dừng và đối soát checkpoint, không xóa outbox hay hồ sơ để ép chạy lại. Đĩa đầy/không ghi được không được báo success. Với thao tác replace checkpoint bị khóa file tạm thời trên Windows, chỉ retry thao tác file, không lặp SSH.
 
-Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo và gửi nội dung trong thân email theo AGENTS. Scanner không tự gửi email cho từng thiết bị.
+Scanner thực thi plan do agent cung cấp, có thể gồm lệnh đọc hoặc cấu hình. Agent đọc summary/evidence để kiểm chứng mục tiêu. Scanner không tự gửi email/thông báo; chỉ thực hiện nếu người dùng yêu cầu riêng.
 
 ## Cập nhật bộ công ty
 
 Copy toàn bộ thư mục mcp/, gồm probe_session.py; giữ cấu hình devices.json riêng. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Source mới cần process MCP mới; kiểm tra ssh_status.version=1.7.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.9.1. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
 ## Kiểm tra diện rộng và tình huống lỗi
 

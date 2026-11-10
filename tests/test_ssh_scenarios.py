@@ -157,7 +157,9 @@ class ScenarioTests(unittest.TestCase):
     def test_log_line_with_confirmation_marker_is_not_an_active_question(self):
         conn = TimelineChannel(self.clock, [(0, 'Nov 9 event recorded [confirm]'), (.2, '\nrouter#')])
         result = self.collector(conn).execute('test', 'show logging', read_timeout=1)
-        self.assertTrue(result['ok'])
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error_category'], 'output_verification')
+        self.assertFalse(result['awaiting_input'])
         self.assertIn('event recorded [confirm]', result['output'])
 
     def test_no_existing_session_is_retryable_handshake_failure(self):
