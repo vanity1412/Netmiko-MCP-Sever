@@ -15,7 +15,7 @@ BACKEND = ROOT / 'mcp' / 'collector_backend.py'
 
 
 def prepare_environment(required=False):
-    os.environ['NETWORK_MCP_DATA_DIR'] = str(ROOT / 'runtime' / 'data' / 'netmiko')
+    os.environ.setdefault('NETWORK_MCP_DATA_DIR', str(ROOT / 'runtime' / 'data' / 'netmiko'))
     if not (os.environ.get('NETWORK_SSH_USER') and os.environ.get('NETWORK_SSH_PASSWORD')):
         source = ROOT / 'input' / 'ssh.txt'
         credentials = re.findall(
@@ -33,7 +33,7 @@ def prepare_environment(required=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
-    parser.add_argument('--inventory-csv', required=True)
+    parser.add_argument('--inventory-csv', help='Optional CSV merged into devices declared in config')
     parser.add_argument('--credentials-file', help='Shared credential JSON; relative to config directory')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--output-dir', help='Optional isolated evidence directory; credentials/inventory unchanged')
@@ -43,14 +43,16 @@ def main():
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)
     config_path = Path(args.config)
-    inventory_path = Path(args.inventory_csv)
     if not config_path.is_absolute():
         config_path = ROOT / config_path
-    if not inventory_path.is_absolute():
-        inventory_path = ROOT / inventory_path
-    config = backend.load_inventory_csv(backend.load_config(str(config_path), credentials_file=args.credentials_file), str(inventory_path))
-    config.setdefault('defaults', {})['alt_key_file'] = str(ROOT / 'mcp' / 'ssh' / 'known_hosts')
-    config['defaults']['alt_host_keys'] = True
+    config = backend.load_config(str(config_path), credentials_file=args.credentials_file)
+    if args.inventory_csv:
+        inventory_path = Path(args.inventory_csv)
+        if not inventory_path.is_absolute():
+            inventory_path = ROOT / inventory_path
+        config = backend.load_inventory_csv(config, str(inventory_path))
+    config.setdefault('defaults', {}).setdefault('alt_key_file', str(ROOT / 'mcp' / 'ssh' / 'known_hosts'))
+    config['defaults'].setdefault('alt_host_keys', True)
     config['defaults'].setdefault('autodetect_cache_file', str(ROOT / 'runtime/data/netmiko/autodetect.sqlite3'))
     if args.output_dir:
         output_path = Path(args.output_dir)

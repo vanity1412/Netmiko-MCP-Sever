@@ -21,6 +21,10 @@ python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/devic
 python mcp/collector_backend.py --check
 ```
 
+`--inventory-csv` là tùy chọn: bỏ tham số này để dùng thiết bị trong config hoặc target động qua MCP; thiết bị đã khai báo trong config vẫn được giữ. Nếu cung cấp CSV, bootstrap merge theo cơ chế backend hiện có và vẫn báo lỗi nếu file sai/không tồn tại.
+
+Bootstrap chỉ đặt mặc định khi chưa có cấu hình: `NETWORK_MCP_DATA_DIR=runtime/data/netmiko`, `alt_key_file=mcp/ssh/known_hosts`, `alt_host_keys=true`. Giá trị environment và `defaults` do người dùng đặt được giữ nguyên, kể cả `alt_host_keys=false`.
+
 Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.1.
 
 ## Permission Detection và Agent Workflow — 1.9.1

@@ -1,5 +1,8 @@
 ## 1.9.1 — 2026-11-10
 
+- Bootstrap preserves explicit NETWORK_MCP_DATA_DIR, alt_key_file and alt_host_keys; legacy defaults apply only when absent. Optional --inventory-csv retains config devices and dynamic targets; supplied CSV still uses the existing merge/validation path.
+- Add deterministic Junos preparation boundaries (slow response within/exceeding 5 seconds, CLI error followed by a valid prompt) and unrecognized timing-question regressions. Keep reader/timeouts/heuristics unchanged; uncertain configuration retains evidence and is not automatically replayed.
+- Add bootstrap stdio integration with synthetic localhost SSH, UTF-8 JSON-RPC, all ten frozen tool schemas, dynamic/config/CSV targets and saved uncertain output.
 - Add CLI error_reason permission_denied/syntax_error/command_failed; preserve CLI_ERROR, error_category, session/retry behavior and all ten tool schemas.
 - Recognize explicit CLI/shell permission diagnostics and access-denied RPC error tags; clear stale CLI reasons when status changes to success/non-CLI failure.
 - Add mcp/WORKFLOW.md and AGENTS.md link for evidence-based recovery, authentication/permission separation, pending input, storage/parser recovery and post-command goal verification.
