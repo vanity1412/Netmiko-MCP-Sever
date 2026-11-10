@@ -87,6 +87,39 @@ class PreparationTimingTests(unittest.TestCase):
         self.addCleanup(c.shutdown)
         return c
 
+    def test_preparation_failure_reports_readiness_and_keeps_redacted_partial_output(self):
+        from netmiko import BaseConnection
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        for driver, command in [('juniper_junos', SETUP_COMMANDS[0]), ('cisco_ios', 'terminal width 511')]:
+            with self.subTest(driver=driver):
+                conn = PreparationChannel(self.clock, {command: [(0, 'bằng chứng secret-value\n')]})
+                conn.global_cmd_verify = False
+                c = self.collector(conn)
+                c.defaults.update(username='tester', password='secret-value')
+                c.redaction_enabled = False  # Error evidence must still redact credentials.
+                def connect(**kw):
+                    if driver == 'juniper_junos':
+                        JuniperBase.session_preparation(conn)
+                    else:
+                        BaseConnection.set_terminal_width(conn, command=command, pattern='width')
+                    return conn
+                c._connect = connect
+                with self.assertRaises(b.CollectionError) as caught:
+                    c.execute('local', 'request system reboot', device_type=driver)
+                result = c.failure_result(caught.exception, 'local', 'request system reboot')
+                self.assertEqual(result['error_stage'], 'preparation')
+                self.assertTrue(result['ssh_authenticated'])
+                self.assertIs(result['cli_ready'], False)
+                self.assertIs(result['command_sent'], False)
+                self.assertEqual(result['status'], 'TIMEOUT')
+                self.assertEqual(result['execution_state'], 'NOT_SENT')
+                self.assertEqual(result['data_state'], 'PARTIAL')
+                self.assertIn('bằng chứng', result['output'])
+                self.assertNotIn('secret-value', result['output'])
+                self.assertEqual(result['preparation_command'], command)
+                self.assertEqual(conn.writes, [command + '\n'])
+
     def test_unrecognized_question_with_timing_preserves_output_without_success_or_replay(self):
         question = 'Chọn thao tác\nSelect maintenance slot (A/B):'
         self.assertFalse(b.pending_interaction(question))

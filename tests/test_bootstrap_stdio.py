@@ -18,6 +18,49 @@ class BootstrapStdioTests(unittest.TestCase):
     def setUpClass(cls):
         cls.key = paramiko.RSAKey.generate(2048)
 
+    def test_preparation_timeout_keeps_evidence_and_readiness_over_stdio(self):
+        for driver in ('juniper_junos', 'autodetect'):
+            with self.subTest(driver=driver), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                server = LocalSSHServer(self.key)
+                try:
+                    server.prompt = 'noc@router>'
+                    server.responses['show version'] = 'Junos: 23.4R1'
+                    server.responses['set cli screen-width 511'] = lambda ch: ch.sendall(
+                        'bằng chứng loopback-only\n'.encode('utf-8'))
+                    config = {'defaults': {'device_type': driver, 'port': server.port,
+                        'username': 'tester', 'password': 'loopback-only', 'session_sweep_seconds': 0,
+                        'alt_key_file': str(folder / 'known_hosts'),
+                        'autodetect_cache_file': str(folder / 'drivers.sqlite3')}}
+                    path = folder / 'config.json'
+                    path.write_text(json.dumps(config), encoding='utf-8')
+                    request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+                        'name': 'ssh_execute', 'arguments': {'target': '127.0.0.1', 'command': 'show interfaces terse'}}}
+                    env = dict(os.environ, NETWORK_MCP_DATA_DIR=str(folder / 'data'),
+                               NETWORK_SSH_USER='tester', NETWORK_SSH_PASSWORD='loopback-only')
+                    env.pop('NETWORK_MCP_CREDENTIALS_FILE', None)
+                    proc = subprocess.run([sys.executable, '-u', str(ROOT / 'mcp/bootstrap.py'),
+                        '--config', str(path)], input=json.dumps(request) + '\n', capture_output=True,
+                        text=True, encoding='utf-8', env=env, timeout=45)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    reply = json.loads(proc.stdout)
+                    self.assertTrue(reply['result']['isError'])
+                    result = json.loads(reply['result']['content'][0]['text'])
+                    self.assertEqual(result['error_stage'], 'preparation')
+                    self.assertEqual(result['status'], 'TIMEOUT')
+                    self.assertTrue(result['ssh_authenticated'])
+                    self.assertIs(result['cli_ready'], False)
+                    self.assertIs(result['command_sent'], False)
+                    self.assertEqual(result['execution_state'], 'NOT_SENT')
+                    self.assertEqual(result['data_state'], 'PARTIAL')
+                    self.assertIn('bằng chứng', result['output'])
+                    self.assertNotIn('loopback-only', reply['result']['content'][0]['text'])
+                    self.assertNotIn('show interfaces terse', server.commands)
+                    self.assertEqual(server.commands.count('set cli screen-width 511'), 1)
+                    self.assertEqual(server.auth_attempts, 1)
+                finally:
+                    server.close()
+
     def test_dynamic_target_config_devices_and_optional_csv_over_stdio(self):
         for mode in ('dynamic', 'config', 'csv'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:

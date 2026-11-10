@@ -1,5 +1,7 @@
 ## 1.9.1 — 2026-11-10
 
+- Retain partial setup evidence for tolerant Junos/Cisco preparation failures; report preparation stage, CLI not ready and business command not sent. Redact setup evidence before returning MCP errors, including worker failures. Keep existing timeouts, retry decisions and architecture.
+- Add direct/worker stdio preparation regressions and assertions of final host-key options at the Netmiko boundary; document ssh_mode as the authority for verification flags without changing policy.
 - Bootstrap preserves explicit NETWORK_MCP_DATA_DIR, alt_key_file and alt_host_keys; legacy defaults apply only when absent. Optional --inventory-csv retains config devices and dynamic targets; supplied CSV still uses the existing merge/validation path.
 - Add deterministic Junos preparation boundaries (slow response within/exceeding 5 seconds, CLI error followed by a valid prompt) and unrecognized timing-question regressions. Keep reader/timeouts/heuristics unchanged; uncertain configuration retains evidence and is not automatically replayed.
 - Add bootstrap stdio integration with synthetic localhost SSH, UTF-8 JSON-RPC, all ten frozen tool schemas, dynamic/config/CSV targets and saved uncertain output.

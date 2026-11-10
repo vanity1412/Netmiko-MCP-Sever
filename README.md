@@ -23,7 +23,7 @@ python mcp/collector_backend.py --check
 
 `--inventory-csv` là tùy chọn: bỏ tham số này để dùng thiết bị trong config hoặc target động qua MCP; thiết bị đã khai báo trong config vẫn được giữ. Nếu cung cấp CSV, bootstrap merge theo cơ chế backend hiện có và vẫn báo lỗi nếu file sai/không tồn tại.
 
-Bootstrap chỉ đặt mặc định khi chưa có cấu hình: `NETWORK_MCP_DATA_DIR=runtime/data/netmiko`, `alt_key_file=mcp/ssh/known_hosts`, `alt_host_keys=true`. Giá trị environment và `defaults` do người dùng đặt được giữ nguyên, kể cả `alt_host_keys=false`.
+Bootstrap chỉ đặt mặc định khi chưa có cấu hình: `NETWORK_MCP_DATA_DIR=runtime/data/netmiko`, `alt_key_file=mcp/ssh/known_hosts`, `alt_host_keys=true`. Giá trị environment và `defaults` do người dùng đặt được giữ nguyên tại bootstrap, kể cả `alt_host_keys=false`. Khi kết nối, backend suy ra các cờ kiểm tra host key từ `ssh_mode` theo bảng dưới.
 
 Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.9.1.
 
@@ -44,6 +44,15 @@ Driver inventory/cache được ưu tiên. Cold autodetect dùng worker probe v�
 Các lệnh trong một lease chạy tuần tự; thiết bị khác chạy song song. Dùng execute_many hoặc interact khi cần một chuỗi không bị yêu cầu khác chen vào. Giữ cùng target/profile/driver khi gửi phản hồi cho phiên đang chờ.
 
 ssh_mode mặc định compatible: nhận key mới/đổi, lưu atomic, ghi nhận thay đổi fingerprint; lỗi lưu key không chặn SSH. strict là lựa chọn chủ động: phải có trusted key trong alt_key_file; dùng host_key_store_mode shared nếu muốn một file chung thay vì file theo PID.
+
+| `ssh_mode` nội bộ | `ssh_strict` gửi Netmiko | `alt_host_keys` | `system_host_keys` |
+|---|---|---|---|
+| `compatible` | `false` | `false` | `false` |
+| `strict` | `true` | `true` | `true` |
+
+Các cờ trên không hoạt động độc lập với `ssh_mode`; `false` không vô hiệu hóa strict. Compatible dùng policy tiếp nhận/lưu key riêng, nên `alt_host_keys=false` không tắt persistence. `ssh_mode` không truyền trực tiếp cho Netmiko. `alt_key_file` tùy chỉnh được giữ và chuẩn hóa thành đường dẫn tuyệt đối; `host_key_store_mode=process` thêm hậu tố PID chỉ trong compatible.
+
+Lỗi đọc/xác minh phản hồi trong các bước preparation Junos và terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang đã che credential; `preparation_command` chỉ rõ lệnh setup. Timeout và chính sách retry không thay đổi.
 
 Profile/device hỗ trợ read_timeout, prompt_quiet_seconds, timing_quiet_seconds; tham số tool tường minh ưu tiên. Connection options gồm conn_timeout, auth_timeout, banner_timeout, key_file, passphrase, encoding, disable_sha2_fix, disabled_algorithms và ssh_config_file. Credential literal giữ nguyên; chuỗi ${ENV_NAME} nguyên vẹn lấy từ environment. auto_enable=true chủ động gọi enable cho Cisco bằng secret backend; mặc định false.
 

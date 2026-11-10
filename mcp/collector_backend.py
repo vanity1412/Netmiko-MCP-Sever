@@ -867,6 +867,12 @@ def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, 
                 conn.disconnect()
 
 
+def preparation_error(failure, output, command):
+    """Keep setup evidence distinct from the caller's unsent business command."""
+    return CollectionError({**failure, 'error_stage': 'preparation',
+                            'output': output, 'preparation_command': command})
+
+
 def install_tolerant_width():
     """Handle Cisco preparation that waits for width-command echo before base_prompt exists."""
     from netmiko import BaseConnection
@@ -884,9 +890,10 @@ def install_tolerant_width():
         conn.base_prompt = prompt[:-1]
         output, failure = read_cli_output(conn, command, 5, r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$')
         if failure:
-            raise CollectionError(failure)
+            raise preparation_error(failure, output, command)
         if not ending_matches(r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$', output):
-            raise ValueError('CLI prompt could not be verified after terminal setup')
+            raise preparation_error({'error': 'PreparationPromptError', 'error_category': 'output_verification',
+                                     'retryable': False}, output, command)
         return output
 
     set_width._goose_tolerant_width = True
@@ -915,9 +922,10 @@ def install_tolerant_preparation():
         for command in ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'):
             reply, failure = read_cli_output(conn, command, 5, pattern)
             if failure:
-                raise CollectionError(failure)
+                raise preparation_error(failure, reply, command)
             if not ending_matches(pattern, reply):
-                raise ValueError('Junos did not return a valid CLI prompt after setup')
+                raise preparation_error({'error': 'PreparationPromptError', 'error_category': 'output_verification',
+                                         'retryable': False}, reply, command)
         conn.base_prompt = prompt[:-1]
         conn._network_prompt_text = prompt
         conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
@@ -1652,8 +1660,11 @@ class Collector:
                        message=self.scrub_error(str(exc)))
         if hasattr(exc, '_network_keep_session'):
             details['session_reusable'] = bool(exc._network_keep_session)
-        details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt', 'persistence'} else None
-        details['cli_ready'] = True if details['error_stage'] in {'command', 'persistence'} else None
+        details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt', 'persistence', 'preparation'} else None
+        details['cli_ready'] = False if details['error_stage'] == 'preparation' else (True if details['error_stage'] in {'command', 'persistence'} else None)
+        if details['error_stage'] == 'preparation':
+            details['output'] = self.redact_output(details.get('output', ''), force=True)
+            details['preparation_command'] = self.redact_output(details.get('preparation_command', ''), force=True)
         details['command_sent'] = getattr(exc, '_network_command_sent', True if getattr(exc,'_network_keep_session',False) else None) if details['error_stage'] in {'command','persistence','parsing'} else False
         if details.get('command'):
             details['replay_safe'] = is_replay_safe(details['command'])
