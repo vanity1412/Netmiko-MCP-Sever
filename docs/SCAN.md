@@ -1,6 +1,12 @@
-# Quét inventory — Netmiko MCP 1.6.1
+# Scanner 1.7.0 — cập nhật hành vi
 
-Giữ nguyên 10 MCP tool và schema. `mcp/scan.py` là CLI/helper Python bổ sung để quản lý một job lớn; không cần thay OpenCode config để có thêm tool. Không import credential từ SecureCRT XML.
+Không lọc nội dung lệnh; plan có thể chứa cấu hình. Agent chịu trách nhiệm phạm vi thay đổi. Dùng tool interact cho chuỗi câu hỏi/phản hồi, scanner execute_many dừng ở awaiting_input, không gửi phản hồi ngầm.
+
+--retry-status failed partial cho phép chạy lại riêng các trạng thái được chọn trên cùng plan/job, bỏ qua success và prefix lệnh đọc đã hoàn tất. Giữ toàn bộ attempts và evidence. --retry-status unknown phục hồi export_pending trước mà không SSH lại.
+
+Lệnh có tác động chưa rõ không tự replay: cần đối soát rồi chủ động --replay-uncertain. Khi dùng flag này cho task không replay-safe, toàn batch được chạy lại để tái lập config mode. Gián đoạn running chuyển unknown. Retry tự động chỉ dành cho lỗi transient trước khi gửi lệnh hoặc chuỗi đọc được nhận diện, tối đa hai attempt mỗi chu kỳ. Đây là phân loại replay, không phải bộ lọc thực thi.
+
+Không benchmark và không thay fast/slow pool trong bản này. Các mục read-only trong lịch sử bên dưới được thay bởi hành vi 1.7.0 và README.
 
 ## Chạy từ thư mục gốc
 
@@ -16,7 +22,7 @@ Khi đã sẵn sàng, chạy thật bằng cùng lệnh thêm `--execute`:
 python mcp/scan.py --all --output output/SCAN-VERSION --workers 16 --slow-workers 4 --execute
 ```
 
-Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu khác, dùng `--commands-file mcp/scan-commands.example.json` hoặc plan có `commands` riêng. Lệnh phải qua policy hiện có. `--all` lấy alias từ CSV; các task cùng identity và cùng lệnh được loại trùng. Cùng IP nhưng khác driver/profile kết nối vẫn là task riêng khi tham số thực tế khác.
+Mặc định chỉ lấy version (Linux: uname -s). Để lấy dữ liệu khác, dùng `--commands-file mcp/scan-commands.example.json` hoặc plan có `commands` riêng. Nội dung lệnh do agent quyết định; chỉ kiểm tra framing. `--all` lấy alias từ CSV; các task cùng identity và cùng lệnh được loại trùng. Cùng IP nhưng khác driver/profile kết nối vẫn là task riêng khi tham số thực tế khác.
 
 Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể. Sửa các target ví dụ thành target thật đã xác minh. Plan chỉ nhận target, commands, device_type, profile, read_timeout, lane. Target ngoài inventory được gọi bằng IP/hostname và driver tường minh/autodetect; không tự thêm CSV.
 
@@ -62,7 +68,7 @@ Scanner chỉ thu thập; agent đọc summary/evidence rồi tạo báo cáo v�
 
 Copy toàn bộ thư mục mcp/, gồm probe_session.py; giữ cấu hình devices.json riêng. Có thể copy kèm các file scan ví dụ/tài liệu/tests. Không thay opencode.json, devices.json, input/, known_hosts, SMTP settings hoặc runtime.
 
-Source mới cần process MCP mới; kiểm tra ssh_status.version=1.6.1. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
+Source mới cần process MCP mới; kiểm tra ssh_status.version=1.7.0. Thay đổi tham số identity có thể khiến job cũ không resume được; dùng thư mục output mới thay vì ép bỏ kiểm chứng manifest.
 
 ## Kiểm tra diện rộng và tình huống lỗi
 

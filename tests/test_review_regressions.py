@@ -34,13 +34,9 @@ class ReviewRegression(unittest.TestCase):
         ]:
             self.assertEqual(b.readonly_command(command, platform), command)
 
-    def test_pipeline_bypass_rejected(self):
-        for command in ['show version | match "x|y" | save /tmp/x',
-                        'show version | match "x', 'show version | match x || reboot',
-                        'show version | display xml | save x', 'show log /tmp/x | save x',
-                        'show version | match x; reboot']:
-            with self.subTest(command=command), self.assertRaises(PermissionError):
-                b.readonly_command(command, 'juniper_junos')
+    def test_pipeline_content_not_filtered(self):
+        for command in ['show version | match x | save /tmp/x','configure','commit','show version $x']:
+            self.assertEqual(b.readonly_command(command,'juniper_junos'),command)
 
     def test_interact_failure_serializes_and_saves(self):
         result = self.c.interact('MOCK', ['show version', 'show system bad'], save_output=True)

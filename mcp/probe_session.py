@@ -94,8 +94,14 @@ class ProbeSession:
                 return {'output':clean_terminal(''.join(partial)), 'failure':failure}
 
     def collect_in_worker(self, command, timeout, pattern, quiet, checkpoint):
+        self._network_command_sent = True
         response = self._rpc({'op':'collect','command':command,'timeout':timeout,'pattern':pattern,'quiet':quiet},
                              timeout + .25, checkpoint)
+        self._network_command_sent = response.get('command_sent', True)
+        self._network_preceding_output = response.get('preceding_output', '')
+        if response.get('prompt') and not response.get('failure'):
+            self._network_prompt_text = response['prompt']
+            self._network_prompt_regex = r'(?m)^' + re.escape(response['prompt']) + r'[ \t]*\r?$'
         return response.get('output',''), response.get('failure')
 
     def is_alive(self):
@@ -156,7 +162,9 @@ def main():
                 output, failure = b.read_cli_output(conn, request['command'], request['timeout'],
                     request['pattern'], quiet=request['quiet'],
                     on_data=lambda data:emit({'event':'data','data':data}))
-                emit({'output':output,'failure':failure})
+                emit({'output':output,'failure':failure,'command_sent':getattr(conn,'_network_command_sent',True),
+                      'preceding_output':getattr(conn,'_network_preceding_output',''),
+                      'prompt':getattr(conn,'_network_prompt_text',None)})
             else:
                 raise ValueError('Unknown SSH worker operation')
     except Exception as exc:

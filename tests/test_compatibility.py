@@ -77,9 +77,9 @@ class Compatibility(unittest.TestCase):
                     with self.assertRaises(b.BatchError):
                         c.execute_many('192.0.2.1',['show version'],save_output=True)
                 self.assertEqual(conn.closed,closed)
-    def test_noc_aliases_and_filters(self):
-        self.assertEqual(b.readonly_command('show run','cisco_ios'),'show running-config')
-        self.assertEqual(b.readonly_command('display cu','huawei'),'display current-configuration')
+    def test_noc_aliases_and_filters_preserved(self):
+        self.assertEqual(b.readonly_command('show run','cisco_ios'),'show run')
+        self.assertEqual(b.readonly_command('display cu','huawei'),'display cu')
         for cmd in ['show configuration | display inheritance no-comments',
                     'show interfaces | match "ge-0/0/0\\.[0-9]+"']:
             b.readonly_command(cmd,'juniper_junos')

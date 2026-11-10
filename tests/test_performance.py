@@ -35,10 +35,9 @@ class Performance(unittest.TestCase):
  def test_duplicate_equivalent_profile_representation_is_deduped(self):
   tasks,_=scan.prepare_tasks(self.c,[self.task(),self.task(profile='default')])
   self.assertEqual(len(tasks),1)
- def test_unknown_driver_plan_cannot_hide_unsafe_command_map(self):
-  with self.assertRaises(PermissionError):
-   self.run_job([{'target':'192.0.2.10'}],command_map={'juniper_junos':['configure']})
-  self.assertFalse(self.connections)
+ def test_unknown_driver_plan_accepts_configuration_map(self):
+  tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}],{'juniper_junos':['configure']})
+  self.assertEqual(len(tasks),1);self.assertFalse(self.connections)
  def test_dns_and_banner_eof_are_not_silently_timeout(self):
   import socket,paramiko
   self.assertEqual(b.classify_error(socket.gaierror('MOCK DNS'),'connect')['error_category'],'dns_error')
@@ -194,7 +193,7 @@ class Performance(unittest.TestCase):
   result=self.run_job([self.task(),self.task('other')],cancel=cancel)
   self.assertEqual(result['pending'],2);self.assertFalse(result['ok']);self.assertFalse(self.connections)
  def test_invalid_plan_rejected_before_any_ssh(self):
-  with self.assertRaises(PermissionError):self.run_job([self.task(),dict(target='other',commands=['configure'])])
+  with self.assertRaises(ValueError):self.run_job([self.task(),dict(target='other',commands=['invalid\nframe'])])
   self.assertFalse(self.connections)
  def test_job_lock_and_malformed_checkpoint_fail_closed(self):
   directory=self.directory/'job';directory.mkdir();(directory/'scan.lock').write_text('MOCK')

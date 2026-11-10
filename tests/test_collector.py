@@ -48,22 +48,22 @@ class Regression(unittest.TestCase):
     def test_tools_unchanged(self):
         self.assertEqual(len(b.make_tool_list()), 10)
 
-    def test_readonly_positive(self):
+    def test_commands_passthrough(self):
         for platform, command in [('juniper_junos', 'show configuration | display set | no-more'), ('cisco_ios', 'show ip route | include 10.0'), ('huawei', 'display interface brief'), ('linux', 'ip route show')]:
             with self.subTest(platform=platform): self.assertEqual(b.readonly_command(command, platform), command)
 
-    def test_readonly_negative(self):
-        for platform in ['juniper_junos', 'cisco_ios', 'huawei', 'linux', 'generic_termserver']:
-            for command in ['configure', 'erase startup-config', 'show version; reboot', 'show version | save x', 'show version > x', 'show version\nconfigure', 'show version && id', 'show version `id`', 'show version | tee x', 'show version |', 'show version || reboot', 'sh version', 'cat /etc/shadow', 'show version | append x']:
-                with self.subTest(platform=platform, command=command), self.assertRaises((PermissionError, ValueError)):
-                    b.readonly_command(command, platform)
+    def test_only_invalid_framing_rejected(self):
+        for command in ['', 'show version\nconfigure', 'show version\x00']:
+            with self.assertRaises(ValueError): b.readonly_command(command, 'any_vendor')
+        for command in ['configure terminal','commit','show version | save x','echo x > /tmp/x','show version; reboot']:
+            self.assertEqual(b.readonly_command(command,'any_vendor'),command)
 
-    def test_denied_before_ssh(self):
-        with self.assertRaises(PermissionError): self.c.execute('MOCK', 'configure')
-        self.assertFalse(self.connections)
+    def test_configuration_forwarded_without_policy(self):
+        self.assertTrue(self.c.execute('MOCK','configure')['ok'])
+        self.assertIn('configure',self.connections[0].commands)
 
     def test_batch_prevalidates_all(self):
-        with self.assertRaises(PermissionError): self.c.execute_many('MOCK', ['show version', 'configure'])
+        with self.assertRaises(ValueError): self.c.execute_many('MOCK',['show version','bad\nframing'])
         self.assertFalse(self.connections)
 
     def test_hostkey_permissive_collector_policy(self):
@@ -166,20 +166,19 @@ class Regression(unittest.TestCase):
             self.assertFalse(self.c._result('MOCK','show version',text,0)['ok'])
 
     def test_custom_expect_cannot_accept_confirmation(self):
-        r = self.c.execute('MOCK', 'show system confirm', expect_string=r'\[yes/no\]')
-        self.assertFalse(r['ok']); self.assertFalse(self.connections[0].alive)
+        r=self.c.execute('MOCK','show system confirm',expect_string=r'\[yes/no\]')
+        self.assertFalse(r['ok']);self.assertTrue(r['awaiting_input']);self.assertTrue(self.connections[0].alive)
 
     def test_interact_stops_on_failure(self):
-        for bad in ['show system bad', 'show system partial', 'show system confirm']:
+        for bad in ['show system bad', 'show system partial']:
             r = self.c.interact('MOCK', ['show version', bad, 'show interfaces'])
             self.assertFalse(r['ok']); self.assertEqual(len(r['steps']), 2)
             self.assertNotIn('show interfaces', self.connections[-1].commands)
 
-    def test_interact_rejects_blind_confirmations(self):
-        for response in ['yes', '', '\n', 'configure']:
-            with self.assertRaises((ValueError, PermissionError)):
-                self.c.interact('MOCK', ['show version', response])
-        self.assertFalse(self.connections)
+    def test_interact_waits_without_implicit_reply(self):
+        r=self.c.interact('MOCK',['show system confirm'])
+        self.assertTrue(r['awaiting_input']);self.assertFalse(r['ok'])
+        self.assertEqual(self.connections[-1].commands,['show system confirm'])
 
     def test_interact_success(self):
         self.assertTrue(self.c.interact('MOCK', ['show version', 'show interfaces'])['ok'])

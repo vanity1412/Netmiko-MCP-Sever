@@ -1,4 +1,12 @@
-# Hiểu và sửa Netmiko MCP
+# Kiến trúc hiện tại — 1.7.0
+
+MCP giữ nguyên 10 schema. Agent chọn CLI đọc/cấu hình; backend kiểm tra framing, identity, lease và kết quả, không áp policy nội dung. Cập nhật này không benchmark hoặc đổi pool/storage.
+
+Reader theo prompt family khi đổi mode, giữ pending input để agent trả lời, giữ unattributed preceding output. Worker trả prompt/command_sent về proxy. Custom expect không thay thế identity prompt. Config banner và XML/JSON được kiểm tra đóng container trước completion.
+
+Scanner lưu next_command_index và cycle_attempts. Task đọc retry từ prefix đã hoàn tất, success được giữ; explicit retry_statuses mở một chu kỳ mới cho failed/partial/unknown. Replay lệnh không chắc chắn cần agent chủ động replay_uncertain; toàn batch được chạy lại để không mất context mode. Export pending được phục hồi không qua SSH. Kiểm chứng hash/identity/lock không bị bỏ.
+
+Phần bên dưới mô tả luồng và lịch sử; các ràng buộc read-only cũ đã được thay thế bởi 1.7.0 và README hiện tại.
 
 ## Đọc theo thứ tự
 
@@ -30,7 +38,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 | Collector._resolve_platform, detection_worker | Autodetect bằng probe đọc trong process riêng, có ngân sách thời gian |
 | probe_session.py / ProbeSession, main | Worker giữ SSH từ probe qua redispatch và thu thập; parent kiểm soát deadline, truyền partial output qua pipe |
 | Collector._open, lease/session helpers | Mở SSH, xác minh prompt, giới hạn số phiên và reuse |
-| readonly_command, cli_pipeline | Grammar lệnh chỉ đọc, chặn pipeline/lệnh không được duyệt |
+| readonly_command, cli_pipeline | Tên compatibility cho kiểm tra framing; từ 1.7.0 không lọc nội dung lệnh |
 | Collector._send, read_cli_output | Đọc Netmiko channel, chờ prompt cuối, chuyển trang, giữ partial output và kiểm soát timeout |
 | Collector._result | Kiểm tra echo, prompt cuối, dấu CLI error và pager/confirmation |
 | classify_error | Phân loại lỗi SSH/TCP/auth/host key, quyết định retryable |
@@ -63,7 +71,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV. Khi thiếu 
 
 Inventory, credential, known_hosts, runtime và output được cung cấp riêng tại môi trường triển khai, không được theo dõi trong Git. Dữ liệu lịch sử không đại diện cho phiên SSH hoặc trạng thái thiết bị hiện tại.
 
-## Chính sách hiện tại — 1.6.1
+## Lịch sử chính sách đến 1.6.1
 
 - Backend, Python fallback và subprocess autodetect cùng chấp nhận host key mới/đổi, lưu theo SSH client dưới khóa file liên tiến trình. Lỗi ghi store tạo warning và không chặn kết nối.
 - Không patch AutoAddPolicy toàn cục; mỗi Netmiko client có policy giữ đường dẫn store riêng. File được đọc/merge lại khi đang giữ lock rồi atomic replace.

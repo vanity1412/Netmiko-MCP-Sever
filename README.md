@@ -1,109 +1,78 @@
 # Netmiko MCP Server
 
-MCP server SSH chỉ đọc dùng Netmiko, có session pool, autodetect và helper quét inventory. Backend hiện tại: **1.6.1**, giữ nguyên **10 MCP tool**.
+Backend **1.7.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
-## Cấu trúc
+## Thực thi do agent quyết định
 
-- `mcp/`: backend, bootstrap, Python client, scanner và cấu hình mẫu.
-- `tests/`: bộ kiểm thử phát triển, không cần khi chạy MCP.
-- `docs/`: kiến trúc và hướng dẫn quét inventory.
-- `AGENTS.md`: hướng dẫn agent thực thi và sửa source.
+Không còn allowlist/denylist nội dung lệnh. Agent có thể gửi show/display, configure, set, commit, save, shell command và pipeline do agent lựa chọn. Server không tự đổi abbreviation, sửa lệnh hoặc thêm count cho ping.
 
-Inventory, credential, host keys và output được cung cấp riêng tại môi trường triển khai và không đưa lên Git.
+Chỉ kiểm tra framing: mỗi command là string một dòng, không rỗng, tối đa 8192 ký tự, không có ký tự điều khiển. Dùng execute_many cho batch tối đa 1000 lệnh; interact nhận tối đa 1000 bước, có thể dùng chuỗi rỗng hoặc newline làm Enter rõ ràng. Parallel tối đa 100 task mỗi lời gọi; scanner --all không có giới hạn số thiết bị này. Số kết nối đang làm việc vẫn theo max_workers để bảo vệ tài nguyên; không đổi pool/storage hoặc benchmark trong bản này.
 
-## Cài và cấu hình
+Agent chịu trách nhiệm phạm vi lệnh và thay đổi cấu hình mà người dùng yêu cầu. Các test phát triển chỉ dùng mock/SSH localhost.
 
-Dùng Python 3.10+, cài dependency:
+## Cài và chạy
+
+Python 3.10+, cài `python -m pip install -r requirements.txt`. Copy mcp/devices.example.json thành mcp/devices.json; cung cấp inventory riêng input/device.csv với name,ip,netmiko_device_type và tùy chọn profile,port.
+
+Đặt NETWORK_SSH_USER và NETWORK_SSH_PASSWORD trong môi trường MCP, hoặc credential profiles. Bootstrap fallback cặp đầu tiên trong input/ssh.txt khi thiếu cặp môi trường. Không đưa credential, inventory, known_hosts, runtime hoặc output lên Git.
 
 ```powershell
-python -m pip install -r requirements.txt
-```
-
-Trên máy mới, copy `mcp/devices.example.json` thành `mcp/devices.json`; cung cấp inventory riêng tại `input/device.csv` với các cột `name,ip,netmiko_device_type`. Đặt `NETWORK_SSH_USER` và `NETWORK_SSH_PASSWORD` trong môi trường của process MCP. Bootstrap hỗ trợ nguồn tài khoản cục bộ `input/ssh.txt` khi thiếu cặp môi trường; không đưa file này lên Git.
-
-Host key mới/đổi được chấp nhận và lưu atomic dưới khóa liên tiến trình. Lỗi ghi known_hosts tạo warning, không chặn SSH. Thành công cần prompt cuối và CLI không báo lỗi; echo không bắt buộc. Giữ nguyên cấu hình và dữ liệu riêng khi cập nhật source từ Git.
-
-## Chạy MCP STDIO
-
-Cấu hình MCP client gọi từ thư mục gốc repository:
-
-```text
 python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv
-```
-
-Không cần launcher hoặc executable OpenCode để chạy server. MCP client chịu trách nhiệm cấp environment và working directory đúng.
-
-Kiểm tra dependency/version, không SSH:
-
-```powershell
 python mcp/collector_backend.py --check
-python mcp/collector_backend.py --version
 ```
 
-## Quét inventory
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.7.0.
 
-Preview, không SSH:
+## Session, driver và profile
+
+Driver inventory/cache được ưu tiên. Cold autodetect dùng worker probe và redispatch trên cùng kết nối, không đăng nhập lần hai. Autodetect nhận sáu driver Junos, IOS, XR, NX-OS, Huawei, Linux; driver Netmiko khác có thể chỉ định trực tiếp. Không có grammar theo hãng để chặn lệnh nữa.
+
+Các lệnh trong một lease chạy tuần tự; thiết bị khác chạy song song. Dùng execute_many hoặc interact khi cần một chuỗi không bị yêu cầu khác chen vào. Giữ cùng target/profile/driver khi gửi phản hồi cho phiên đang chờ.
+
+ssh_mode mặc định compatible: nhận key mới/đổi, lưu atomic, ghi nhận thay đổi fingerprint; lỗi lưu key không chặn SSH. strict là lựa chọn chủ động: phải có trusted key trong alt_key_file; dùng host_key_store_mode shared nếu muốn một file chung thay vì file theo PID.
+
+Profile/device hỗ trợ read_timeout, prompt_quiet_seconds, timing_quiet_seconds; tham số tool tường minh ưu tiên. Connection options gồm conn_timeout, auth_timeout, banner_timeout, key_file, passphrase, encoding, disable_sha2_fix, disabled_algorithms và ssh_config_file. Credential literal giữ nguyên; chuỗi ${ENV_NAME} nguyên vẹn lấy từ environment. auto_enable=true chủ động gọi enable cho Cisco bằng secret backend; mặc định false.
+
+Request deadline mặc định 120s, read timeout mặc định 40s. Batch dài cần request_timeout_seconds phù hợp; tăng read_timeout không tăng request deadline. Đường worker có hard deadline; connect trực tiếp vẫn cooperative theo timeout thư viện.
+
+## Reader và verification
+
+Reader xử lý paging, giữ partial khi timeout/cancel/EOF, nhận mode prompt trong cùng thiết bị cho Cisco/Junos/Huawei. Banner Cisco chưa đóng và output XML/JSON chưa hoàn chỉnh không được kết thúc chỉ vì gặp một dòng giống prompt. Custom expect chỉ là ranh giới đọc; không được biến prompt thiết bị khác thành thành công.
+
+Dữ liệu đã có trước khi gửi lệnh tiếp theo được giữ trong preceding_output hoặc preceding_output_id, gắn association unattributed, thay vì bị xóa âm thầm. Output dài được lưu theo output_id, đọc bằng các tool dòng/byte/search hiện có. Redaction output tùy chọn; error và audit command vẫn scrub credential.
+
+Kết quả có prompt không chứng minh cấu hình đúng ý định: validation vẫn là heuristic CLI. Agent cần đọc phản hồi và dùng lệnh kiểm tra trạng thái để xác minh thay đổi thực tế. Prompt/firmware tùy biến ngoài các họ đã hỗ trợ có thể cần expect rõ ràng.
+
+## Prompt hỏi và phản hồi rõ ràng
+
+Thiết bị hỏi yes/no, confirm, password hoặc destination/source filename trả ok=false, awaiting_input=true và giữ session. Không tự gửi yes/Enter, không gửi driver cleanup vào câu hỏi. Lỗi CLI có prompt đầy đủ khác với phiên còn đang chờ input.
+
+Dùng ssh_interact với các bước rõ ràng, ví dụ ["write memory", "yes"]. Chuỗi rỗng là Enter, chỉ được gửi khi agent cung cấp. Hoặc gọi ssh_execute để xem câu hỏi rồi gửi phản hồi ở lời gọi tiếp theo, cùng identity. expect_string có thể chỉ định prompt tương tác khác; match custom expect chưa phải hoàn tất lệnh. Execute_many dừng ở lỗi/câu hỏi để agent kiểm tra; không coi lệnh tiếp theo là câu trả lời ngầm.
+
+## Retry và resume
 
 ```powershell
-python mcp/scan.py --all --output output/SCAN-VERSION
+python mcp/scan.py --plan plan.json --output output/JOB
+python mcp/scan.py --plan plan.json --output output/JOB --execute
+python mcp/scan.py --plan plan.json --output output/JOB --execute --retry-status failed partial
 ```
 
-Thêm `--execute` khi thực hiện quét thật với credential/fingerprint đã xác minh. Mặc định chỉ lấy version. Kế hoạch riêng, fast/slow lanes, profile, checkpoint và resume: [docs/SCAN.md](docs/SCAN.md).
+Giữ cùng plan/identity và thư mục job. Resume mặc định giữ các kết quả đã có. --retry-status chọn failed/partial/unknown để chạy lại, không chạy lại thiết bị success. Lệnh đọc đã hoàn tất được bỏ qua bằng command index; lịch sử và hash evidence được giữ. Retry transient tối đa hai attempt mỗi chu kỳ, không retry auth reject.
 
-## Kiểm thử
+Không lọc lệnh cấu hình khi thực thi. Tuy nhiên, lệnh có thể đã thay đổi thiết bị mà bị timeout không được tự replay. Job trả unknown/needs_reconciliation khi resume không thể xác định tác động. Sau khi agent đối soát, --replay-uncertain cùng --retry-status cho phép chủ động chạy lại toàn batch không an toàn để replay, kể cả phần đã hoàn tất, nhằm dựng lại mode context. Không dùng flag này như retry mặc định.
+
+Lỗi export evidence giữ raw output và export_pending. --retry-status unknown thử lại export trước, không gửi SSH lần nữa nếu chỉ thiếu export. Evidence đã hỏng hoặc thiếu vẫn làm resume thất bại; không xóa kiểm chứng để ép success.
+
+## Storage và giới hạn
+
+output_storage_mode=shared mặc định đối soát thư mục; exclusive dùng index RAM cho một Collector sở hữu thư mục. Scanner dùng scratch riêng, quota/TTL và checksum checkpoint vẫn giữ. Không dùng exclusive cho nhiều process cùng ghi. Quota shared chưa có transaction toàn cục. Mỗi session probe giữ thêm process/thread; max_sessions mặc định 64, không tự tăng concurrency hoặc thay ownership worker.
+
+## Kiểm thử và tài liệu
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Tests dùng fake transport và SSH server localhost, không đăng nhập thiết bị production. Kiến trúc: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Lịch sử: [CHANGELOG.md](CHANGELOG.md).
+Tests gồm protocol, phiên SSH localhost, chế độ cấu hình, câu hỏi/phản hồi, partial output, retry/resume, evidence và stress chức năng thiết bị ảo. Không có benchmark trong đợt thay đổi này và chưa chạy cấu hình trên firmware production.
 
-## Kiểm chứng 1.3.3
-
-Có thêm `mcp/validate_fleet.py`, replay 2.000 cách chia chunk, stress 500 thiết bị ảo, kiểm tra bằng chứng/resume và SSH localhost cho Cisco IOS/XR/NXOS, Huawei, Junos, Linux. Dữ liệu production và báo cáo riêng không được đưa lên Git. Xem `docs/ARCHITECTURE.md` và `docs/SCAN.md`.
-
-## Tối ưu 1.4.0
-
-| defaults option | Constructor default | Cấu hình mẫu |
-|---|---|---|
-| prefer_inventory_driver | true | true |
-| health_check_interval_seconds | 30 | 30 |
-| prompt_quiet_seconds | 0.03 | 0.03 |
-| timing_quiet_seconds | 0.1 | 0.1 |
-| redaction_enabled | true | false |
-| auth_failure_cooldown_seconds | 300 | 30 |
-| host_key_store_mode | shared | process |
-
-Cấu hình mẫu ưu tiên tốc độ và trả/lưu output không che bí mật. Đặt redaction_enabled=true nếu muốn che dữ liệu output. Error và audit command luôn được che. Mode process ghi known_hosts.<PID>, không tự hợp nhất sang file chung; dùng shared nếu cần một store thống nhất. Prompt được cache trong phiên, không tái sử dụng mù qua kết nối mới. Đặt prefer_inventory_driver=false để yêu cầu dò lại dù inventory đã có driver. Quiet ngắn có thể cần tăng lại trên thiết bị gửi dữ liệu bất thường; điều kiện prompt cuối và kiểm tra CLI vẫn được giữ.
-
-## Lưu output và cache driver — 1.5.0
-
-- `output_storage_mode`: `shared` mặc định, đối soát thư mục khi lưu; `exclusive` dùng index dung lượng trong RAM cho thư mục do một Collector sở hữu. Scanner/validator tự dùng exclusive với scratch riêng của job.
-- `output_cleanup_interval_seconds`: mặc định 30s. Exclusive không glob mỗi lần ghi; quota vẫn kiểm tra trước mọi lần ghi, cleanup ngay khi thiếu chỗ. Reconcile định kỳ hoặc khi gọi cleanup tường minh; restart đọc lại index từ file. File đang được đọc hoặc đang pin được bảo vệ. Không dùng exclusive nếu nhiều Collector/process cùng ghi một thư mục. Shared vẫn cần thư mục riêng nếu yêu cầu quota cứng giữa nhiều process; không có global quota transaction.
-- `autodetect_persistent_cache`: mặc định true. Bootstrap/scanner/validator dùng chung `runtime/data/netmiko/autodetect.sqlite3`; `autodetect_cache_file` cho phép đổi đường dẫn. Direct Collector dùng APP_HOME nếu không khai báo path.
-- SQLite chỉ lưu hash identity, driver và thời điểm; không lưu credential rõ. Cache theo host/port/credential/route options, hết hạn theo TTL autodetect (mặc định 8 giờ). Chỉ ghi sau probe thành công. Cache lỗi/khóa/bị hỏng sẽ fallback dò thật; không chặn SSH vì lỗi cache. Driver chỉ định rõ vẫn ưu tiên và không cần disk lookup. Cache không tự sửa inventory và có thể cũ nếu thiết bị bị thay trong khoảng TTL; tắt cache persistent và khởi động Collector mới hoặc chỉ định driver đúng khi cần kiểm chứng lại.
-- Từ 1.6.0, probe và thu thập dùng chung phiên như mô tả dưới đây.
-
-## Tái sử dụng phiên probe — 1.6.0
-
-Khi chưa có driver trong cache, `mcp/probe_session.py` mở SSH, chạy probe chỉ đọc, rồi dùng Netmiko `redispatch` để chuẩn bị CLI vendor ngay trên kết nối đã xác thực. Process này giữ phiên trong session pool và chạy các lệnh tiếp theo qua pipe JSON riêng. Một phiên autodetect mới chỉ đăng nhập một lần. Driver rõ hoặc cache hit vẫn dùng đường ConnectHandler trực tiếp, không khởi chạy probe.
-
-Parent giám sát hard deadline cho toàn bộ probe + chuẩn bị CLI và từng lệnh của worker. Timeout, cancellation hoặc worker chết sẽ đóng phiên; dữ liệu đã truyền về được giữ làm partial output và không được báo thành công. Reader vẫn xử lý pager, xác minh prompt cuối và CLI error; batch dừng tại lệnh thất bại, không tự gửi lại lệnh. Request deadline có thể được báo `read_timeout` nếu read budget đã được giới hạn theo thời gian còn lại.
-
-Worker được đóng khi session hết TTL, bị eviction, gọi close hoặc shutdown. Mỗi phiên được tạo bằng probe giữ thêm một Python process và một receiver thread; số phiên theo `max_sessions` (mặc định 64). Cần tính RAM trước khi nâng giới hạn lớn. Khi cập nhật, copy cả thư mục `mcp/` và khởi động lại MCP. Kiểm thử phát triển dùng SSH localhost cho sáu driver; chưa đo trên thiết bị production.
-
-Reader thu thập giải mã tăng dần theo từng SSH channel, giữ ký tự Unicode bị chia giữa các packet. Không đổi encoding mặc định của Netmiko; byte không hợp lệ theo encoding vẫn bị bỏ qua như trước.
-
-## Tương thích NOC — 1.6.1
-
-- `ssh_mode: compatible` mặc định: key mới/đổi vẫn kết nối và được lưu; đổi key có thông báo fingerprint. `ssh_mode: strict` bật kiểm tra key đã biết; chuẩn bị file `alt_key_file` trước, dùng store shared để dùng cùng file thay vì store theo PID. Mode có thể chọn theo profile/device. Các cờ host-key cũ không thay thế ssh_mode.
-- CSV nhận thêm cột `port`. Credential literal giữ nguyên; `${ENV_NAME}` nguyên chuỗi vẫn lấy từ environment. Key passphrase dùng `passphrase`; thêm `encoding`, `disable_sha2_fix`, `blocking_timeout`, `session_timeout`.
-- Profile/device hỗ trợ `read_timeout`, `prompt_quiet_seconds`, `timing_quiet_seconds`; kwargs CLI được tách khỏi constructor Netmiko. Tham số read_timeout của tool vẫn ưu tiên. Ví dụ profile slow: `{"read_timeout":120,"auth_timeout":60,"prompt_quiet_seconds":0.15}`.
-- `auto_enable: true` chủ động gọi enable cho Cisco, dùng secret đã cấu hình; mặc định false. Không áp dụng enable cho Junos.
-- Hỗ trợ `show run`, `display cu`, `show tech-support`, filter có regex escape và Junos display inheritance no-comments. Vẫn chặn thay đổi cấu hình/ghi file và shell operators.
-- Reader không kết thúc ở prompt nằm trong Cisco banner chưa đóng; hỗ trợ thêm pager ASA và dạng --- MORE ---. Kiểm chứng CLI vẫn là heuristic, không bảo đảm nhận diện mọi firmware/prompt tùy biến.
-- Lỗi parser giữ raw result và phiên; lỗi lưu file chỉ giữ phiên khi output đã kết thúc đầy đủ, không có read failure. CLI error đầy đủ trong interact giữ phiên. Storage failure vẫn là failure, không báo saved/success giả.
-- Scanner retry tối đa hai attempt cho transient error, kể cả task bắt đầu ở slow lane. Auth reject không retry. Retry vẫn chạy lại batch lệnh đọc; chưa có resume theo từng lệnh.
-- Parallel giữ connection-timeout và detection-budget overrides. Giới hạn worker/RAM hiện tại vẫn được giữ; không tăng concurrency tự động.
-
-Cập nhật cả thư mục mcp và restart MCP. Tests dùng mock và SSH localhost; chưa xác minh firmware production. Prompt giống dữ liệu ngoài các banner nhận diện được vẫn cần profile/validation phù hợp; không bỏ kiểm chứng để tăng tỷ lệ success.
+Python wrapper: CLIConnection là tên mới, ReadOnlyConnection giữ để tương thích import cũ nhưng không còn lọc lệnh. Xem docs/ARCHITECTURE.md, docs/SCAN.md, AGENTS.md và CHANGELOG.md.

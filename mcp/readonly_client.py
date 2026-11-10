@@ -1,4 +1,4 @@
-"""Same-policy Python fallback for local investigation scripts; no write API."""
+"""Python CLI wrapper. Legacy ReadOnlyConnection name retained; content is not filtered."""
 from pathlib import Path
 import re
 from collector_backend import Collector, KNOWN_KEYS
@@ -34,3 +34,6 @@ class ReadOnlyConnection:
                 chunks.append(part['text']);offset=part['next_byte_offset']
                 if not part['more']:return ''.join(chunks)
         return result['output']
+
+# New name reflects unrestricted CLI; old imports remain compatible.
+CLIConnection = ReadOnlyConnection

@@ -266,7 +266,7 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse(reply['result']['isError'])
         self.assertIn(alias, reply['result']['content'][0]['text'])
 
-    def test_noc_commands_and_finite_ping(self):
+    def test_noc_commands_are_not_rewritten(self):
         for platform, commands in {
             'cisco_ios': ['ping 192.0.2.1', 'traceroute 192.0.2.1', 'show ntp associations', 'show mac address-table', 'show spanning-tree'],
             'juniper_junos': ['ping 192.0.2.1', 'show ntp associations', 'show security flow session', 'show route | match "error|CRC"'],
@@ -276,11 +276,11 @@ class CollectorTests(unittest.TestCase):
             for command in commands:
                 with self.subTest(platform=platform, command=command):
                     backend.readonly_command(command, platform)
-        self.assertEqual(backend.prepare_noc_command('ping 192.0.2.1', 'juniper_junos'), 'ping 192.0.2.1 count 5')
-        self.assertEqual(backend.prepare_noc_command('ping 192.0.2.1', 'linux'), 'ping 192.0.2.1 -c 5')
+        self.assertEqual(backend.prepare_noc_command('ping 192.0.2.1', 'juniper_junos'), 'ping 192.0.2.1')
+        self.assertEqual(backend.prepare_noc_command('ping 192.0.2.1', 'linux'), 'ping 192.0.2.1')
         for command in ['reload', 'show version; reload', 'show version | redirect flash:x', 'ping -f 192.0.2.1']:
-            with self.assertRaises(PermissionError): backend.readonly_command(command, 'cisco_ios')
-        with self.assertRaises(ValueError): backend.readonly_command('ping -c 100 192.0.2.1', 'linux')
+            self.assertEqual(backend.readonly_command(command, 'cisco_ios'),command)
+        self.assertEqual(backend.readonly_command('ping -c 100 192.0.2.1', 'linux'),'ping -c 100 192.0.2.1')
 
 
 class LocalSSHServer:

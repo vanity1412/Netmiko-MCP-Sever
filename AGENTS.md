@@ -2,7 +2,7 @@
 
 ## Mục tiêu
 
-Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: đọc trạng thái/cấu hình, thu thập nhiều thiết bị và xử lý dữ liệu. Trả lời theo ngôn ngữ người dùng. Chủ động kiểm chứng, phân biệt dữ liệu thật, mô phỏng và nhận định chưa xác minh.
+Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: thực thi CLI, cấu hình và thu thập nhiều thiết bị và xử lý dữ liệu. Trả lời theo ngôn ngữ người dùng. Chủ động kiểm chứng, phân biệt dữ liệu thật, mô phỏng và nhận định chưa xác minh.
 
 ## Chạy dự án
 
@@ -16,7 +16,7 @@ Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: đọc trạng t
 ## Khi thao tác thiết bị
 
 - Dùng alias/IP/hostname do người dùng yêu cầu. Chọn driver từ inventory hoặc autodetect; không cần thêm target vào CSV.
-- Tận dụng session, dùng batch và song song có giới hạn. Chỉ thực hiện lệnh đọc qua các tool hiện có; không tự apply/commit cấu hình hay tác động dịch vụ.
+- Tận dụng session, dùng batch và song song có giới hạn. Tool không lọc nội dung lệnh. Agent quyết định lệnh đọc/cấu hình theo yêu cầu người dùng; không tự chạy production trong test phát triển.
 - Chỉ coi thu thập thành công khi CLI không báo lỗi và output có prompt cuối. Echo không bắt buộc. Thiếu output hoặc không truy cập được không đồng nghĩa dịch vụ down.
 - Giữ output dở dang và lỗi theo từng đích. Không đoán credential, không tự thử nhiều tài khoản. Host key mới/đổi được backend chấp nhận và lưu; lỗi persistence có warning.
 - Chỉ SSH production khi yêu cầu công việc có phạm vi tương ứng. Các test phát triển không tự truy cập production.

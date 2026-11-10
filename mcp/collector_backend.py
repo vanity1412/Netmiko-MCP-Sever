@@ -27,9 +27,10 @@ import traceback
 import uuid
 from typing import Any, Callable
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
+MAX_COMMANDS = 1000
 APP_HOME = Path(os.environ.get("NETWORK_MCP_DATA_DIR") or ((Path(os.environ["LOCALAPPDATA"]) / "GooseNetworkCollector") if os.environ.get("LOCALAPPDATA") else (Path.home() / ".goose-network-collector")))
 SENSITIVE_KEYS = ("password", "secret", "passphrase", "token", "private_key", "username")
 ENV_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
@@ -366,65 +367,46 @@ def cli_pipeline(command: str) -> list[str]:
 
 
 @functools.lru_cache(maxsize=4096)
-def readonly_command(command: str, platform: str) -> str:
-    """Conservative grammar, not a substitute for device-side AAA authorization."""
-    command = safe_command(command).strip()
-    if any(x in command for x in (';', '&', '`', '<', '>')):
-        raise PermissionError("CLI operators/redirection are not permitted")
-    parts = cli_pipeline(command)
-    quote = None
-    for char in command:
-        if char in ('\"', "'"):
-            quote = None if quote == char else (char if quote is None else quote)
-        if char == '$' and quote is None:
-            raise PermissionError('Dollar signs are allowed only in quoted CLI filters')
-    if '\\' in parts[0]:
-        raise PermissionError('Escapes are supported only in CLI filters')
-    if platform.startswith(('cisco_', 'arista_', 'dell_', 'hp_')):
-        parts[0] = re.sub(r'^show\s+run$', 'show running-config', parts[0], flags=re.I)
-    if platform.startswith('huawei'):
-        parts[0] = re.sub(r'^display\s+cu$', 'display current-configuration', parts[0], flags=re.I)
-    command = ' | '.join(parts)
-    base = parts[0].lower()
-    diagnostic = bool(re.fullmatch(r'(?:ping|traceroute|tracert|tracepath)\s+[a-z0-9_.:%/\[\] =\-]+', base))
-    if platform.startswith('juniper'):
-        allowed = diagnostic or bool(re.match(r'^show\s+(?:version|system|interfaces|route|bgp|ospf|isis|ldp|mpls|rsvp|bfd|pim|igmp|multicast|vpls|l2circuit|configuration|chassis|lacp|lldp|ethernet-switching|vlans|arp|cli|log|ntp|services|security|class-of-service|bridge|evpn|task|snmp|firewall)\b', base))
-        filters = r'(?:no-more|count|last(?:\s+\d+)?|(?:match|except|find)\s+.+|display\s+(?:set|json|xml|detail|inheritance(?:\s+no-comments)?))'
-    elif platform.startswith(('cisco_', 'arista_', 'dell_', 'hp_')):
-        allowed = diagnostic or bool(re.match(r'^show\s+(?:tech-support|controllers|etherchannel|policy-map|version|clock|running-config|startup-config|interfaces?|ip|ipv6|route|bgp|ospf|isis|mpls|lacp|lldp|cdp|vlan|arp|inventory|environment|processes|users|privilege|aaa|tacacs|radius|logging|platform|ntp|vrf|mac|mac-address-table|spanning-tree|standby|vrrp|track|access-lists|snmp|tcp|udp|ssh|license|hardware|module|power|switch|stack|diagnostic|bfd|evpn|segment-routing)\b', base))
-        filters = r'(?:count|(?:include|exclude|begin|section)\s+.+)'
-    elif platform.startswith('huawei'):
-        allowed = diagnostic or bool(re.match(r'^display\s+(?:eth-trunk|lacp|bfd|version|clock|current-configuration|saved-configuration|interface|ip|ipv6|bgp|ospf|isis|mpls|lldp|vlan|arp|device|cpu-usage|memory-usage|aaa|users|logbuffer|transceiver|ntp-service|ntp|stp|mac-address|traffic|alarm|elabel|esn|license|optical-module|port|dhcp|dns|temperature|fan|power|stack|ssh|tcp|udp|vpn-instance)\b', base))
-        filters = r'(?:count|no-more|(?:include|exclude|begin)\s+.+)'
-    elif platform == 'linux':
-        # No general shell, interpreters, arbitrary paths or options with side effects.
-        allowed = diagnostic or bool(re.fullmatch(r'(?:uname(?: -[asrnmvpio]+)?|uptime|date|whoami|id|hostname|ip (?:(?:-br|-s) )?(?:address|addr|link|route|neigh) show(?: [a-z0-9_.:/ \-]+)?|ip (?:-6 )?route get [a-z0-9_.:%]+|ss -[tulnapoei]+|getent (?:hosts|ahosts) [a-z0-9_.:\-]+)', base))
-        filters = r'(?!)'
-    else:
-        raise PermissionError("No reviewed read-only grammar for this platform")
-    if not allowed or re.search(r'\b(?:save|redirect|append|delete|erase|reset|clear|reload|reboot|configure|commit|copy|write|install|request|activate|deactivate|test|start|stop|file|url|flash|bootflash)\b', base):
-        raise PermissionError("Command is outside the read-only policy")
-    if diagnostic:
-        if len(parts) != 1:
-            raise PermissionError('Diagnostic commands do not accept CLI pipelines')
-        counts = re.findall(r'(?:\bcount\s+|\brepeat\s+|(?<!\S)-c\s*)(\d+)\b', base)
-        if any(not 1 <= int(value) <= 20 for value in counts):
-            raise ValueError('Diagnostic packet count must be between 1 and 20')
-        if re.search(r'(?<!\S)-(?:f|l)(?:\s|$)', base):
-            raise PermissionError('Flood/preload diagnostic options are not supported')
-    if any(not re.fullmatch(filters, p, re.I) for p in parts[1:]):
-        raise PermissionError("CLI pipeline is outside the read-only policy")
-    return command
+def readonly_command(command: str, platform: str = '') -> str:
+    """Legacy import name: validate framing only; never filter command content."""
+    return safe_command(command)
 
 
 def prepare_noc_command(command, platform):
-    command = readonly_command(command, platform)
-    if re.match(r'^ping\s', command, re.I):
-        if platform.startswith('juniper') and not re.search(r'\bcount\s+\d+\b', command, re.I):
-            command += ' count 5'
-        elif platform == 'linux' and not re.search(r'(?<!\S)-c\s*\d+\b', command):
-            command += ' -c 5'
-    return command
+    return safe_command(command)
+
+
+def is_replay_safe(command):
+    """Retry classification only. Never used to permit or reject execution."""
+    if not isinstance(command, str) or re.search(r'[;&`><\n\r]', command):
+        return False
+    try:
+        parts = cli_pipeline(command)
+    except PermissionError:
+        return False
+    if any(not re.match(r'^(?:include|exclude|begin|section|match|except|find|count|last|no-more|display)\b', part, re.I) for part in parts[1:]):
+        return False
+    return bool(re.match(r'^(?:show|display)\s+', parts[0], re.I) or
+                re.fullmatch(r'(?:uname(?: -[a-z]+)?|uptime|date|whoami|id|hostname|ip (?:-[a-z]+ )?(?:address|addr|link|route|neigh) show(?: .*)?|ss -[a-z]+)', parts[0], re.I))
+
+
+def command_prompt_pattern(conn, command, exact):
+    """Accept mode transitions only within this device's prompt family."""
+    old = getattr(conn, '_network_prompt_text', '')
+    root = getattr(conn, '_network_prompt_root', old)
+    if not root or is_replay_safe(command):
+        return exact
+    if root.startswith(('<', '[')) and root.endswith(('>', ']')):
+        host = root[1:-1].lstrip('~*')
+        return r'(?m)^(?:<' + re.escape(host) + r'>|\[[~*]?' + re.escape(host) + r'(?:-[^\]\r\n]+)?\])[ \t]*\r?$'
+    if root[-1:] in '#>$%':
+        stem = re.sub(r'\([^()]*\)$', '', root[:-1])
+        pattern = r'(?m)^' + re.escape(stem) + r'(?:\([^()\r\n]*\))?[#>$%][ \t]*\r?$'
+        rename = re.fullmatch(r'hostname\s+([A-Za-z0-9_.-]+)', command.strip(), re.I)
+        if rename:
+            pattern = r'(?m)^(?:' + re.escape(stem) + '|' + re.escape(rename[1]) + r')(?:\([^()\r\n]*\))?[#>][ \t]*\r?$'
+        return pattern
+    return exact
 
 
 def clean_terminal(text: str) -> str:
@@ -529,6 +511,8 @@ def pending_interaction(text):
     if not lines:
         return False
     line = lines[-1].strip()
+    if re.match(r'(?i)^(?:destination|source)\s+file\s*name\b.*[?:]$', line):
+        return True
     match = re.search(CONFIRM_RE.pattern + r'\s*[:?]?\s*$', line)
     if match:
         prefix = line[:match.start()].strip()
@@ -580,6 +564,47 @@ def config_banner_open(command, text):
     return delimiter is not None
 
 
+def output_container_open(command, text):
+    if config_banner_open(command, text):
+        return True
+    style = re.search(r'\|\s*(?:display\s+)?(json|xml)\b', command, re.I)
+    if not style:
+        return False
+    lines = clean_terminal(text).splitlines()
+    if lines and last_prompt(lines[-1]):
+        lines = lines[:-1]
+    body = '\n'.join(lines)
+    if style[1].lower() == 'json':
+        start = re.search(r'(?m)^\s*[\[{]', body)
+        if start:
+            try:
+                json.JSONDecoder().raw_decode(body[start.start():].lstrip())
+            except ValueError:
+                return True
+    else:
+        start = re.search(r'(?m)^\s*<(?:\?xml|[A-Za-z_])', body)
+        if start:
+            import xml.etree.ElementTree as ET
+            class RootState:
+                depth = 0
+                complete = False
+                def start(self, tag, attrs): self.depth += 1
+                def end(self, tag):
+                    self.depth -= 1
+                    if self.depth == 0: self.complete = True
+                def data(self, data): pass
+                def close(self): pass
+            state = RootState()
+            parser = ET.XMLParser(target=state)
+            try:
+                parser.feed(body[start.start():].strip())
+                parser.close()
+            except ET.ParseError:
+                return not state.complete
+            return not state.complete
+    return False
+
+
 def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03, on_data=None):
     """Read one command without re-sending it; retain partial data on failure.
 
@@ -593,6 +618,14 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     last_data = time.monotonic()
     failure = None
     next_checkpoint = 0.0
+    conn._network_command_sent = False
+    conn._network_preceding_output = ''
+    if not getattr(conn, '_network_prompt_root', None) and getattr(conn, '_network_prompt_text', None):
+        conn._network_prompt_root = conn._network_prompt_text
+    actual_pattern = getattr(conn, '_network_prompt_regex', None) or pattern
+    device_pattern = command_prompt_pattern(conn, command, actual_pattern)
+    if pattern == actual_pattern:
+        pattern = device_pattern
     try:
         preserve_channel_encoding(conn)
         # Drop a buffered old prompt/login banner before sending this command.
@@ -601,8 +634,11 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 checkpoint()
             if time.monotonic() >= deadline:
                 raise TimeoutError('Command read timed out before send')
-            if not conn.read_channel():
+            stale = conn.read_channel()
+            if not stale:
                 break
+            conn._network_preceding_output += stale
+        conn._network_command_sent = True
         conn.write_channel(conn.normalize_cmd(command))
         while True:
             now = time.monotonic()
@@ -620,7 +656,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
             cleaned = clean_terminal(tail)
-            if pending_interaction(cleaned):
+            if pending_interaction(cleaned) and not output_container_open(command, ''.join(chunks)):
                 break
             pagers = list(PAGER_RE.finditer(tail))
             if pagers and ending_matches(PAGER_RE.pattern + r'[ \t]*', cleaned):
@@ -629,12 +665,12 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 if marker_id not in handled_pagers:
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
-            elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not config_banner_open(command, ''.join(chunks)):
+            elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not output_container_open(command, ''.join(chunks)):
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
                 if channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False)):
-                    if ending_matches(pattern, cleaned):
+                    if ending_matches(pattern, cleaned) and not output_container_open(command, ''.join(chunks)):
                         break
                     raise EOFError('SSH channel closed before ending prompt')
             time.sleep(min(.01, max(0, deadline - time.monotonic())))
@@ -652,6 +688,13 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         parts.append(raw[previous:])
         raw = ''.join(parts)
     output = clean_terminal(raw)
+    if failure is None and ending_matches(device_pattern, output) and not output_container_open(command, output):
+        prompt = last_prompt(output)
+        if prompt:
+            conn._network_prompt_text = prompt
+            if re.match(r'^hostname\s+', command.strip(), re.I):
+                conn._network_prompt_root = prompt
+            conn._network_prompt_regex = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
     return output, failure
 
 
@@ -1322,7 +1365,7 @@ class Collector:
                         if transport is not None and not transport.is_active():
                             dead = True
                         due = now - entry.get('health_checked', 0) >= self.health_check_interval
-                        if dead or (due and not entry['conn'].is_alive()):
+                        if dead or (due and not getattr(entry['conn'], '_network_awaiting_input', False) and not entry['conn'].is_alive()):
                             self._disconnect_entry(entry)
                         elif due:
                             entry['health_checked'] = now
@@ -1353,7 +1396,7 @@ class Collector:
                 except Exception as exc:
                     verified_cli_failure = isinstance(exc, BatchError) and bool(exc.results) and exc.results[-1].get('error_category') == 'cli_error' and all(
                         exc.results[-1].get(k) for k in ('transport_ok', 'output_complete'))
-                    keep = (verified_cli_failure or getattr(exc, '_network_keep_session', False) or (isinstance(exc, BatchError) and bool(exc.results) and exc.results[-1].get('session_reusable', False))) and not getattr(entry['conn'], '_network_read_failure', None)
+                    keep = (bool(getattr(entry['conn'], '_network_awaiting_input', False)) or verified_cli_failure or getattr(exc, '_network_keep_session', False) or (isinstance(exc, BatchError) and bool(exc.results) and exc.results[-1].get('session_reusable', False))) and not getattr(entry['conn'], '_network_read_failure', None)
                     if not keep:
                         self._disconnect_entry(entry, graceful=False)
                     raise
@@ -1370,7 +1413,7 @@ class Collector:
         conn = entry.get("conn")
         entry["conn"] = None
         if conn is not None:
-            if not graceful:
+            if not graceful or getattr(conn, '_network_awaiting_input', False):
                 # Driver cleanup may write "exit". Never send that as a reply
                 # to an unfinished command, pager or confirmation question.
                 client = getattr(conn, 'remote_conn_pre', None)
@@ -1452,8 +1495,7 @@ class Collector:
     def _preflight(self, target, commands, device_type=None, profile=None):
         self._request.stage = 'validation'
         params = self._get_settings(target, device_type, profile)
-        # Autodetect must complete before choosing a platform-specific policy.
-        self._resolve_platform(params)
+        # Framing is validated before opening SSH; command content is agent-owned.
         return [prepare_noc_command(command, params['device_type']) for command in commands]
 
     @contextlib.contextmanager
@@ -1559,7 +1601,7 @@ class Collector:
         output = clean_terminal(output)
         prompt = last_prompt(output)
         ending = output.rstrip()
-        complete = (ending_matches(prompt_pattern, ending) if prompt_pattern else bool(prompt)) and not config_banner_open(command, output)
+        complete = (ending_matches(prompt_pattern, ending) if prompt_pattern else bool(prompt)) and not output_container_open(command, output)
         # Match known error messages at line boundaries, not words in a config/route.
         errors = re.findall(r"(?im)^\s*(?:%\s*)?(?:Invalid (?:input|command|interface)|Bad IP address or host name|Unknown command|Error\s*:|Ambiguous command|Incomplete command|Unrecognized command|syntax error|permission denied|access denied|authorization (?:failed|denied)|command authorization failed|not authorized|insufficient (?:privilege|permission)|not enough privileges|command rejected|bash: .*: command not found)[^\n]*", output)
         errors += re.findall(
@@ -1614,6 +1656,20 @@ class Collector:
             result.update(failure, ok=False)
             if failure.get('error_category') == 'connection_lost':
                 result['transport_ok'] = False
+        result['command_sent'] = bool(getattr(conn, '_network_command_sent', True))
+        result['replay_safe'] = is_replay_safe(command)
+        awaiting = ((pending_interaction(clean_terminal(output)) and not output_container_open(command, output)) or (pattern and pattern != getattr(conn, '_network_prompt_regex', None) and ending_matches(pattern, clean_terminal(output)) and not result['output_complete'])) and not failure
+        conn._network_awaiting_input = bool(awaiting)
+        if awaiting:
+            result.update(awaiting_input=True, session_reusable=True, retryable=False)
+        preceding = getattr(conn, '_network_preceding_output', '')
+        if preceding:
+            preceding = self.redact_output(clean_terminal(preceding))
+            if len(preceding) > self.inline_max_chars:
+                result['preceding_output_id'] = self._save_output(preceding, already_redacted=True)
+            else:
+                result['preceding_output'] = preceding
+            result['preceding_output_association'] = 'unattributed; retained instead of discarded'
         client = getattr(conn, 'remote_conn_pre', None)
         if getattr(client, '_network_host_key_persisted', None) is False:
             result['warnings'] = ['SSH host key accepted; could not persist known_hosts']
@@ -1629,6 +1685,7 @@ class Collector:
                 raise ValueError("expect_string too long")
             re.compile(pattern)
         conn._network_read_failure = None
+        conn._network_command_sent = False
         options = getattr(self._request, 'cli_options', {})
         quiet = float(options.get('timing_quiet_seconds' if use_timing else 'prompt_quiet_seconds', self.timing_quiet if use_timing else self.prompt_quiet))
         if not 0 <= quiet <= 2:
@@ -1642,6 +1699,7 @@ class Collector:
                                              self._checkpoint, quiet=quiet)
             conn._network_read_failure = failure
             return output, pattern
+        conn._network_command_sent = True
         if use_timing:
             output = conn.send_command_timing(command, read_timeout=timeout, strip_prompt=False, strip_command=False, cmd_verify=False)
         else:
@@ -1663,7 +1721,7 @@ class Collector:
         with self._lease(target, device_type, profile) as conn:
             out, pattern = self._send(conn, command, read_timeout, expect_string, use_timing)
             result = self._command_result(conn, target, command, out, time.monotonic() - started, bool(save_output), pattern)
-            if not result["output_complete"] or getattr(conn, '_network_read_failure', None):
+            if (not result["output_complete"] and not result.get("awaiting_input")) or getattr(conn, '_network_read_failure', None):
                 self._disconnect_connection(conn)
             if use_textfsm and result["ok"]:
                 from netmiko.utilities import structured_data_converter
@@ -1691,8 +1749,8 @@ class Collector:
     def execute_many(self, target: str, commands: list[str], device_type: str | None = None, profile: str | None = None,
                      read_timeout: int | None = None, save_output: bool = False, use_timing: bool = False,
                      expect_string: str | None = None) -> dict[str, Any]:
-        if not isinstance(commands, list) or not 1 <= len(commands) <= 50:
-            raise ValueError("commands must be an array containing 1 to 50 commands")
+        if not isinstance(commands, list) or not 1 <= len(commands) <= MAX_COMMANDS:
+            raise ValueError("commands must be an array containing 1 to 1000 commands")
         commands = [safe_command(c) for c in commands]
         commands = self._preflight(target, commands, device_type, profile)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
@@ -1710,30 +1768,36 @@ class Collector:
                     raise
                 except Exception as exc:
                     # The connection is potentially out of sync; do not continue blindly.
-                    results.append(self.failure_result(exc, target, cmd))
+                    failed = self.failure_result(exc, target, cmd)
+                    failed.update(command_sent=bool(getattr(conn, '_network_command_sent', True)), replay_safe=is_replay_safe(cmd))
+                    results.append(failed)
                     raise BatchError(results)
         return {"target": target, "results": results, "ok": True, "total": len(commands), "successes": len(results)}
 
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
                  read_timeout: int | None = None, save_output: bool = False) -> dict[str, Any]:
-        if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
-            raise ValueError("steps must be an array containing 1 to 20 strings")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_COMMANDS:
+            raise ValueError("steps must be an array containing 1 to 1000 strings")
         # No blind confirmations, passwords, shell escapes or arbitrary replies.
         # Each step is an independently reviewed read-only command.
-        steps = [safe_command(step) for step in steps]
-        steps = self._preflight(target, steps, device_type, profile)
+        steps = [interaction_step(step) for step in steps]
+        self._get_settings(target, device_type, profile)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         started = time.monotonic()
         chunks = []
         results = []
         with self._lease(target, device_type, profile) as conn:
-            for step in steps:
+            for step_index, step in enumerate(steps):
                 out, pattern = self._send(conn, step, timeout, use_timing=True)
                 checked = self._command_result(conn, target, step, out, time.monotonic()-started, save_output, pattern)
                 chunks.append(out)
                 results.append(checked)
                 if not checked['ok']:
+                    if checked.get('awaiting_input'):
+                        if step_index + 1 < len(steps):
+                            continue
+                        return {**checked, 'steps': results}
                     if not checked['output_complete'] or getattr(conn, '_network_read_failure', None):
                         self._disconnect_connection(conn)
                     return {**checked, 'steps': results}
@@ -1741,7 +1805,7 @@ class Collector:
                                   save_output, getattr(conn, "_network_prompt_regex", None), interactive=True)
             # Each step already applied its command-specific CLI checks (including
             # BGP notification counters). A synthetic aggregate is not a command.
-            if result['output_complete'] and all(step['ok'] for step in results):
+            if result['output_complete'] and all(step['ok'] or step.get('awaiting_input') for step in results) and results[-1]['ok']:
                 result.update(ok=True, cli_ok=True)
                 for key in ('error', 'error_category', 'error_stage', 'retryable', 'message'):
                     result.pop(key, None)
@@ -1959,7 +2023,7 @@ class Collector:
     def status(self) -> dict[str, Any]:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": v.get("conn") is not None,
-                         "leased": v.get("borrowers", 0), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
+                         "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
         return {"version": VERSION, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
@@ -1993,9 +2057,9 @@ class BatchError(Exception):
 
 
 TOOLS: dict[str, dict[str, Any]] = {
-    "ssh_execute": {"description": "Execute a reviewed read-only CLI command over Netmiko SSH on a device alias, hostname or IP. Device type can be specified at call time; raw output is retained. State-changing commands are always rejected.", "schema": {"target": "string", "command": "string", "device_type": "string", "profile": "string", "read_timeout": "integer", "expect_string": "string", "use_timing": "boolean", "save_output": "boolean", "use_textfsm": "boolean"}, "required": ["target", "command"], "method": "execute"},
-    "ssh_execute_many": {"description": "Run a sequence of reviewed read-only CLI commands on one device using the same SSH session. Stops if one command fails.", "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string"}, "required": ["target", "commands"], "method": "execute_many"},
-    "ssh_interact": {"description": "Run independent read-only commands with timing reads and verify every step. No confirmations, yes/Enter responses or configuration mode. Prefer ssh_execute_many for ordinary collection.", "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
+    "ssh_execute": {"description": "Execute an agent-selected CLI command over Netmiko SSH on a device alias, hostname or IP. Device type can be specified at call time; raw output is retained. Configuration commands are supported; inspect awaiting_input before replying.", "schema": {"target": "string", "command": "string", "device_type": "string", "profile": "string", "read_timeout": "integer", "expect_string": "string", "use_timing": "boolean", "save_output": "boolean", "use_textfsm": "boolean"}, "required": ["target", "command"], "method": "execute"},
+    "ssh_execute_many": {"description": "Run a sequence of agent-selected CLI commands on one device using the same SSH session. Stops if one command fails.", "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string"}, "required": ["target", "commands"], "method": "execute_many"},
+    "ssh_interact": {"description": "Run explicit command/response steps with timing reads, including configuration modes and confirmation replies. No reply is sent unless provided by the agent. Verify each result.", "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
     "ssh_parallel": {"description": "Run independent SSH collections concurrently on many devices. Each task can have a DIFFERENT target, command or list of commands, optional vendor and profile. Output kept per task.", "schema": {"tasks": "array"}, "required": ["tasks"], "method": "parallel"},
     "ssh_read_output": {"description": "Read a slice of a saved CLI output by opaque output_id, offset (0-based LINE number), and limit (max lines). Useful for huge configs.", "schema": {"output_id": "string", "offset": "integer", "limit": "integer"}, "required": ["output_id"], "method": "read_output"},
     "ssh_read_output_bytes": {"description": "Read exact bytes of any saved raw output, including very long single lines, with byte offset and length. UTF-8 text is decoded best-effort.", "schema": {"output_id": "string", "byte_offset": "integer", "length": "integer"}, "required": ["output_id"], "method": "read_output_bytes"},
@@ -2044,7 +2108,7 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
         if method == "initialize":
             requested = (req.get("params") or {}).get("protocolVersion", "2025-06-18")
             protocol = requested if requested in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"} else "2025-06-18"
-            return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Generic network CLI collector. Choose your own commands and targets. Never send secrets in tool arguments; use credential profiles and SSH access with read-only permissions."})
+            return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Network CLI executor. Agent selects commands and authorizes configuration changes. Content is not filtered; responses and completion are verified. Use credential profiles."})
         if method == "ping":
             return rpc_response(rid, {})
         if method == "tools/list":

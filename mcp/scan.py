@@ -17,7 +17,7 @@ import shutil
 import threading
 import time
 import uuid
-from collector_backend import Collector, BatchError, safe_command, readonly_command, bounded_int
+from collector_backend import Collector, BatchError, safe_command, readonly_command, bounded_int, is_replay_safe, MAX_COMMANDS
 
 DEFAULT_COMMANDS = {'juniper_junos':['show version'], 'cisco_ios':['show version'],
                     'cisco_xr':['show version'], 'cisco_nxos':['show version'],
@@ -56,8 +56,8 @@ def prepare_tasks(collector, tasks, command_map=None):
     if not isinstance(command_map, dict):
         raise ValueError('Commands file must map device_type to arrays of commands')
     def commands(value):
-        if not isinstance(value, list) or not 1 <= len(value) <= 50:
-            raise ValueError('Each device needs 1..50 commands')
+        if not isinstance(value, list) or not 1 <= len(value) <= MAX_COMMANDS:
+            raise ValueError('Each device needs 1..1000 commands')
         return [safe_command(c) for c in value]
     command_map = {dtype: commands(value) for dtype, value in command_map.items()}
     for dtype, values in command_map.items():
@@ -82,22 +82,6 @@ def prepare_tasks(collector, tasks, command_map=None):
             item['commands'] = commands(item['commands'])
         elif params['device_type'] not in {'autodetect','generic_termserver'}:
             item['commands'] = commands(command_map.get(params['device_type']))
-        if params['device_type'] not in {'autodetect','generic_termserver'}:
-            for command in item['commands']:
-                readonly_command(command, params['device_type'])
-        else:
-            # A future detection is not permission to send an unsafe plan.
-            for command in item.get('commands', []):
-                reviewed = False
-                for platform in DEFAULT_COMMANDS:
-                    try:
-                        readonly_command(command, platform)
-                        reviewed = True
-                        break
-                    except PermissionError:
-                        pass
-                if not reviewed:
-                    raise PermissionError('Command is outside all reviewed read-only policies')
         public = {k:v for k,v in item.items() if k not in {'target','profile','device_type'}}
         token = [collector._session_key(params), public, command_map if 'commands' not in item else None]
         task_id = hashlib.sha256(json.dumps(token,sort_keys=True).encode()).hexdigest()
@@ -121,7 +105,7 @@ def _proofs(collector, outcome, directory, task_id, attempt):
     return proofs
 
 
-def _attempt(collector, task, lane, directory, number, command_map, cancel, budgets):
+def _attempt(collector, task, lane, directory, number, command_map, cancel, budgets, command_offset=0):
     started = stamp(); clock = time.monotonic()
     budget = budgets[lane]
     outcome = None
@@ -135,26 +119,42 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
             commands = task.get('commands') or command_map.get(params['device_type'])
             if not commands:
                 raise ValueError('No commands configured for the detected platform')
-            outcome = collector.execute_many(task['target'],commands,device_type=params['device_type'],
+            outcome = collector.execute_many(task['target'],commands[command_offset:],device_type=params['device_type'],
                         profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),save_output=True)
         except BatchError as exc:
             outcome = {'ok':False,'results':exc.results}
         except Exception as exc:
             outcome = collector.failure_result(exc,task['target'])
     checked = outcome.get('results',[])
+    next_command = command_offset
+    for index, checked_result in enumerate(checked):
+        checked_result['command_index'] = command_offset + index
+        if checked_result.get('ok') and next_command == command_offset + index:
+            next_command += 1
+    command_sent = any(r.get('command_sent', True) for r in checked)
+    retry_safe = all(not r.get('command_sent', True) or is_replay_safe(r.get('command','')) for r in checked)
     failure = next((r for r in reversed(checked) if not r.get('ok')), outcome)
     status = 'success' if outcome.get('ok') else ('partial' if any(r.get('ok') for r in checked) else 'failed')
     result = {'attempt':number,'lane':lane,'status':status,'started_at':started,'finished_at':stamp(),
               'elapsed_ms':round((time.monotonic()-clock)*1000,2),
               'error_category':failure.get('error_category',failure.get('error','cli_error')) if status!='success' else None,
-              'retryable':bool(failure.get('retryable')),'result':collector.redact_structured(outcome)}
+              'retryable':bool(failure.get('retryable')) and retry_safe,
+              'command_sent':command_sent,'safe_to_retry':retry_safe,'next_command_index':next_command,
+              'command_offset':command_offset,'result':collector.redact_structured(outcome)}
     # Persistence failure is a job failure, never a false success.
-    result['evidence'] = _proofs(collector,outcome,directory,task['task_id'],number)
+    try:
+        result['evidence'] = _proofs(collector,outcome,directory,task['task_id'],number)
+    except Exception as exc:
+        result.update(collection_status=status,status='unknown',export_pending=True,evidence=[],
+                      retryable=False,error_category='storage_error',export_error=type(exc).__name__)
     return result
 
 
 def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command_map=None,
-             fast_timeout=90, slow_timeout=240, cancel=None, progress=None):
+             fast_timeout=90, slow_timeout=240, cancel=None, progress=None, retry_statuses=None, replay_uncertain=False):
+    retry_statuses = set(retry_statuses or [])
+    if retry_statuses - {'failed', 'partial', 'unknown'}:
+        raise ValueError('retry_statuses must contain failed, partial or unknown')
     if collector.max_workers < 2:
         raise ValueError('Fast/slow scan needs max_workers >= 2 in collector configuration')
     workers = min(bounded_int(workers,16,2,32), collector.max_workers)
@@ -168,12 +168,12 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
         handle.write(str(os.getpid()));handle.flush();os.fsync(handle.fileno())
     try:
         return _run_locked(collector,prepared,command_map,directory,workers,slow_workers,
-                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared))
+                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain)
     finally:
         lock.unlink()
 
 
-def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates):
+def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain):
     manifest = directory/'scan-manifest.json'
     binding = {'version':1,'plan_hash':hashlib.sha256(json.dumps([tasks,command_map],sort_keys=True).encode()).hexdigest(),
                'total':len(tasks)}
@@ -204,10 +204,50 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                         for block in iter(lambda:handle.read(1024*1024), b''):digest.update(block)
                     if digest.hexdigest()!=proof['sha256']:raise ValueError('Archived evidence changed')
             if record['status']=='running':
-                record.update(status='unknown',message='Interrupted attempt; reconcile before retry in a new job')
+                record.update(status='unknown',interrupted=True,message='Interrupted attempt; reconcile before explicit replay')
                 atomic_json(path,record)
             states[task['task_id']]=record
-            if record['status']=='retry_pending':lanes['slow'].append(task)
+            if record['status'] in retry_statuses:
+                latest = record.get('attempts', [])[-1] if record.get('attempts') else {}
+                if latest.get('export_pending'):
+                    try:
+                        latest['evidence'] = _proofs(c,latest['result'],directory,task['task_id'],latest['attempt'])
+                        latest['export_pending'] = False
+                        record['status'] = latest['collection_status']
+                        latest['status'] = record['status']
+                        atomic_json(path,record)
+                    except Exception as exc:
+                        record.update(status='unknown',message='Evidence export still pending: '+type(exc).__name__)
+                        atomic_json(path,record)
+                        continue
+                    if record['status'] == 'success':
+                        continue
+                planned = task.get('commands')
+                if planned is None:
+                    planned = [command for values in command_map.values() for command in values]
+                planned_reads = bool(planned) and all(is_replay_safe(command) for command in planned)
+                # 1.6.x checkpoints lack replay metadata; infer only observational tasks.
+                safe = bool(latest.get('safe_to_retry', planned_reads))
+                if record.get('interrupted') and not planned_reads:
+                    safe = False
+                if 'next_command_index' not in record:
+                    completed = latest.get('command_offset', 0)
+                    for previous in latest.get('result', {}).get('results', []):
+                        if not previous.get('ok'):
+                            break
+                        completed += 1
+                    record['next_command_index'] = completed
+                if not safe and not replay_uncertain:
+                    record.update(status='unknown',needs_reconciliation=True,
+                                  message='A command may have executed; inspect evidence or explicitly use --replay-uncertain')
+                    atomic_json(path,record)
+                else:
+                    record.update(cycle_attempts=0,needs_reconciliation=False,replay_from_start=not safe)
+                    if not safe:
+                        record['next_command_index'] = 0
+                    lanes['slow'].append(task)
+            elif record['status']=='retry_pending':
+                lanes['slow'].append(task)
         else:lanes[task['lane']].append(task)
     budgets = {
         'fast':{'deadline':fast_timeout,'connection':{'conn_timeout':10,'banner_timeout':15,'auth_timeout':30},'read_timeout':45},
@@ -219,7 +259,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
     def retire_owned_raw(attempt):
         # Only the CLI's private scratch directory, never shared MCP outputs.
         # Results and permanent evidence have already been committed above.
-        if c.output_dir.resolve() != directory/'raw-output':
+        if attempt.get('export_pending') or c.output_dir.resolve() != directory/'raw-output':
             return
         with c._output_lock:
             for result in attempt.get('result', {}).get('results', []):
@@ -244,9 +284,12 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 while not cancel.is_set() and lanes[lane] and active[lane]<limits[lane]:
                     task=lanes[lane].popleft();old=states.get(task['task_id'],{})
                     record={'task_id':task['task_id'],'target':task['target'],'status':'running',
-                            'lane':lane,'started_at':stamp(),'attempts':old.get('attempts',[])}
+                            'lane':lane,'started_at':stamp(),'attempts':old.get('attempts',[]),
+                            'cycle_attempts':old.get('cycle_attempts',len(old.get('attempts',[])))+1,
+                            'replay_from_start':old.get('replay_from_start',False)}
                     save(record)
-                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,command_map,cancel,budgets)
+                    offset=old.get('next_command_index',0)
+                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,command_map,cancel,budgets,offset)
                     pending[future]=(task,lane);active[lane]+=1
             if not pending:break
             try:
@@ -258,7 +301,8 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 record=states[task['task_id']]
                 try:
                     attempt=future.result();record['attempts'].append(attempt)
-                    retry=(len(record['attempts']) < 2 and attempt['retryable'] and attempt['error_category'] in
+                    record['next_command_index']=attempt['next_command_index']
+                    retry=(record['cycle_attempts'] < 2 and attempt['retryable'] and attempt['error_category'] in
                            {'connect_timeout','banner_timeout','read_timeout','auth_timeout','connection_lost','handshake_incomplete'} and not cancel.is_set())
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)
@@ -285,6 +329,8 @@ def main():
     parser.add_argument('--slow-workers',type=int,default=4)
     parser.add_argument('--fast-timeout',type=int,default=90)
     parser.add_argument('--slow-timeout',type=int,default=240)
+    parser.add_argument('--retry-status', nargs='+', choices=['failed','partial','unknown'], help='Explicitly resume selected unsuccessful states, preserving successes and history')
+    parser.add_argument('--replay-uncertain', action='store_true', help='Agent explicitly authorizes replay of an unsuccessful command whose effects are uncertain')
     parser.add_argument('--execute',action='store_true',help='Actually connect; default is preview only')
     args=parser.parse_args()
     from collector_backend import load_config,load_inventory_csv
@@ -306,6 +352,7 @@ def main():
             print(json.dumps({'preview':True,'total':len(tasks),'unique_tasks':len(prepared),'ssh_executed':False}));return 0
         result=run_scan(collector,tasks,args.output,workers=args.workers,slow_workers=args.slow_workers,
                         command_map=command_map,fast_timeout=args.fast_timeout,slow_timeout=args.slow_timeout,
+                        retry_statuses=args.retry_status,replay_uncertain=args.replay_uncertain,
                         progress=lambda s:print(json.dumps({'progress':s}),flush=True))
         print(json.dumps(result));return 0 if result['ok'] else 2
     finally:collector.shutdown()

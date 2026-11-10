@@ -1,3 +1,13 @@
+# 1.7.0 - Agent-controlled configuration CLI, reader and targeted resume
+
+- Remove vendor command allowlists/denylists and implicit command rewrites; retain framing checks only. Keep all ten MCP schemas; update descriptions and agent guidance. Legacy Python imports remain compatible.
+- Support configuration-mode prompt transitions, explicit confirmation/Enter responses and pending-input session retention. Batches support 1000 commands/steps; execution concurrency remains bounded as before.
+- Guard XML/JSON completion and Cisco config banners, retain preceding unassociated data, and prevent custom expect from redefining device identity.
+- Preserve completed read-command prefixes across retry/resume; add retry-status selection without repeating successful devices, retain attempt/evidence history and recover failed exports without SSH replay.
+- Avoid automatic replay after uncertain configuration effects; agent can explicitly authorize whole-batch replay to reconstruct context. No content restrictions are applied to initial execution.
+- Validation: full 219-test suite passed; final execution/resume tests (20) and scanner regressions (35) also passed after legacy checkpoint support. Loopback mode tests cover Cisco, Junos and Huawei.
+- No parallel benchmark or pool/storage architecture tuning in this release. Development validation uses mocks and loopback SSH, not production configuration.
+
 # 1.6.1 - NOC compatibility and collection correctness
 
 - Guard embedded prompt lines inside Cisco configuration banners; expand pager variants and privilege-error recognition.

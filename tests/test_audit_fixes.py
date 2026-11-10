@@ -8,10 +8,10 @@ b=f.b
 class AuditFixes(unittest.TestCase):
     setUp=f.Regression.setUp
     tearDown=f.Regression.tearDown
-    def test_policy_additions(self):
+    def test_command_content_preserved(self):
         for p,c in [('juniper_junos','show configuration | display inheritance | display set'),('juniper_junos','show interfaces | match "up$"'),('cisco_ios','show controllers'),('cisco_ios','show etherchannel summary'),('cisco_ios','show policy-map interface Gi0/1'),('huawei','display eth-trunk'),('huawei','display bfd session all')]:
             self.assertEqual(b.readonly_command(c,p),c)
-        with self.assertRaises(PermissionError):b.readonly_command('show version $x','juniper_junos')
+        self.assertEqual(b.readonly_command('show version $x','juniper_junos'),'show version $x')
     def test_wrong_final_prompt(self):
         fake=f.Fake();fake.send_command=lambda command,**kw:command+'\nMOCK>\nPARTIAL DONE'
         self.c._connect=lambda **kw:fake
@@ -67,7 +67,7 @@ class AuditFixes(unittest.TestCase):
         oid=self.c._save_output('CRC 12\nDROP 2\n')
         self.assertEqual(self.c.search_output(oid,'CRC|DROP',regex=True)['total_matches'],2)
 
-    def test_fallback_enforces_policy_and_hostkeys(self):
+    def test_fallback_forwards_configuration_and_hostkey_options(self):
         import sys
         from pathlib import Path
         from unittest.mock import patch
@@ -77,5 +77,5 @@ class AuditFixes(unittest.TestCase):
             wrapper=readonly_client.ReadOnlyConnection(host='MOCK',device_type='juniper_junos',ssh_strict=False)
             defaults=factory.call_args.args[0]['defaults']
             self.assertFalse(defaults['ssh_strict']);self.assertFalse(defaults['alt_host_keys'])
-            with self.assertRaises(PermissionError):wrapper.send_command('configure')
+            self.assertIn('MOCK DATA',wrapper.send_command('configure'))
             self.assertIn('MOCK DATA',wrapper.send_command('show version'))
