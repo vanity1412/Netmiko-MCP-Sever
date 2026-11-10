@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-Backend **1.8.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.8.2**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
 
@@ -21,7 +21,7 @@ python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/devic
 python mcp/collector_backend.py --check
 ```
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.1.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.2.
 
 ## Session, driver và profile
 
@@ -106,6 +106,12 @@ Session đã xác minh được ưu tiên trước driver cache. Nếu cache d�
 Reader dùng spool 1 MiB rồi chuyển xuống temporary file. Worker truyền chunk tối đa 64 Ki ký tự qua queue hữu hạn và chỉ trả metadata/pager spans ở cuối, không gửi lặp cả output. Hỗ trợ thêm footer Press any key to continue (Q to quit) và --More-- or (q)uit; không gửi phím cho câu hỏi xác nhận thông thường. API cuối vẫn materialize text để normalize/verify/redact/parse, nên đây không phải bảo đảm RAM hằng số cho mọi kích thước output. Lỗi temporary storage được báo là lỗi lưu trữ. Không benchmark hoặc tự tăng worker.
 
 Copy toàn bộ mcp/ khi cập nhật, gồm result_status.py; restart MCP. Kiểm thử phát triển chỉ dùng mock và SSH localhost, chưa cấu hình production.
+
+## Reliability — 1.8.2
+
+Pool đầy sẽ chờ theo deadline/cancel, không đẩy session đang được sử dụng ra ngoài. Reader chờ prompt ổn định tối thiểu 300 ms; dữ liệu tiếp tục sau prompt nghi ngờ được giữ lại và báo chưa xác nhận đầy đủ. ANSI/pager được chuẩn hóa trước khi so sánh.
+
+Scanner thêm `--device-timeout 240`: ngân sách chung cho fast và retry slow, mặc định bằng `--slow-timeout`. Resume giữ thời gian đã dùng; explicit retry mở chu kỳ mới. Không tự replay cấu hình chưa rõ kết quả. Timeout trực tiếp vẫn phụ thuộc lời gọi Netmiko/OS trả về; metadata `device_budget_exceeded` ghi nhận vượt trần. Xem [chi tiết và giới hạn](docs/SCAN.md).
 
 ## Status và credential — 1.8.1
 

@@ -33,7 +33,7 @@ if _module_dir not in sys.path:
 from result_status import normalize_result
 import tempfile
 
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -663,6 +663,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     """
     deadline = time.monotonic() + timeout
     chunks, tail, received = OutputBuffer(), '', 0
+    # Log/config payloads can contain a literal device prompt. Allow delayed
+    # continuation, and report ambiguity rather than certify such a transcript.
+    quiet = max(quiet, .3)
+    candidate = None
     handled_pagers = {}
     last_data = time.monotonic()
     failure = None
@@ -705,6 +709,13 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
             cleaned = clean_terminal(tail)
+            if ending_matches(pattern, cleaned) and not output_container_open(command, chunks.value()):
+                if candidate is None:
+                    candidate_raw = chunks.value()
+                    if handled_pagers:
+                        candidate_raw = strip_pager_spans(candidate_raw, list(handled_pagers.items()))
+                    candidate = hashlib.sha256(clean_terminal(candidate_raw).rstrip().encode('utf-8')).digest()
+                    del candidate_raw
             if pending_interaction(cleaned) and not output_container_open(command, chunks.value()):
                 break
             pagers = list(PAGER_RE.finditer(tail))
@@ -732,6 +743,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     if handled_pagers:
         raw = strip_pager_spans(raw, conn._network_pager_spans)
     output = clean_terminal(raw)
+    if failure is None and candidate is not None and candidate != hashlib.sha256(output.rstrip().encode('utf-8')).digest():
+        failure = {'error_category': 'output_verification', 'retryable': False,
+                   'message': 'Data continued after a prompt candidate; completion is uncertain',
+                   'error_stage': 'command'}
     if failure is None and ending_matches(device_pattern, output) and not output_container_open(command, output):
         prompt = last_prompt(output)
         if prompt:
@@ -1306,13 +1321,14 @@ class Collector:
                 except ProbeFailure as exc:
                     # Also works when this backend is the __main__ module.
                     raise CollectionError(exc.details) from None
-                try:
-                    guess = proxy.device_type
-                    ready_params = dict(params, device_type=guess)
-                    self._adopt_probe(ready_params, proxy)
-                except Exception:
-                    proxy.close()
-                    raise
+                guess = proxy.device_type
+                ready_params = dict(params, device_type=guess)
+        if self._custom_detect is None:
+            try:
+                self._adopt_probe(ready_params, proxy)
+            except Exception:
+                proxy.close()
+                raise
         if not guess or not re.fullmatch(r"[a-zA-Z0-9_]+", guess):
             raise ValueError("Autodetect could not verify a supported platform; specify device_type")
         params["device_type"] = guess
@@ -1322,26 +1338,44 @@ class Collector:
             self._detect_cache[key] = (time.monotonic(), guess)
         self._disk_detection(params, guess)
 
-    def _adopt_probe(self, params, proxy):
-        key = self._session_key(params)
-        evicted = None
-        with self._guard:
-            existing = self._sessions.get(key)
-            # An earlier failed lease can leave an idle, empty entry behind.
-            # Borrowed entries belong to their lease, including an ongoing open.
-            accepted = existing is None or (existing.get('conn') is None and not existing.get('borrowers'))
-            if accepted:
-                if existing is None and len(self._sessions) >= self.max_sessions:
+    def _reserve_pool_entry(self, key, proxy=None):
+        """Wait without holding global/session/SSH locks; reservation is atomic."""
+        deadline = time.monotonic() + self._checkpoint()
+        while True:
+            self._request.stage = 'pool_wait'
+            self._checkpoint()
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Request deadline exceeded waiting for session pool capacity')
+            evicted = None
+            with self._guard:
+                entry = self._sessions.get(key)
+                accepted = proxy is None or entry is None or (entry.get('conn') is None and not entry.get('borrowers'))
+                if proxy is not None and not accepted:
+                    return entry, None, False
+                if entry is None and len(self._sessions) >= self.max_sessions:
                     idle = [(k,e) for k,e in self._sessions.items() if not e.get('borrowers')]
-                    if not idle:
-                        raise RuntimeError('Session pool is at capacity; all sessions are leased')
-                    old_key, evicted = min(idle, key=lambda item:item[1]['used'])
-                    self._sessions.pop(old_key)
-                    self._session_evictions += 1
-                now = time.monotonic()
-                self._sessions[key] = {'lock':threading.RLock(),'borrowers':0,'conn':proxy,
-                    'used':now,'created':now,'health_checked':now}
-                self._connections_opened += 1
+                    if idle:
+                        old_key, evicted = min(idle, key=lambda item:item[1]['used'])
+                        self._sessions.pop(old_key)
+                        self._session_evictions += 1
+                    else:
+                        accepted = False
+                if accepted:
+                    if entry is None or proxy is not None:
+                        now = time.monotonic()
+                        entry = {'lock':threading.RLock(), 'conn':proxy, 'used':now,
+                                 'created':now if proxy is not None else 0, 'borrowers':0,
+                                 'health_checked':now}
+                        self._sessions[key] = entry
+                    if proxy is None:
+                        entry['borrowers'] += 1
+                    else:
+                        self._connections_opened += 1
+                    return entry, evicted, True
+            time.sleep(min(.02, max(0, deadline-time.monotonic())))
+
+    def _adopt_probe(self, params, proxy):
+        _, evicted, accepted = self._reserve_pool_entry(self._session_key(params), proxy)
         if not accepted:
             proxy.close()
         if evicted:
@@ -1440,20 +1474,7 @@ class Collector:
         params = self._get_settings(target, device_type, profile)
         self._resolve_platform(params)
         key = self._session_key(params)
-        evicted = None
-        with self._guard:
-            entry = self._sessions.get(key)
-            if entry is None:
-                if len(self._sessions) >= self.max_sessions:
-                    idle = [(k, e) for k, e in self._sessions.items() if not e.get("borrowers")]
-                    if not idle:
-                        raise RuntimeError("Session pool is at capacity; all sessions are leased")
-                    old_key, evicted = min(idle, key=lambda item: item[1]["used"])
-                    self._sessions.pop(old_key)
-                    self._session_evictions += 1
-                entry = {"lock": threading.RLock(), "conn": None, "used": time.monotonic(), "created": 0.0, "borrowers": 0}
-                self._sessions[key] = entry
-            entry["borrowers"] += 1
+        entry, evicted, _ = self._reserve_pool_entry(key)
         if evicted is not None:
             self._disconnect_entry(evicted)
         try:

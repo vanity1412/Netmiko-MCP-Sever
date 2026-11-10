@@ -153,7 +153,7 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
 
 
 def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command_map=None,
-             fast_timeout=90, slow_timeout=240, cancel=None, progress=None, retry_statuses=None, replay_uncertain=False):
+             fast_timeout=90, slow_timeout=240, cancel=None, progress=None, retry_statuses=None, replay_uncertain=False, device_timeout=None):
     retry_statuses = set(retry_statuses or [])
     if retry_statuses - {'failed', 'partial', 'unknown'}:
         raise ValueError('retry_statuses must contain failed, partial or unknown')
@@ -163,6 +163,7 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
     slow_workers = min(bounded_int(slow_workers,4,1,31), workers-1)
     fast_timeout = bounded_int(fast_timeout,90,1,3600)
     slow_timeout = bounded_int(slow_timeout,240,fast_timeout,3600)
+    device_timeout = bounded_int(device_timeout,slow_timeout,1,3600)
     prepared, command_map = prepare_tasks(collector,tasks,command_map)
     directory = Path(directory).resolve();directory.mkdir(parents=True,exist_ok=True)
     lock = directory/'scan.lock'
@@ -170,12 +171,12 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
         handle.write(str(os.getpid()));handle.flush();os.fsync(handle.fileno())
     try:
         return _run_locked(collector,prepared,command_map,directory,workers,slow_workers,
-                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain)
+                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout)
     finally:
         lock.unlink()
 
 
-def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain):
+def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout):
     manifest = directory/'scan-manifest.json'
     binding = {'version':1,'plan_hash':hashlib.sha256(json.dumps([tasks,command_map],sort_keys=True).encode()).hexdigest(),
                'total':len(tasks)}
@@ -248,7 +249,8 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                                   message='A command may have executed; inspect evidence or explicitly use --replay-uncertain')
                     atomic_json(path,record)
                 else:
-                    record.update(cycle_attempts=0,needs_reconciliation=False,replay_from_start=not safe)
+                    record.update(cycle_attempts=0,needs_reconciliation=False,replay_from_start=not safe,
+                                  device_elapsed_seconds=0,device_budget_seconds=device_timeout)
                     if not safe:
                         record['next_command_index'] = 0
                     lanes['slow'].append(task)
@@ -260,6 +262,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
         'slow':{'deadline':slow_timeout,'connection':{'conn_timeout':30,'banner_timeout':45,'auth_timeout':60},'read_timeout':120}}
     limits = {'fast':workers-slow_workers,'slow':slow_workers}
     active = {'fast':0,'slow':0};pending = {}
+    device_clocks = {}
     def save(record):
         atomic_json(records_dir/(record['task_id']+'.json'),record);states[record['task_id']]=record
     def retire_owned_raw(attempt):
@@ -289,13 +292,31 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
             for lane in ['fast','slow']:
                 while not cancel.is_set() and lanes[lane] and active[lane]<limits[lane]:
                     task=lanes[lane].popleft();old=states.get(task['task_id'],{})
+                    identity = task['task_id']
+                    cap = min(device_timeout, old.get('device_budget_seconds', device_timeout))
+                    if identity not in device_clocks:
+                        device_clocks[identity] = (time.monotonic(), old.get('device_elapsed_seconds', 0))
+                    cycle_start, prior_elapsed = device_clocks[identity]
+                    elapsed = prior_elapsed + time.monotonic() - cycle_start
+                    remaining = cap - elapsed
+                    if remaining <= 0:
+                        old.update(task_id=identity,target=task['target'],status='partial' if old.get('next_command_index',0) else 'failed',
+                                   result_status='TIMEOUT',error_category='device_timeout',
+                                   device_budget_seconds=cap,device_elapsed_seconds=elapsed,
+                                   message='Total device time budget exhausted; no further SSH attempted')
+                        save(old)
+                        continue
+                    attempt_budgets = {name:dict(value) for name,value in budgets.items()}
+                    attempt_budgets[lane]['deadline'] = min(budgets[lane]['deadline'], remaining)
                     record={'task_id':task['task_id'],'target':task['target'],'status':'running',
                             'lane':lane,'started_at':stamp(),'attempts':old.get('attempts',[]),
                             'cycle_attempts':old.get('cycle_attempts',len(old.get('attempts',[])))+1,
-                            'replay_from_start':old.get('replay_from_start',False)}
+                            'replay_from_start':old.get('replay_from_start',False),
+                            'device_budget_seconds':cap,'device_elapsed_seconds':elapsed,
+                            'next_command_index':old.get('next_command_index',0)}
                     save(record)
                     offset=old.get('next_command_index',0)
-                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,command_map,cancel,budgets,offset)
+                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,command_map,cancel,attempt_budgets,offset)
                     pending[future]=(task,lane);active[lane]+=1
             if not pending:break
             try:
@@ -308,7 +329,11 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 try:
                     attempt=future.result();record['attempts'].append(attempt)
                     record['next_command_index']=attempt['next_command_index']
-                    retry=(record['cycle_attempts'] < 2 and attempt['retryable'] and attempt['error_category'] in
+                    cycle_start, prior_elapsed = device_clocks[task['task_id']]
+                    record['device_elapsed_seconds'] = prior_elapsed + time.monotonic() - cycle_start
+                    remaining = record['device_budget_seconds'] - record['device_elapsed_seconds']
+                    attempt['device_budget_exceeded'] = remaining <= 0
+                    retry=(remaining > 0 and record['cycle_attempts'] < 2 and attempt['retryable'] and attempt['error_category'] in
                            {'connect_timeout','banner_timeout','read_timeout','auth_timeout','connection_lost','handshake_incomplete'} and not cancel.is_set())
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)
@@ -335,6 +360,7 @@ def main():
     parser.add_argument('--slow-workers',type=int,default=4)
     parser.add_argument('--fast-timeout',type=int,default=90)
     parser.add_argument('--slow-timeout',type=int,default=240)
+    parser.add_argument('--device-timeout',type=int,default=None,help='Shared fast/retry device budget in seconds; defaults to slow-timeout')
     parser.add_argument('--retry-status', nargs='+', choices=['failed','partial','unknown'], help='Explicitly resume selected unsuccessful states, preserving successes and history')
     parser.add_argument('--replay-uncertain', action='store_true', help='Agent explicitly authorizes replay of an unsuccessful command whose effects are uncertain')
     parser.add_argument('--execute',action='store_true',help='Actually connect; default is preview only')
@@ -358,7 +384,7 @@ def main():
             print(json.dumps({'preview':True,'total':len(tasks),'unique_tasks':len(prepared),'ssh_executed':False}));return 0
         result=run_scan(collector,tasks,args.output,workers=args.workers,slow_workers=args.slow_workers,
                         command_map=command_map,fast_timeout=args.fast_timeout,slow_timeout=args.slow_timeout,
-                        retry_statuses=args.retry_status,replay_uncertain=args.replay_uncertain,
+                        retry_statuses=args.retry_status,replay_uncertain=args.replay_uncertain,device_timeout=args.device_timeout,
                         progress=lambda s:print(json.dumps({'progress':s}),flush=True))
         print(json.dumps(result));return 0 if result['ok'] else 2
     finally:collector.shutdown()

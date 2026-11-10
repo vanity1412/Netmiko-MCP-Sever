@@ -1,3 +1,13 @@
+# Reliability 1.8.2
+
+Pool capacity waits now obey the request deadline/cancellation without holding the registry lock or SSH semaphore. Probe adoption waits after releasing its SSH slot; leased entries are never evicted.
+
+Reader retains late data after a prompt candidate and marks an ambiguous transcript as incomplete (output_verification, not automatically retryable). Prompt candidates settle for at least 300 ms; structured XML/JSON/banner guards remain. A quiet period cannot prove completion against an arbitrarily delayed device that emits an exact prompt as data. Partial output is preserved; no sentinel commands or implicit confirmation responses are injected.
+
+Scanner --device-timeout defaults to --slow-timeout (240 seconds). Fast and slow attempts share this budget, including pool wait, execution, export and time between attempts after the first dispatch. Initial fleet queue time and time while the process is stopped are excluded. Checkpoints preserve consumed time for retry_pending; explicit --retry-status starts a new authorized cycle. Exhaustion prevents another SSH attempt and retains evidence/prefix. Configuration with uncertain effects is never automatically replayed.
+
+Deadlines are cooperative for direct Netmiko connections: a blocking library/OS call may return late. Late completion is recorded with device_budget_exceeded; verified output remains available. Probe subprocesses retain their existing hard timeout. This change does not promise hard preemption of an in-flight direct connection.
+
 # Cập nhật 1.8.1
 
 Result normalization recalculates pending summaries from current results. Parallel/batch pending tasks are identified at all positions by task_id or response index plus target. Interact only leaves its last question pending while retaining historical steps. Successful complete results clear obsolete error diagnostics.

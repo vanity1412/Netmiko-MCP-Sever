@@ -1,3 +1,10 @@
+## 1.8.2 — 2026-11-10
+
+- Wait for session pool capacity with deadline/cancellation; adopt probe sessions outside the SSH semaphore.
+- Retain delayed log/config data after prompt candidates and report ambiguous completion instead of false success.
+- Share a per-device scanner budget across fast/retry lanes; persist elapsed budget and retain completed prefixes/evidence. Add --device-timeout without changing the ten MCP schemas.
+- Preserve cooperative direct-connection timeout limits and prohibit automatic replay of uncertain configuration.
+
 # 1.8.1 - Recomputed status, batch summaries and explicit credential inheritance
 
 - Recompute pending flags and summary fields on normalization; clear obsolete success diagnostics and prevent incomplete responses from becoming success.

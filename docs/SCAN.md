@@ -1,3 +1,13 @@
+# Reliability 1.8.2
+
+Pool capacity waits now obey the request deadline/cancellation without holding the registry lock or SSH semaphore. Probe adoption waits after releasing its SSH slot; leased entries are never evicted.
+
+Reader retains late data after a prompt candidate and marks an ambiguous transcript as incomplete (output_verification, not automatically retryable). Prompt candidates settle for at least 300 ms; structured XML/JSON/banner guards remain. A quiet period cannot prove completion against an arbitrarily delayed device that emits an exact prompt as data. Partial output is preserved; no sentinel commands or implicit confirmation responses are injected.
+
+Scanner --device-timeout defaults to --slow-timeout (240 seconds). Fast and slow attempts share this budget, including pool wait, execution, export and time between attempts after the first dispatch. Initial fleet queue time and time while the process is stopped are excluded. Checkpoints preserve consumed time for retry_pending; explicit --retry-status starts a new authorized cycle. Exhaustion prevents another SSH attempt and retains evidence/prefix. Configuration with uncertain effects is never automatically replayed.
+
+Deadlines are cooperative for direct Netmiko connections: a blocking library/OS call may return late. Late completion is recorded with device_budget_exceeded; verified output remains available. Probe subprocesses retain their existing hard timeout. This change does not promise hard preemption of an in-flight direct connection.
+
 # Scanner 1.8.0
 
 Giữ status checkpoint chữ thường (success/partial/failed/unknown) và toàn bộ evidence/resume. Attempt thêm result_status chuẩn hóa từ kết quả CLI; export pending là STORAGE_ERROR. Kết quả command có data_state và execution_state để agent phân biệt dữ liệu dở dang với tác động cấu hình chưa chắc chắn. Không thêm retry lồng vào execute_many. README 1.8.0 mô tả status và cơ chế refresh driver trước command.
