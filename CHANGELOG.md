@@ -1,3 +1,11 @@
+# 1.8.1 - Recomputed status, batch summaries and explicit credential inheritance
+
+- Recompute pending flags and summary fields on normalization; clear obsolete success diagnostics and prevent incomplete responses from becoming success.
+- Add status_counts and awaiting task IDs/index/target for all positions, preserving sequential interaction history and uncertainty. Ten input schemas unchanged.
+- Select profile/device SSH credentials as a complete source; reject implicit cross-source pairs, support key/agent without passwords, and retain whole-source inheritance for connection-only profiles. inherit_credentials=true explicitly opts into field inheritance.
+- No new credential loader, SSH feature, command filter, reader heuristic or benchmark in this release.
+- Validation: 257 tests passed including 11 new regressions; final credential/status checks passed after source-label diagnostics. Python 3.10 syntax checked, runtime Python 3.14.6 / Netmiko 4.7.0.
+
 # 1.8.0 - Canonical status, guarded recovery and bounded reader buffering
 
 - Add canonical execution/fault/data/execution-state fields without changing ten MCP schemas or lowercase scanner checkpoint states.

@@ -2,14 +2,37 @@
 def normalize_result(result):
     category = result.get('error_category', '')
     children = result.get('results', result.get('steps', []))
+    sequential_steps = 'steps' in result and 'results' not in result
     for child in children:
         if isinstance(child, dict): normalize_result(child)
     has_data = bool(result.get('characters') or result.get('output') or result.get('output_id') or result.get('preview'))
     if children:
         has_data = has_data or any(c.get('data_state') != 'NONE' for c in children)
     complete = result.get('output_complete', result.get('ok') is True)
-    if children and children[-1].get('awaiting_input'):
-        result['awaiting_input'] = True
+    if children:
+        from collections import Counter
+        result['status_counts'] = dict(Counter(c['status'] for c in children))
+        pending = [(i,c) for i,c in enumerate(children) if c.get('awaiting_input') and (not sequential_steps or i == len(children)-1)]
+        result['awaiting_tasks'] = [{'task_id':c.get('task_id',i),'index':i,'target':c.get('target')} for i,c in pending]
+        result['awaiting_task_ids'] = [c.get('task_id',i) for i,c in pending]
+        result['awaiting_input'] = bool(pending)
+        valid_children = all(c.get('ok') or (sequential_steps and i < len(children)-1 and c.get('awaiting_input')) for i,c in enumerate(children))
+        if not valid_children:
+            result['ok'] = False
+    else:
+        for key in ('status_counts','awaiting_tasks','awaiting_task_ids'):
+            result.pop(key, None)
+        if result.get('ok') is True and result.get('output_complete') is not False:
+            result['awaiting_input'] = False
+    if result.get('awaiting_input') or result.get('output_complete') is False:
+        result['ok'] = False
+    complete = result.get('output_complete', result.get('ok') is True)
+    if result.get('awaiting_input'):
+        complete = False
+    if result.get('ok') is True and complete:
+        for key in ('error','error_category','error_stage','message','retryable'):
+            result.pop(key, None)
+        category = ''
     result['data_state'] = 'FULL' if complete else ('PARTIAL' if has_data else 'NONE')
     if result.get('awaiting_input'):
         status = 'AWAITING_INPUT'

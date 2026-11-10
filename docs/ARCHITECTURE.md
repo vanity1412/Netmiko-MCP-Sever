@@ -1,3 +1,9 @@
+# Cập nhật 1.8.1
+
+Result normalization recalculates pending summaries from current results. Parallel/batch pending tasks are identified at all positions by task_id or response index plus target. Interact only leaves its last question pending while retaining historical steps. Successful complete results clear obsolete error diagnostics.
+
+Credential merge separates auth fields from connection settings. A profile/device defining auth selects its own complete password/key/agent bundle; a connection-only profile inherits the whole prior bundle. Explicit boolean inherit_credentials opts into field merging. No separate credential loader is added; use a private config path shared by clients. Existing retry/resume and all ten schemas remain unchanged.
+
 # Kiến trúc hiện tại — 1.8.0
 
 result_status.py chuẩn hóa kết quả thực thi theo status/fault_status/data_state/execution_state, không thay schema tool hoặc trạng thái checkpoint cũ. Reader dùng OutputBuffer (spool) và metadata pager spans; worker queue hữu hạn và không gửi lại toàn text ở gói cuối. Sau I/O vẫn tạo string cho verification/redaction/parse. Các lỗi file buffer được phân loại persistence.

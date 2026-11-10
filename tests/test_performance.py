@@ -29,7 +29,7 @@ class Performance(unittest.TestCase):
   tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}])
   self.assertEqual(tasks[0]['device_type'],'autodetect');self.assertFalse(self.connections)
  def test_profile_is_explicit_and_separate_identity(self):
-  self.c.profiles.update(one={'username':'MOCK-ONE'},two={'username':'MOCK-TWO'})
+  self.c.profiles.update(one={'username':'MOCK-ONE','password':'fixture-only'},two={'username':'MOCK-TWO','password':'fixture-only'})
   tasks,_=scan.prepare_tasks(self.c,[self.task(profile='one'),self.task(profile='two')])
   self.assertEqual(len(tasks),2)
  def test_duplicate_equivalent_profile_representation_is_deduped(self):

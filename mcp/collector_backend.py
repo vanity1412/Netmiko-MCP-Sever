@@ -33,7 +33,7 @@ if _module_dir not in sys.path:
 from result_status import normalize_result
 import tempfile
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -1135,6 +1135,25 @@ class Collector:
         settings = {k: v for k, v in self.defaults.items() if k in KNOWN_KEYS}
         settings.update({k: v for k, v in prof.items() if k in KNOWN_KEYS})
         settings.update({k: v for k, v in device.items() if k in KNOWN_KEYS})
+        auth_keys = {'username','password','use_keys','key_file','allow_agent','passphrase'}
+        for key in auth_keys:
+            settings.pop(key, None)
+        settings.update({k:v for k,v in self.defaults.items() if k in auth_keys})
+        for source_label, source in ((f'profile {name}', prof), (f'device {_alias or target}', device)):
+            if 'inherit_credentials' in source and not isinstance(source['inherit_credentials'], bool):
+                raise ValueError(f'inherit_credentials must be a boolean in {source_label}')
+            if not (auth_keys & source.keys()):
+                continue
+            if source.get('inherit_credentials', False):
+                settings.update({k:v for k,v in source.items() if k in auth_keys})
+                continue
+            key_auth = bool(source.get('use_keys') or source.get('key_file') or source.get('allow_agent'))
+            if not source.get('username') or not (source.get('password') or key_auth):
+                raise ValueError(f'Incomplete SSH credential source in {source_label}: supply username plus password/key/agent, or explicitly set inherit_credentials=true')
+            for key in auth_keys:
+                settings.pop(key, None)
+            settings.update({key:source[key] for key in auth_keys if key in source})
+            settings.setdefault('password','')
         settings["host"] = safe_target(device.get("host") or target)
         if device_type:
             known = device.get('device_type')

@@ -1,6 +1,6 @@
 # Netmiko MCP Server
 
-Backend **1.8.0**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
+Backend **1.8.1**: thực thi CLI và cấu hình nhiều thiết bị qua Netmiko, giữ nguyên **10 MCP tools** và schema OpenCode Web.
 
 ## Thực thi do agent quyết định
 
@@ -21,7 +21,7 @@ python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/devic
 python mcp/collector_backend.py --check
 ```
 
-Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.0.
+Cập nhật toàn bộ mcp/ và restart MCP. Giữ devices.json cùng dữ liệu triển khai riêng; không cần thay schema 10 tool hay launcher OpenCode Web. Kiểm tra ssh_status.version=1.8.1.
 
 ## Session, driver và profile
 
@@ -106,3 +106,17 @@ Session đã xác minh được ưu tiên trước driver cache. Nếu cache d�
 Reader dùng spool 1 MiB rồi chuyển xuống temporary file. Worker truyền chunk tối đa 64 Ki ký tự qua queue hữu hạn và chỉ trả metadata/pager spans ở cuối, không gửi lặp cả output. Hỗ trợ thêm footer Press any key to continue (Q to quit) và --More-- or (q)uit; không gửi phím cho câu hỏi xác nhận thông thường. API cuối vẫn materialize text để normalize/verify/redact/parse, nên đây không phải bảo đảm RAM hằng số cho mọi kích thước output. Lỗi temporary storage được báo là lỗi lưu trữ. Không benchmark hoặc tự tăng worker.
 
 Copy toàn bộ mcp/ khi cập nhật, gồm result_status.py; restart MCP. Kiểm thử phát triển chỉ dùng mock và SSH localhost, chưa cấu hình production.
+
+## Status và credential — 1.8.1
+
+Normalize tính lại awaiting_input và các trường tổng hợp theo kết quả hiện tại, không giữ cờ task chờ/error cũ sau success đã hoàn tất. ok=true cùng output_complete=false không thể thành SUCCESS. Batch có status_counts, awaiting_task_ids và awaiting_tasks (task_id/index/target). Nếu không có ID ổn định, index chỉ xác định task trong response hiện tại. Task trùng target vẫn phân biệt bằng index. UNKNOWN/UNCERTAIN vẫn được giữ khi một task cấu hình chưa rõ tác động, đồng thời danh sách chờ vẫn hiện đủ.
+
+Với interact, các bước chờ đã được trả lời vẫn nằm trong lịch sử steps/status_counts; awaiting_tasks chỉ biểu thị bước cuối đang chờ. Không xem câu hỏi lịch sử là task còn chờ. Schema đầu vào của 10 tool không đổi; các field mới chỉ được bổ sung trong output.
+
+Credential của profile/device là một bộ độc lập khi nguồn đó khai báo thông tin xác thực: phải có username và password hoặc key_file/use_keys/allow_agent. Key/agent không bắt buộc password và không tự lấy password global. Nguồn chỉ thay timeout/driver/port không thay credential và vẫn kế thừa nguyên bộ hiện có. secret của enable là tham số riêng.
+
+Muốn chủ động kế thừa credential từng trường, đặt inherit_credentials=true tại profile hoặc device. Flag phải là boolean. Profile/device thiếu thông tin và chưa chọn kế thừa sẽ báo lỗi có tên nguồn trước khi SSH, thay vì ghép username/password âm thầm. Các field không thuộc xác thực vẫn kế thừa defaults → profile → device bình thường. Thay nguồn xác thực có thể đổi identity job; không bỏ kiểm chứng manifest để ép resume.
+
+Ví dụ profile đầy đủ: {"username":"${SITE_SSH_USER}","password":"${SITE_SSH_PASSWORD}"}; key: {"username":"site-user","key_file":"/private/site-key"}; kế thừa chủ động: {"username":"site-user","inherit_credentials":true}.
+
+Không thêm loader credentials.json trong phiên bản này. Có thể đặt toàn bộ config private ngoài repository rồi cho các client MCP cùng trỏ --config tới đó. Không đưa credential vào Git hoặc cấu hình client công khai. Cập nhật mcp/ và restart MCP.
