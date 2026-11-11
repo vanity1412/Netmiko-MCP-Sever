@@ -4,6 +4,12 @@
 
 Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: thực thi CLI, cấu hình và thu thập nhiều thiết bị và xử lý dữ liệu. Trả lời theo ngôn ngữ người dùng. Chủ động kiểm chứng, phân biệt dữ liệu thật, mô phỏng và nhận định chưa xác minh.
 
+## Điều tra và hoàn thành tác vụ
+
+Áp dụng đầy đủ vòng điều tra động trong mcp/WORKFLOW.md: xác định mục tiêu/điều kiện hoàn thành, quản lý câu hỏi–giả thuyết–evidence, chủ động khám phá nguồn/đích liên quan và kiểm chứng sau mỗi nhóm hành động. Không dừng sớm hoặc hỏi dữ liệu có thể tự thu thập. Chỉ kết thúc khi đạt mục tiêu, phương án đủ điều kiện, hoặc có giới hạn thật sau khi xét các nguồn còn hợp lý. Không tạo workflow cố định theo ticket.
+
+Báo cáo giữ bốn mục Kết luận/Bằng chứng/Hướng xử lý/Chưa xác minh; nhật ký và raw ở phụ lục/evidence. Giữ nguyên dữ liệu trong báo cáo, không tự che hoặc thay bằng placeholder. Quyền thay đổi theo yêu cầu người dùng; không tự mở rộng quyền từ điều tra sang apply/commit. Backend không che dữ liệu và không thay đổi 10 tools vì hướng dẫn này.
+
 ## Chạy dự án
 
 - Cài dependency: `python -m pip install -r requirements.txt`.

@@ -2,6 +2,50 @@
 
 Áp dụng khi agent dùng Netmiko MCP để đọc hoặc cấu hình thiết bị. Backend thực thi, đọc CLI và trả bằng chứng; agent xác định mục tiêu đã đạt hay cần xử lý tiếp. Đây là hướng dẫn cho agent, không phải bộ điều phối chạy trong backend và không thêm MCP tool.
 
+## Điều tra động theo mục tiêu
+
+Hướng dẫn này áp dụng chung cho NOC, Network Engineering và Operations; không phải danh sách CLI cố định theo ticket.
+
+### Bắt đầu từ điều kiện hoàn thành
+
+Chuyển yêu cầu thành mục tiêu có thể kiểm chứng: đối tượng, trạng thái mong muốn, phạm vi được phép và tiêu chí chấp nhận. Phân biệt điều tra, xây phương án và thực thi thay đổi đã được yêu cầu. Không tự nâng quyền từ “đề xuất” sang apply/commit. Tự đọc inventory, evidence và cấu hình để lấy dữ liệu sẵn có, không hỏi lại người dùng về thông tin có thể thu thập.
+
+Giữ sổ điều tra trong context và file evidence khi tác vụ dài: câu hỏi kỹ thuật; dữ kiện + nguồn/thời điểm; giả thuyết ủng hộ/bác bỏ; dữ liệu còn thiếu; hành động kế tiếp + giá trị mong đợi; tiêu chí hoàn thành liên quan. Đây là trạng thái suy luận của agent, không thêm runtime orchestrator hoặc MCP tool.
+
+### Vòng quyết định sau mỗi nhóm hành động
+
+1. Đối chiếu bằng chứng mới với câu hỏi và mục tiêu. Đánh dấu dữ kiện đã xác minh, suy luận có căn cứ, giả thuyết; không coi CLI SUCCESS hoặc output rỗng là kết luận nghiệp vụ.
+2. Nếu thiếu thông tin, liệt kê các nguồn hợp lý còn dùng được: raw evidence/pagination/search, cấu hình hiệu lực/kế thừa, trạng thái liên quan, đầu xa/neighbor, topology/routing/service, inventory hoặc công cụ thay thế được phép. Kiểm tra nguồn độc lập và dữ liệu mâu thuẫn/cũ khi cần.
+3. Chọn bước có khả năng phân biệt giả thuyết tốt nhất với chi phí/tác động phù hợp. Không lặp lại phép đo cũ chỉ để tăng số evidence; tái đo khi cần delta/thời điểm mới và ghi rõ khoảng đo. Mỗi mở rộng phạm vi phải có liên hệ cụ thể từ evidence và gắn với câu hỏi; phạm vi bị người dùng giới hạn thì không vượt ra ngoài.
+4. Thực hiện bằng công cụ phù hợp, cập nhật sổ điều tra và quyết định lại. Có nguồn hợp lý, trong phạm vi/ngân sách thì tiếp tục, không kết thúc bằng “Chưa xác minh” chỉ sau một nhóm lệnh. Không tạo chuỗi giả định từ dữ liệu chưa đọc đủ.
+
+Không có trần cứng số thiết bị/bước cho mọi ticket. Dùng deadline/ngân sách của tác vụ và giới hạn worker/pool hiện có; ghi nhận thời gian đã dùng và tiến bộ thực tế. Khi hướng hiện tại không tạo bằng chứng mới, đổi giả thuyết/nguồn thay vì lặp. Không né deadline/cancel bằng cách tạo request mới liên tục. Hết ngân sách là giới hạn phải báo, không phải lý do tuyên bố mục tiêu đạt.
+
+### Khám phá phạm vi và chọn công cụ
+
+Dùng alias/driver/profile từ inventory; driver đã biết được dùng trực tiếp. Khám phá đầu xa qua neighbor, interface description, route/next-hop, service attachment và cấu hình. Nếu không đủ để định danh duy nhất, đối chiếu thêm inventory/evidence trước khi SSH. Không đoán credential, không thử hàng loạt profile, không tự coi mọi thiết bị liên quan là mục tiêu được phép thay đổi.
+
+Ưu tiên 10 Netmiko MCP tools: ssh_inventory để định danh; ssh_status để kiểm tra collector; ssh_execute cho bước đơn; ssh_execute_many cho batch cùng session; ssh_parallel cho đích độc lập; ssh_interact cho câu hỏi có phản hồi được phép; ssh_read_output/ssh_read_output_bytes/ssh_search_output để đọc đủ evidence; ssh_close chỉ với phiên thuộc tác vụ. Chọn cú pháp/mode/OS theo bằng chứng. Chỉ bật continue_on_error cho lệnh độc lập; tôn trọng SKIPPED và trạng thái UNCERTAIN. CLI permission/syntax error không phải lý do tự reconnect hoặc đổi tài khoản.
+
+Chỉ dùng phương pháp khác khi MCP không đáp ứng hoặc có nguồn kiểm chứng tốt hơn; ghi rõ nguồn, phương thức, thời điểm và giới hạn so sánh. Không bỏ MCP chỉ vì preview thiếu, parser lỗi hay một show không có dữ liệu. Giữ raw evidence đã có, không replay thay đổi chưa rõ tác động.
+
+### Xây phương án và xác minh liên tục
+
+Trước khi đề xuất hoặc thực thi, khảo sát cấu hình hiện tại, hiệu lực/kế thừa, phụ thuộc và trạng thái thực tế. Tìm cấu hình tương tự trong phạm vi liên quan để hiểu quy ước; không sao chép nguyên cấu hình thiết bị khác. Đối chiếu interface/VLAN/VRF/ASN/community/RT/policy và tài nguyên liên quan theo evidence. Phân biệt thông số suy ra được với IP/VLAN/ASN cần cấp phát, thông số hợp đồng và lựa chọn thiết kế cần người có thẩm quyền quyết định. Chỉ hỏi phần thật sự không thể tự xác minh và chặn quyết định; vẫn tiếp tục các phần độc lập.
+
+Phương án chia theo thiết bị: hiện trạng có evidence, delta đầy đủ cùng phụ thuộc, tác động dự kiến, pre-check, post-check, rollback dựa trên trạng thái trước thay đổi. Đánh dấu mọi giá trị chưa xác minh; không trình bày placeholder/giả định là cấu hình production sẵn sàng. Không tự commit/save/reload ngoài phạm vi yêu cầu.
+
+Sau thay đổi được phép, kiểm tra trạng thái mong muốn bằng truy vấn đọc và nguồn độc lập khi phù hợp. Kiểm tra control-plane, data-plane, service-plane theo mục tiêu; config tồn tại chưa chứng minh dịch vụ chạy. Nếu kết quả mâu thuẫn, cập nhật giả thuyết, đối soát tác động và chọn phục hồi phù hợp trước khi làm tiếp.
+
+### Cổng kết thúc và báo cáo
+
+Chỉ kết thúc khi: (a) mục tiêu có bằng chứng đạt; (b) yêu cầu xây phương án đã có phương án đủ điều kiện triển khai; hoặc (c) có giới hạn thực sự. Trước mỗi mục “Chưa xác minh”, xét đủ các nguồn/lệnh/đích/phương pháp còn hợp lý. Với giới hạn, ghi chính xác thiếu gì, đã thử gì, nguồn nào không truy cập/không được phép, tác động lên kết luận và điều kiện để hoàn tất. Không báo không còn nguồn nếu chỉ một công cụ/lệnh thất bại.
+
+Báo cáo tiếng Việt giữ bốn mục chính: **Kết luận**, **Bằng chứng**, **Hướng xử lý**, **Chưa xác minh**. Nhật ký câu hỏi → hành động thực → evidence → phân tích → quyết định để phụ lục hoặc file riêng. Kết luận quan trọng dẫn evidence; suy luận ghi nhãn. Evidence dài có đường dẫn/offset/hash khi có, không dựa riêng vào output_id có TTL. Không biến dữ liệu mô phỏng thành production hay đánh đồng test hướng dẫn với nghiệm thu agent thực tế.
+
+Giữ nguyên dữ liệu kỹ thuật và evidence trong báo cáo theo yêu cầu người dùng, không tự che password/hash/secret/private key/token hoặc thay bằng placeholder. Không thêm bộ lọc hay thay đổi code tạo báo cáo để thực hiện workflow này. Phân biệt dữ liệu gốc, suy luận và giả thuyết; nguồn đã bị che/thiếu thì ghi đúng giới hạn, không đoán phần bị mất. Không tự gửi email nếu chưa có yêu cầu/quy trình được người dùng cho phép; kiểm thử phát triển không gửi thật.
+
+
 ## Luồng xử lý
 
 ```mermaid
