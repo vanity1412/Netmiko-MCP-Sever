@@ -1,38 +1,20 @@
-# Agent guide
+# Netmiko MCP — agent guide
 
-## Mục tiêu
+Backend SSH cho NOC/Network Engineering/Operations. Trả lời theo ngôn ngữ người dùng; phân biệt dữ liệu thật, mô phỏng, suy luận và giả thuyết.
 
-Netmiko MCP là backend SSH phục vụ kỹ sư NOC và agent: thực thi CLI, cấu hình và thu thập nhiều thiết bị và xử lý dữ liệu. Trả lời theo ngôn ngữ người dùng. Chủ động kiểm chứng, phân biệt dữ liệu thật, mô phỏng và nhận định chưa xác minh.
+## Khi làm tác vụ mạng
 
-## Điều tra và hoàn thành tác vụ
+Áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md), không nạp lại toàn bộ hướng dẫn mỗi bước. Agent tự điều tra theo mục tiêu, chọn CLI, mở rộng nguồn có căn cứ và kiểm chứng kết quả; không dừng sớm hoặc hỏi dữ liệu có thể tự thu thập. Quyền thay đổi theo yêu cầu người dùng, không tự chuyển từ đề xuất sang apply/commit. Giữ nguyên dữ liệu, không tự che; không gửi email/thông báo hoặc dùng dịch vụ cá nhân ngoài phạm vi được yêu cầu. SSH production chỉ khi tác vụ cho phép; test phát triển chỉ mock/localhost.
 
-Áp dụng đầy đủ vòng điều tra động trong mcp/WORKFLOW.md: xác định mục tiêu/điều kiện hoàn thành, quản lý câu hỏi–giả thuyết–evidence, chủ động khám phá nguồn/đích liên quan và kiểm chứng sau mỗi nhóm hành động. Không dừng sớm hoặc hỏi dữ liệu có thể tự thu thập. Chỉ kết thúc khi đạt mục tiêu, phương án đủ điều kiện, hoặc có giới hạn thật sau khi xét các nguồn còn hợp lý. Không tạo workflow cố định theo ticket.
+## Cài/chạy
 
-Báo cáo giữ bốn mục Kết luận/Bằng chứng/Hướng xử lý/Chưa xác minh; nhật ký và raw ở phụ lục/evidence. Giữ nguyên dữ liệu trong báo cáo, không tự che hoặc thay bằng placeholder. Quyền thay đổi theo yêu cầu người dùng; không tự mở rộng quyền từ điều tra sang apply/commit. Backend không che dữ liệu và không thay đổi 10 tools vì hướng dẫn này.
-
-## Chạy dự án
-
-- Cài dependency: `python -m pip install -r requirements.txt`.
-- Cấu hình riêng: copy `mcp/devices.example.json` thành `mcp/devices.json`; copy `mcp/credentials.example.json` thành `mcp/credentials.json` và cấp tài khoản theo profile; environment/inline legacy vẫn được hỗ trợ. Xem `docs/CREDENTIALS.md`. Inventory CSV bắt buộc `name,ip`; `netmiko_device_type` tùy chọn (trống/thiếu dùng autodetect), tùy chọn `profile`.
-- MCP: `python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv`.
-- Kiểm tra version/dependency: `python mcp/collector_backend.py --check`.
-- Test: `python -m unittest discover -s tests -v`. Chỉ dùng mock và SSH localhost; không cần inventory/credential production.
-- Xem `docs/ARCHITECTURE.md`, `docs/SCAN.md` và `CHANGELOG.md` trước khi đổi luồng kết nối.
-
-## Khi thao tác thiết bị
-
-- Đọc và áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md) khi xử lý kết quả, phục hồi lỗi và kiểm chứng mục tiêu. Workflow không tự chạy trong backend; giữ nguyên 10 tools.
-
-- Dùng alias/IP/hostname do người dùng yêu cầu. Chọn driver từ inventory hoặc autodetect; không cần thêm target vào CSV.
-- Tận dụng session, dùng batch và song song có giới hạn. Tool không lọc nội dung lệnh. Agent quyết định lệnh đọc/cấu hình theo yêu cầu người dùng; không tự chạy production trong test phát triển.
-- Chỉ coi thu thập thành công khi CLI không báo lỗi và output có prompt cuối. Echo không bắt buộc. Thiếu output hoặc không truy cập được không đồng nghĩa dịch vụ down.
-- Giữ output dở dang và lỗi theo từng đích. Không đoán credential, không tự thử nhiều tài khoản. Host key mới/đổi được backend chấp nhận và lưu; lỗi persistence có warning.
-- Chỉ SSH production khi yêu cầu công việc có phạm vi tương ứng. Các test phát triển không tự truy cập production.
+- `python -m pip install -r requirements.txt`
+- Copy `mcp/devices.example.json` → `mcp/devices.json`, `mcp/credentials.example.json` → `mcp/credentials.json`; cấp tài khoản theo profile. Legacy environment/inline vẫn hỗ trợ; chi tiết: [credential](docs/CREDENTIALS.md).
+- CSV bắt buộc `name,ip`; `netmiko_device_type` trống/thiếu dùng autodetect; `profile,port` tùy chọn.
+- `python -u mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv`
+- Dependency/version: `python mcp/collector_backend.py --check`
+- Test: `python -m unittest discover -s tests -v`
 
 ## Khi sửa source
 
-- Giữ tên/schema 10 MCP tool, JSON-RPC UTF-8 và tương thích Python 3.10+ trừ khi người dùng yêu cầu đổi.
-- Giữ session isolation theo host/port/driver/credential, timeout, retry có giới hạn, checkpoint và kiểm chứng bằng chứng khi resume.
-- Sửa test khi hành vi chủ đích thay đổi; không xóa test chỉ để làm bộ kiểm thử đạt. Chạy kiểm thử phù hợp trước commit.
-- Không commit inventory, credential, private key, known_hosts, cache, runtime, log hoặc output thiết bị. Không đưa dữ liệu thật vào fixture.
-- Báo rõ thay đổi, kết quả kiểm thử và hạn chế. Không tự gửi email/thông báo hoặc phụ thuộc dịch vụ cá nhân ngoài yêu cầu của người dùng.
+Giữ tên/schema 10 tools, JSON-RPC UTF-8, Python 3.10+ trừ khi người dùng yêu cầu đổi. Giữ session isolation theo host/port/driver/credential, deadline, retry hữu hạn, checkpoint và kiểm chứng evidence khi resume. Trước khi sửa kết nối, đọc [kiến trúc](docs/ARCHITECTURE.md), [scanner](docs/SCAN.md), [changelog](CHANGELOG.md). Sửa test theo hành vi chủ đích, không xóa test để đạt; chạy kiểm thử phù hợp trước commit, báo kết quả và hạn chế. Không commit inventory, credential, private key, known_hosts, cache, runtime, log/output thiết bị; không đưa dữ liệu thật vào fixture.
