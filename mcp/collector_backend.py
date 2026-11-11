@@ -1149,7 +1149,7 @@ class Collector:
                "explicit unique device_type/profile or inventory alias is required." % key)
 
     def scrub_error(self, message: str) -> str:
-        return self.redact_output(message, force=True)[:400]
+        return self.redact_output(message)[:400]
 
     def redact_output(self, message: str, *, force=False) -> str:
         if not self.redaction_enabled:
@@ -1708,8 +1708,8 @@ class Collector:
         details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt', 'persistence', 'preparation'} else None
         details['cli_ready'] = False if details['error_stage'] == 'preparation' else (True if details['error_stage'] in {'command', 'persistence'} else None)
         if details['error_stage'] == 'preparation':
-            details['output'] = self.redact_output(details.get('output', ''), force=True)
-            details['preparation_command'] = self.redact_output(details.get('preparation_command', ''), force=True)
+            details['output'] = self.redact_output(details.get('output', ''))
+            details['preparation_command'] = self.redact_output(details.get('preparation_command', ''))
         details['command_sent'] = getattr(exc, '_network_command_sent', True if getattr(exc,'_network_keep_session',False) else None) if details['error_stage'] in {'command','persistence','parsing'} else False
         if details.get('command'):
             details['replay_safe'] = is_replay_safe(details['command'])

@@ -1,6 +1,9 @@
 > Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
 
-## Unreleased — 2026-11-10
+## Unreleased — 2026-11-11
+
+- Avoid passing redundant force keyword to overridden redact_output during CLI/preparation error handling; retain the public optional keyword for compatibility. Add single-argument override and unredacted routing-identifier regressions.
+- Validation: all 350 tests passed in 533.809 seconds (mock and SSH localhost only), plus offline plain/HTML report fidelity checks in the private OpenCode deployment. No production SSH or email sent.
 
 - Add optional boolean continue_on_error to ssh_execute_many (default false), forwarded for parallel batch tasks. Continue only complete synchronized CLI errors, never timeout/disconnect/pending input/storage failures. Still ten MCP tools; update the input contract deliberately.
 - Report unsent batch suffix commands as SKIPPED/NOT_SENT with command indexes and blocker index. Preserve aggregate failure/uncertainty, healthy-session retention and the scanner's real fault/prefix/checkpoint/resume behavior. Redaction remains disabled by default.

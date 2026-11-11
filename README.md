@@ -150,6 +150,12 @@ Các process dùng chung thư mục cần cùng quota/TTL và cùng phiên bản
 
 Mặc định `redaction_enabled=false`: nội dung CLI, evidence, structured output, preparation evidence và nội dung lỗi/audit được giữ nguyên, kể cả username/password/hash/secret/token. Cấu hình cũ đặt rõ `redaction_enabled=true` vẫn có thể chủ động bật che dữ liệu. Khi ghi file thất bại, response lỗi giữ toàn bộ output đã nhận thay vì cắt thành preview; response lỗi lớn vì vậy có thể tốn RAM/băng thông. Reader vẫn chuẩn hóa ANSI/pager như trước; dữ liệu là transcript CLI đã chuẩn hóa, không phải bản chụp byte của SSH transport.
 
+## Tương thích override redaction và báo cáo
+
+Dùng `redaction_enabled=false` để giữ dữ liệu; không cần monkey-patch `redact_output`. Backend giữ keyword tùy chọn `force` cho caller cũ, nhưng các đường lỗi CLI/preparation nội bộ chỉ truyền message để tương thích override một tham số. Nếu có override tùy biến, nên giữ chữ ký `redact_output(self, message, *, force=False)`; traceback và đường dẫn module đang nạp giúp xác định code ngoài repository gây lỗi.
+
+Các script tạo báo cáo/email riêng phải tự tuân theo cùng cấu hình. Gọi thẳng `redact_text()` luôn thực hiện redaction, không kiểm tra `redaction_enabled`. Backend trả đủ output không bảo đảm agent hoặc renderer bên ngoài sẽ giữ nguyên dữ liệu. Báo cáo đã thay nội dung bằng `[redacted]` phải dựng lại từ evidence còn đầy đủ, không tự đoán phần bị mất.
+
 ## Đo hiệu năng SSH
 
 `ssh_status.phase_metrics` trả count, failures, total_ms và p50/p95 của tối đa 128 mẫu gần nhất mỗi pha. Kết quả thực thi có `timings_ms`, `connection_timings_ms`, `session_reused`; phần đo không thêm tool hoặc input schema. Có các pha chờ slot/session, pool reservation, connect+prepare, autodetect, command và output_save. `ssh_connect` đo lời gọi Paramiko connect (gồm handshake và auth); `authentication` đo `_auth`; `preparation` đo Netmiko preparation, kể cả sau redispatch. Các pha lồng nhau, không cộng chúng để suy ra tổng thời gian. Phương thức tùy biến/mock không có hook thì không có số đo auth; không suy diễn bằng 0. Thống kê `failures` đếm exception của pha, không thay thế trạng thái CLI.
