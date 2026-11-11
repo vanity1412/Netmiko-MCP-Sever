@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('report_bundle',Path(__file__).resolve().parents[1]/'scripts/report_bundle.py')
 bundle=importlib.util.module_from_spec(spec);spec.loader.exec_module(bundle)
@@ -78,3 +80,55 @@ class BundleTests(unittest.TestCase):
         self.plan.write_text(json.dumps({'evidence':[self.entry]}))
         with self.assertRaises(UnicodeError):self.build()
         self.assertEqual((self.root/'raw.txt').read_bytes(),raw)
+
+    def test_summary_streams_binary_and_generates_hash_without_inline_raw(self):
+        raw=b'\xff\x00'+b'RAW-MARKER'*300000
+        (self.root/'raw.txt').write_bytes(raw)
+        self.entry.pop('sha256')
+        self.plan.write_text(json.dumps({'evidence':[self.entry]}))
+        original=Path.read_bytes
+        def read(path):
+            if path==self.root/'raw.txt':raise AssertionError('Raw must stream')
+            return original(path)
+        with patch.object(Path,'read_bytes',read):
+            bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
+        self.assertNotIn(b'RAW-MARKER',(self.output/'report.md').read_bytes())
+        self.assertFalse((self.output/'evidence').exists())
+        with zipfile.ZipFile(self.output/'evidence.zip') as archive:
+            self.assertEqual(archive.read('evidence/e1.raw'),raw)
+            record=json.loads(archive.read('manifest.json'))['evidence'][0]
+            self.assertEqual(record['sha256'],hashlib.sha256(raw).hexdigest())
+            self.assertEqual(record['status'],'PARTIAL')
+        self.assertIn('Chưa xác minh',bundle.verified_html(self.output/'report.md'))
+
+    def test_summary_tampered_zip_refuses_verification(self):
+        bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
+        p=self.output/'evidence.zip';p.write_bytes(p.read_bytes()+b'changed')
+        with self.assertRaises(ValueError):bundle.verified_html(self.output/'report.md')
+
+    def test_summary_wrong_hash_cleans_staging_without_publishing(self):
+        self.entry['sha256']='wrong';self.plan.write_text(json.dumps({'evidence':[self.entry]}))
+        with self.assertRaises(ValueError):bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
+        self.assertFalse(self.output.exists())
+        self.assertFalse(list(self.root.glob('.report-bundle-*')))
+
+    def test_summary_keeps_logs_configs_and_completion_metadata(self):
+        entries=[]
+        for ident,raw in [('cli',b'cli\r\n'),('log',b'log\x00'),('config',b'secret unchanged')]:
+            (self.root/ident).write_bytes(raw)
+            entries.append(dict(self.entry,id=ident,path=ident,sha256=hashlib.sha256(raw).hexdigest(),
+                                kind=ident,output_complete=False))
+        self.plan.write_text(json.dumps({'evidence':entries}))
+        bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
+        bundle.verified_html(self.output/'report.md')
+        with zipfile.ZipFile(self.output/'evidence.zip') as archive:
+            for entry in entries:
+                self.assertEqual(archive.read('evidence/'+entry['id']+'.raw'),(self.root/entry['id']).read_bytes())
+            self.assertTrue(all(not x['output_complete'] for x in json.loads(archive.read('manifest.json'))['evidence']))
+
+    def test_summary_duplicate_ids_leave_sources_intact(self):
+        self.plan.write_text(json.dumps({'evidence':[self.entry,self.entry]}))
+        before=(self.root/'raw.txt').read_bytes()
+        with self.assertRaises(ValueError):bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
+        self.assertFalse(self.output.exists())
+        self.assertEqual((self.root/'raw.txt').read_bytes(),before)
