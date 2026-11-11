@@ -6,7 +6,7 @@ Backend SSH cho NOC/Network Engineering/Operations. Trả lời theo ngôn ngữ
 
 Áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md), không nạp lại toàn bộ hướng dẫn mỗi bước. Agent tự điều tra theo mục tiêu, chọn CLI, mở rộng nguồn có căn cứ và kiểm chứng kết quả; không dừng sớm hoặc hỏi dữ liệu có thể tự thu thập. Quyền thay đổi theo yêu cầu người dùng, không tự chuyển từ đề xuất sang apply/commit. Giữ nguyên dữ liệu, không tự che; không gửi email/thông báo hoặc dùng dịch vụ cá nhân ngoài phạm vi được yêu cầu. SSH production chỉ khi tác vụ cho phép; test phát triển chỉ mock/localhost.
 
-Khi tạo báo cáo, dùng [script bundle](docs/REPORTING.md) để chép phụ lục/render HTML; agent viết phần phân tích và manifest, không viết lại raw bằng model.
+Khi tạo báo cáo, dùng [script bundle](docs/REPORTING.md) để chép phụ lục/render HTML; agent viết phần phân tích và manifest, không viết lại raw bằng model. Theo mục nhật ký phát hiện trong workflow: ghi nguồn, diễn giải và quyết định có ý nghĩa; gộp kết quả đơn giản, phân tích sâu bất thường/mâu thuẫn và tự điều tra tiếp khi bằng chứng chưa đủ.
 
 ## Cài/chạy
 

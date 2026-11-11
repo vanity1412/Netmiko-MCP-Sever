@@ -31,12 +31,35 @@ Raw output và lỗi theo từng đích phải được giữ đầy đủ; khô
 - Cần thông tin cụ thể: search với ngữ cảnh, rồi đọc các đoạn liên quan và vùng cấu hình/phụ thuộc bao quanh. Tìm không thấy trong preview, excerpt bị giới hạn hoặc phạm vi search chưa đủ không chứng minh không tồn tại.
 - Cần kiểm tra toàn bộ, số lượng hoặc kết luận không tồn tại: ưu tiên công cụ search/parse duyệt hết phạm vi raw đã lưu, trả kết quả có thể kiểm chứng. Ghi nguồn/hash, phạm vi đã quét (file/byte/dòng/record), biểu thức hoặc quy tắc parse, total_matches, giới hạn/truncation/lỗi và output_complete. Phân biệt số match hiển thị với tổng match; more=true có thể chỉ giới hạn phần trả về, phải kiểm tra hợp đồng công cụ. Không cần đưa mọi dòng vào context nếu phép kiểm tra toàn phạm vi đã đáng tin cậy.
 - Độ bao phủ gồm cả thu thập và phân tích: full scan của output PARTIAL, sai lệnh, sai VRF/context hoặc cấu hình chưa xét kế thừa không chứng minh dữ liệu không tồn tại trên thiết bị. total_matches=0 chỉ chứng minh không khớp phép tìm trong phạm vi đã quét. Dựa cấu trúc lệnh/OS và ngữ nghĩa để kiểm tra alias, parent/child, kế thừa và nguồn liên quan. Đọc thêm vùng liên quan hoặc toàn nội dung khi quan hệ/ngữ nghĩa chưa đủ rõ; nếu công cụ chưa chứng minh quét đủ thì phân trang hết phạm vi, dùng byte reader cho dòng dài. Không suy kết luận toàn cục từ preview.
-- Giữ sổ evidence gọn: câu hỏi → nguồn/thời điểm → vị trí/offset/hash nếu có → dữ kiện → giả thuyết ủng hộ/bác bỏ → bước tiếp/điều kiện đạt. Lưu raw và nhật ký chi tiết ngoài context; tái sử dụng dữ kiện đã xác minh thay vì nạp lại transcript. Khi context thiếu/chuyển phiên, đọc đúng mục cần từ sổ và nguồn gốc; không để bản tóm tắt thay thế evidence.
+- Lưu nhật ký phát hiện cùng evidence theo mục dưới; giữ trong context các phát hiện đang chi phối quyết định, tái sử dụng dữ kiện đã xác minh thay vì nạp lại transcript. Khi chuyển phiên, đọc các phát hiện liên quan và truy xuất nguồn khi cần, không xem bản tóm tắt là evidence gốc.
 - Không lặp nguyên JSON/output trong nhiều tool response, lời giải thích và báo cáo. Trích phần đủ chứng minh, dẫn đường tới phần đầy đủ. Không dựa riêng vào output_id có TTL; export evidence cần giữ lâu. Nếu chưa lưu bền vững được, báo rõ giới hạn.
+
+### Nhật ký phát hiện: ghi kết quả có ý nghĩa
+
+Sau mỗi nhóm lệnh, cập nhật nhật ký trong thư mục evidence của tác vụ. Đơn vị ghi là phát hiện quan trọng, không phải mỗi lần gọi tool. Mỗi phát hiện có ID ổn định để liên kết nguồn và các phát hiện ở thiết bị khác; khi có dữ kiện mới, cập nhật kết luận và giữ rõ điều gì đã thay đổi.
+
+Dùng mẫu ngắn sau, mở rộng phần diễn giải theo độ phức tạp:
+
+```text
+F01 — <câu hỏi hoặc giả thuyết cần kiểm tra>
+Nguồn: <thiết bị; lệnh; thời điểm; status/output_complete; evidence ID/file và dòng/offset>
+Quan sát: <giá trị/trạng thái/quan hệ thực tế; trích CLI ngắn nếu cần>
+Phân tích: <dữ kiện chứng minh gì; cơ chế kỹ thuật; giả thuyết được ủng hộ/bác bỏ;
+           chưa chứng minh gì; phụ thuộc và tác động liên quan>
+Quyết định: <kết luận có căn cứ hoặc bước tiếp cụ thể và lý do chọn bước đó>
+```
+
+Gộp nhiều lệnh đơn giản khi chúng trả lời cùng một câu hỏi và vẫn dẫn được từng nguồn. Với bất thường, lỗi/partial hoặc mâu thuẫn có ảnh hưởng kết luận, giải thích riêng thay vì ghi “đã kiểm tra”. Liên kết nguồn giữa thiết bị bằng đối tượng thực trong evidence (interface/neighbor, VRF/RI, route/next-hop, policy hoặc service); đối chiếu thời điểm và phạm vi trước khi suy quan hệ nhân quả.
+
+Trước khi chấp nhận một mục nhật ký, kiểm tra xem người đọc có hiểu kết quả chứng minh điều gì, chưa chứng minh điều gì và vì sao chọn bước tiếp. Các câu “dùng làm cơ sở đối chiếu”, “cần xác minh thêm” chỉ hợp lệ khi kèm nội dung cụ thể đó; không thay cho phân tích đã có thể làm từ output. Phân biệt triệu chứng, nguyên nhân trực tiếp và nguyên nhân gốc; không tự xem khác biệt cấu hình là nguyên nhân sự cố.
+
+Nếu còn khoảng trống, chọn phép kiểm có khả năng phân biệt giả thuyết: đọc thêm vùng cấu hình/phụ thuộc khi chưa rõ ngữ nghĩa; đối chiếu đầu xa khi cần kiểm quan hệ; lấy trạng thái hiệu lực khi cấu hình chưa chứng minh hành vi; bổ sung mẫu theo thời gian khi counter chưa đủ. Ưu tiên nguồn đã lưu trước khi SSH lại và tự điều tra tiếp trong quyền/ngân sách còn có. Chỉ ghi giới hạn thật sau khi xét các nguồn hợp lý; không biến việc chưa đọc thành thiếu dữ liệu.
+
+Tối ưu bằng tìm/parse đúng phạm vi, tái sử dụng phát hiện và không chép raw dài. Không bỏ giả thuyết còn ảnh hưởng quyết định, nguyên nhân, phụ thuộc, tác động hoặc bước kiểm chứng cần thiết để đạt số token thấp hơn. Raw lưu nguyên vẹn; nhật ký và báo cáo chỉ trích dữ kiện quan trọng, dẫn tới evidence đầy đủ.
 
 ### Phụ lục và email bằng script
 
-Agent chỉ viết kết luận/phân tích và manifest tham chiếu evidence đã lưu (id, path, target, command, status; hash có thể tự tính bằng script); không chép lại raw hoặc tự sinh HTML bằng model. Dùng `python scripts/report_bundle.py --mode SUMMARY --summary <summary.md> --manifest <manifest.json> --output <bundle-mới>`; chi tiết ở docs/REPORTING.md, chỉ đọc khi cần. Email bốn mục ngắn gọn; toàn bộ raw CLI, nhật ký, cấu hình và evidence liên quan phải được liệt kê trong manifest để vào evidence.zip. Script không tự phát hiện file bị bỏ sót. Kiểm tra metadata/hash và mẫu render có mục tiêu, không nạp lại toàn report/email để kiểm việc sao chép. integrity_verified không chứng minh mục tiêu mạng đạt. Thiếu file/hash sai thì dừng dựng bundle, giữ nguồn và tiếp tục phần điều tra độc lập; không cắt dữ liệu để chạy tiếp. Sender chỉ gửi theo quyền hiện có; test dùng dry-run.
+Agent chỉ viết kết luận/phân tích và manifest tham chiếu evidence đã lưu (id, path, target, command, status; hash có thể tự tính bằng script); không chép lại raw hoặc tự sinh HTML bằng model. Dùng `python scripts/report_bundle.py --mode SUMMARY --summary <summary.md> --manifest <manifest.json> --output <bundle-mới>`; chi tiết ở docs/REPORTING.md, chỉ đọc khi cần. Email theo bốn mục, giữ đủ phân tích các phát hiện quan trọng; toàn bộ raw CLI, nhật ký, cấu hình và evidence liên quan phải được liệt kê trong manifest để vào evidence.zip. Script không tự phát hiện file bị bỏ sót. Kiểm tra metadata/hash và mẫu render có mục tiêu, không nạp lại toàn report/email để kiểm việc sao chép. integrity_verified không chứng minh mục tiêu mạng đạt. Thiếu file/hash sai thì dừng dựng bundle, giữ nguồn và tiếp tục phần điều tra độc lập; không cắt dữ liệu để chạy tiếp. Sender chỉ gửi theo quyền hiện có; test dùng dry-run.
 
 ## 4. Phân loại lỗi và phục hồi
 
@@ -69,6 +92,6 @@ Phương án theo thiết bị: hiện trạng/evidence, delta đầy đủ cùn
 
 Chỉ kết thúc khi mục tiêu có bằng chứng đạt, phương án đã đủ điều kiện cho yêu cầu lập phương án, hoặc có giới hạn thật. Trước “Chưa xác minh”, xét mọi nguồn/lệnh/đích/phương pháp còn hợp lý. Ghi thiếu gì, đã thử gì, nguồn nào hết/không truy cập/không được phép, tác động lên kết luận và điều kiện hoàn tất; một lệnh lỗi chưa đủ chứng minh hết nguồn.
 
-Báo cáo theo ngôn ngữ người dùng (mặc định tiếng Việt), bốn mục: **Kết luận / Bằng chứng / Hướng xử lý / Chưa xác minh**. Phần chính gọn, kết luận dẫn evidence hoặc ghi nhãn suy luận; raw và nhật ký câu hỏi–hành động–phân tích–quyết định ở phụ lục/file riêng. Không che dữ liệu, không bịa phần nguồn đã thiếu/che. Phân biệt thật/mô phỏng và kết quả test hướng dẫn với nghiệm thu hành vi agent. Không gửi email/thông báo ngoài yêu cầu/quy trình đã được cho phép; test phát triển không gửi thật.
+Báo cáo theo ngôn ngữ người dùng (mặc định tiếng Việt), bốn mục: **Kết luận / Bằng chứng / Hướng xử lý / Chưa xác minh**. Phần chính tổng hợp các phát hiện thành lập luận kỹ thuật, kết luận dẫn evidence hoặc ghi nhãn suy luận; raw và nhật ký câu hỏi–hành động–phân tích–quyết định ở phụ lục/file riêng. Không che dữ liệu, không bịa phần nguồn đã thiếu/che. Phân biệt thật/mô phỏng và kết quả test hướng dẫn với nghiệm thu hành vi agent. Không gửi email/thông báo ngoài yêu cầu/quy trình đã được cho phép; test phát triển không gửi thật.
 
 Client không tự đọc AGENTS.md cần nạp file đó và workflow này vào instructions/context; backend không tự thực thi Markdown. Giữ nguyên code, 10 tools, schema, raw evidence, retry và các giới hạn vận hành hiện có.

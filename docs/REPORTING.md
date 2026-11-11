@@ -20,9 +20,17 @@ python scripts/report_bundle.py --mode SUMMARY --summary summary.md --manifest m
 
 ### SUMMARY (mặc định CLI)
 
-Email chỉ có bốn mục **Kết luận / Bằng chứng / Hướng xử lý / Chưa xác minh**. Liệt kê toàn bộ raw CLI, nhật ký, cấu hình và evidence liên quan trong manifest, mỗi file một ID; có thể thêm kind, output_complete, phạm vi, thời điểm hoặc metadata phép tìm kiếm. Script không tự tìm file bỏ sót và không tự xác nhận trạng thái thiết bị.
+Email tổ chức theo bốn mục **Kết luận / Bằng chứng / Hướng xử lý / Chưa xác minh**. Liệt kê toàn bộ raw CLI, nhật ký, cấu hình và evidence liên quan trong manifest, mỗi file một ID; có thể thêm kind, output_complete, phạm vi, thời điểm hoặc metadata phép tìm kiếm. Script không tự tìm file bỏ sót và không tự xác nhận trạng thái thiết bị.
 
-Bundle gồm summary.md, report.md/report.html ngắn gọn, bundle.json và evidence.zip. ZIP chứa mỗi nguồn đúng một lần tại evidence/<id>.raw, source_manifest.json, manifest.json có hash/kích thước tự tạo và summary.md. Raw không nằm lại trong thân Markdown/HTML. Nguồn được đọc theo khối 1 MiB, hỗ trợ Zip64; không cần nạp toàn raw vào RAM. Mọi byte được giữ nguyên, không redaction. Bản gốc không sửa.
+Bundle gồm summary.md, report.md/report.html chứa phần phân tích cần thiết, bundle.json và evidence.zip. ZIP chứa mỗi nguồn đúng một lần tại evidence/<id>.raw, source_manifest.json, manifest.json có hash/kích thước tự tạo và summary.md. Raw không nằm lại trong thân Markdown/HTML. Nguồn được đọc theo khối 1 MiB, hỗ trợ Zip64; không cần nạp toàn raw vào RAM. Mọi byte được giữ nguyên, không redaction. Bản gốc không sửa.
+
+### Từ nhật ký phát hiện đến báo cáo
+
+Dùng các phát hiện đã ghi theo mcp/WORKFLOW.md làm nguồn biên soạn, không sao transcript thao tác. Bắt đầu bằng kết luận theo mục tiêu; phần bằng chứng giải thích các quan sát, quan hệ giữa thiết bị và cơ chế kỹ thuật dẫn tới kết luận. Hướng xử lý phải gắn với nguyên nhân/giả thuyết và nêu cách kiểm chứng; phần chưa xác minh chỉ nêu khoảng trống thật cùng tác động lên nhận định.
+
+Kết quả đơn giản được gộp; bất thường/mâu thuẫn phải có đủ diễn giải, nguồn và lý do của bước tiếp. Không đưa raw dài thay cho phân tích, cũng không đẩy phần lập luận cần thiết vào ZIP để người nhận tự tìm hiểu. Chỉ trích dữ kiện quan trọng và dẫn evidence ID/file/vị trí. Nhật ký đầy đủ được liệt kê trong manifest cùng raw.
+
+Bốn mục là khung tổ chức, không phải giới hạn độ dài. SUMMARY tách raw khỏi email chứ không lược giả thuyết, nguyên nhân, phụ thuộc, tác động hoặc kiểm chứng cần thiết. Trước render, kiểm tra từng nhận định có bằng chứng và diễn giải; nếu chưa đủ, truy xuất thêm/điều tra tiếp. Hash chỉ kiểm chứng việc truyền nội dung, không chứng nhận chất lượng phân tích.
 
 ### FULL (tương thích báo cáo cũ)
 
