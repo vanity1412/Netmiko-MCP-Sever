@@ -221,3 +221,7 @@ Muốn chủ động kế thừa credential từng trường, đặt inherit_cre
 Ví dụ profile đầy đủ: {"username":"${SITE_SSH_USER}","password":"${SITE_SSH_PASSWORD}"}; key: {"username":"site-user","key_file":"/private/site-key"}; kế thừa chủ động: {"username":"site-user","inherit_credentials":true}.
 
 Từ 1.9.0 có loader credentials.json dùng chung cho mọi client. Xem [cấu trúc, ưu tiên và chuyển đổi credential](docs/CREDENTIALS.md). Không đưa credential vào Git hoặc launcher client công khai. Restart MCP sau khi thay file tài khoản.
+
+## Báo cáo và phụ lục không dùng model để sao chép
+
+Xem [docs/REPORTING.md](docs/REPORTING.md). scripts/report_bundle.py dựng Markdown/HTML và sao chép raw đầy đủ theo manifest có SHA-256; không gọi SSH/model/SMTP và không sửa backend.

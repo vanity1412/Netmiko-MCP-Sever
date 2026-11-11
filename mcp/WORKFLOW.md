@@ -33,6 +33,10 @@ Raw output và lỗi theo từng đích phải được giữ đầy đủ; khô
 - Giữ sổ evidence gọn: câu hỏi → nguồn/thời điểm → vị trí/offset/hash nếu có → dữ kiện → giả thuyết ủng hộ/bác bỏ → bước tiếp/điều kiện đạt. Lưu raw và nhật ký chi tiết ngoài context; tái sử dụng dữ kiện đã xác minh thay vì nạp lại transcript. Khi context thiếu/chuyển phiên, đọc đúng mục cần từ sổ và nguồn gốc; không để bản tóm tắt thay thế evidence.
 - Không lặp nguyên JSON/output trong nhiều tool response, lời giải thích và báo cáo. Trích phần đủ chứng minh, dẫn đường tới phần đầy đủ. Không dựa riêng vào output_id có TTL; export evidence cần giữ lâu. Nếu chưa lưu bền vững được, báo rõ giới hạn.
 
+### Phụ lục và email bằng script
+
+Agent chỉ viết kết luận/phân tích và manifest tham chiếu evidence đã lưu (id, path, target, command, status, SHA-256); không chép lại raw hoặc tự sinh HTML bằng model. Dùng `python scripts/report_bundle.py --summary <summary.md> --manifest <manifest.json> --output <bundle-mới>`; định dạng và cách tích hợp sender ở docs/REPORTING.md, chỉ đọc khi cần tạo báo cáo. Script không SSH/gửi email, giữ nguyên byte raw, kiểm tra hash và xuất report.md/report.html/bundle.json. Kiểm tra metadata/hash và mẫu render có mục tiêu; không nạp lại toàn report/email chỉ để kiểm tra việc sao chép. Khi cần kiểm chứng nội dung nghiệp vụ vẫn đọc đủ evidence như trên; integrity_verified không chứng minh mục tiêu mạng đạt. Thiếu/hash sai/encoding lỗi thì dừng dựng báo cáo, không cắt dữ liệu để chạy tiếp. Sender chỉ gửi theo quyền hiện có; kiểm thử dùng dry-run.
+
 ## 4. Phân loại lỗi và phục hồi
 
 Đọc `status`, `fault_status`, `error_category/error_stage/error_reason`, `command_sent`, `replay_safe`, `execution_state`, `output_complete`, `data_state`, `retryable` khi có. Batch/parallel/interact xem từng `results/steps`, status_counts và awaiting_tasks/task_ids; PARTIAL tổng có thể chứa thành công, lỗi, chờ và cấu hình chưa rõ. Metadata inventory/status/file reader không phải trạng thái SSH.

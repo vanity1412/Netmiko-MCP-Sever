@@ -2,6 +2,9 @@
 
 ## Unreleased — 2026-11-11
 
+- Add standalone scripts/report_bundle.py to copy complete UTF-8 evidence by checksum into new report bundles and render escaped HTML without model/SSH/SMTP calls. Preserve original raw, manifest metadata and partial/error status. Add targeted fidelity/failure tests and evidence-reading/reporting guidance; backend code and ten tool schemas unchanged.
+- Validate 8 report-bundle tests plus local sender dry-run with 10,000 simulated rows. Reference token payload comparison documented in docs/REPORTING.md; not a live-agent cost benchmark.
+
 - Avoid passing redundant force keyword to overridden redact_output during CLI/preparation error handling; retain the public optional keyword for compatibility. Add single-argument override and unredacted routing-identifier regressions.
 - Validation: all 350 tests passed in 533.809 seconds (mock and SSH localhost only), plus offline plain/HTML report fidelity checks in the private OpenCode deployment. No production SSH or email sent.
 
