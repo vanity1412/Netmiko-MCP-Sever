@@ -1,5 +1,13 @@
 > Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
 
+## Unreleased — 2026-11-12
+
+- Review the privately field-adjusted reader, diagnostics and batch summaries. Handle a provisional prompt followed by a full command echo, and the known Junos screen-width repaint only when no response body preceded it; keep no-echo devices working. Do not accept a truncated command prefix as echo or discard ambiguity after actual payload.
+- Preserve specific preparation diagnostics and non-CLI error reasons; clear stale CLI reasons on a different failure category and all stale diagnostics on success. Reader interruptions retain category-specific reasons and partial output.
+- Return consistent batch totals, skipped count and first failed-command diagnostics through direct, parallel and MCP error responses. Keep default batch stop and optional continuation rules unchanged.
+- Inventory/credentials remain private and are not imported. Field validation claims from the private changelog are not treated as tests performed in this checkout.
+- Validation: 108 focused compatibility tests passed using mocks and SSH localhost; after the final regression additions, all 16 prompt/diagnostic/batch-summary tests passed. Includes 2,000 seeded fragmented-output replays. Python 3.10 syntax checked. No production SSH, email, credential/config update or Git push.
+
 ## Unreleased — 2026-11-11
 
 - Add standalone scripts/report_bundle.py to copy complete UTF-8 evidence by checksum into new report bundles and render escaped HTML without model/SSH/SMTP calls. Preserve original raw, manifest metadata and partial/error status. Add targeted fidelity/failure tests and evidence-reading/reporting guidance; backend code and ten tool schemas unchanged.

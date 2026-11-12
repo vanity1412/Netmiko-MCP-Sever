@@ -226,6 +226,31 @@ def classify_error(exc, stage='unknown'):
             'error_stage': stage, 'retryable': retry}
 
 
+# Stable, machine-readable reasons for failures that are not CLI syntax errors.
+# `cli_error` keeps its more specific value from the command result.
+ERROR_REASON_BY_CATEGORY = {
+    'read_timeout': 'read_timeout',
+    'deadline': 'request_deadline',
+    'connect_timeout': 'tcp_connect_timeout',
+    'auth_timeout': 'authentication_timeout',
+    'banner_timeout': 'banner_timeout',
+    'output_verification': 'output_incomplete',
+    'connection_lost': 'connection_lost',
+    'authentication': 'authentication_failed',
+    'auth_method': 'authentication_method',
+    'storage_error': 'output_storage_failed',
+    'parsing_error': 'parse_failed',
+    'host_key_changed': 'host_key_changed',
+    'host_key_unknown': 'host_key_unknown',
+    'algorithm_mismatch': 'algorithm_mismatch',
+    'dns_error': 'dns_error',
+    'connection_refused': 'connection_refused',
+    'policy_denied': 'policy_denied',
+    'invalid_input': 'invalid_input',
+    'cancelled': 'cancelled',
+}
+
+
 def bounded_request(method):
     @functools.wraps(method)
     def call(self, *args, **kwargs):
@@ -741,6 +766,9 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     # continuation, and report ambiguity rather than certify such a transcript.
     quiet = max(quiet, .3)
     candidate = None
+    candidate_echo_count = 0
+    candidate_preamble_only = False
+    echo_seen = 0
     prompt_only_completion = False
     handled_pagers = {}
     last_data = time.monotonic()
@@ -768,6 +796,11 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
             conn._network_preceding_output += stale
         conn._network_command_sent = True
         conn.write_channel(conn.normalize_cmd(command))
+        normalized_command = ' '.join(str(command).split())
+        # Match the whole echoed line, never an arbitrary 60-character payload prefix.
+        echo_body = r'[ \t]+'.join(re.escape(part) for part in normalized_command.split())
+        echo_re = re.compile(r'^(?:\S+[>#%$\]]\s*)?' + echo_body + r'[ \t]*$') if echo_body else None
+        repaint_command = bool(re.fullmatch(r'set cli screen-width \d+', normalized_command))
         while True:
             now = time.monotonic()
             if checkpoint and now >= next_checkpoint:
@@ -784,12 +817,31 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
             cleaned = clean_terminal(tail)
+            # Echo is optional. Reset a provisional prompt only when the old
+            # transcript contains no response body and a complete echo follows.
+            # Repeated echoes are accepted only for the known Junos width repaint.
+            if data and echo_re:
+                echo_seen = max(echo_seen, sum(bool(echo_re.fullmatch(line.strip()))
+                                               for line in cleaned.splitlines()))
+                if (candidate is not None and candidate_preamble_only
+                        and echo_seen > candidate_echo_count
+                        and (candidate_echo_count == 0 or repaint_command)):
+                    candidate = None
+                    candidate_echo_count = 0
             if ending_matches(pattern, cleaned) and not output_container_open(command, chunks.value()):
                 if candidate is None:
+                    candidate_echo_count = echo_seen
                     candidate_raw = chunks.value()
                     if handled_pagers:
                         candidate_raw = strip_pager_spans(candidate_raw, list(handled_pagers.items()))
-                    candidate = hashlib.sha256(clean_terminal(candidate_raw).rstrip().encode('utf-8')).digest()
+                    candidate_text = clean_terminal(candidate_raw)
+                    candidate_preamble_only = all(
+                        not line.strip() or ending_matches(device_pattern, line)
+                        or (echo_re is not None and echo_re.fullmatch(line.strip()))
+                        or re.fullmatch(r'\{(?:master|backup|primary|secondary)(?::\d+)?\}', line.strip())
+                        for line in candidate_text.splitlines())
+                    candidate = hashlib.sha256(candidate_text.rstrip().encode('utf-8')).digest()
+                    del candidate_text
                     del candidate_raw
             if pending_interaction(cleaned) and not output_container_open(command, chunks.value()):
                 break
@@ -800,7 +852,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 if marker_id not in handled_pagers:
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
-            elif ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet and not output_container_open(command, chunks.value()):
+            elif (ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet
+                  and not output_container_open(command, chunks.value())):
                 prompt_only_completion = True
                 break
             if not data:
@@ -813,6 +866,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     except Exception as exc:
         failure = classify_error(exc, 'command')
         failure['message'] = 'Command interrupted; partial output retained'
+        failure.setdefault('error_reason', ERROR_REASON_BY_CATEGORY.get(failure.get('error_category'), 'command_read_interrupted'))
     raw = chunks.value()
     chunks.close()
     conn._network_pager_spans = list(handled_pagers.items())
@@ -822,11 +876,11 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     if failure is None and prompt_only_completion and re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I):
         failure = {'error_category': 'output_verification', 'retryable': False,
                    'message': 'Log payload may contain the device prompt; quiet time alone cannot verify completion',
-                   'error_stage': 'command'}
+                   'error_stage': 'command', 'error_reason': 'log_prompt_ambiguity'}
     if failure is None and candidate is not None and candidate != hashlib.sha256(output.rstrip().encode('utf-8')).digest():
         failure = {'error_category': 'output_verification', 'retryable': False,
                    'message': 'Data continued after a prompt candidate; completion is uncertain',
-                   'error_stage': 'command'}
+                   'error_stage': 'command', 'error_reason': 'prompt_candidate_continuation'}
     if failure is None and ending_matches(device_pattern, output) and not output_container_open(command, output):
         prompt = last_prompt(output)
         if prompt:
@@ -888,7 +942,8 @@ def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, 
 
 def preparation_error(failure, output, command):
     """Keep setup evidence distinct from the caller's unsent business command."""
-    return CollectionError({**failure, 'error_stage': 'preparation',
+    return CollectionError({**failure, 'error': failure.get('error', 'PreparationOutputVerificationError'),
+                            'error_stage': 'preparation',
                             'output': output, 'preparation_command': command})
 
 
@@ -912,6 +967,7 @@ def install_tolerant_width():
             raise preparation_error(failure, output, command)
         if not ending_matches(r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$', output):
             raise preparation_error({'error': 'PreparationPromptError', 'error_category': 'output_verification',
+                                     'error_reason': 'terminal_width_prompt_not_verified',
                                      'retryable': False}, output, command)
         return output
 
@@ -944,6 +1000,7 @@ def install_tolerant_preparation():
                 raise preparation_error(failure, reply, command)
             if not ending_matches(pattern, reply):
                 raise preparation_error({'error': 'PreparationPromptError', 'error_category': 'output_verification',
+                                         'error_reason': 'preparation_prompt_not_verified',
                                          'retryable': False}, reply, command)
         conn.base_prompt = prompt[:-1]
         conn._network_prompt_text = prompt
@@ -1702,7 +1759,11 @@ class Collector:
         if getattr(exc, '_network_timings_ms', None):
             details['connection_timings_ms'] = dict(exc._network_timings_ms)
         details.update(ok=False, transport_ok=bool(getattr(exc,'_network_keep_session',False)), cli_ok=previous.get('cli_ok'), output_complete=previous.get('output_complete',False),
-                       message=self.scrub_error(str(exc)))
+                       message=self.scrub_error(details.get('message') or str(exc)))
+        if not details.get('error_reason'):
+            reason = ERROR_REASON_BY_CATEGORY.get(details.get('error_category'))
+            if reason:
+                details['error_reason'] = reason
         if hasattr(exc, '_network_keep_session'):
             details['session_reusable'] = bool(exc._network_keep_session)
         details['ssh_authenticated'] = True if details['error_stage'] in {'command', 'prompt', 'persistence', 'preparation'} else None
@@ -1982,6 +2043,10 @@ class Collector:
             if not cli_ok:
                 data['error_reason'] = ('permission_denied' if denied else
                                         'syntax_error' if any(CLI_SYNTAX_RE.search(line) for line in errors) else 'command_failed')
+            else:
+                data['error_reason'] = ('pager_or_confirmation_pending'
+                                        if ending_matches(PAGER_RE.pattern, output) or pending_interaction(output)
+                                        else 'ending_prompt_not_verified')
             data["message"] = self.scrub_error(denied or errors[0]) if errors else "Ending prompt not verified or pager/confirmation remains; output is incomplete"
         if save_output or size > self.inline_max_chars:
             try:
@@ -2163,7 +2228,7 @@ class Collector:
                     'command_index': skipped_index, 'ok': False, 'skipped': True,
                     'command_sent': False, 'output_complete': False, 'retryable': False,
                     'skipped_reason': 'batch_stopped', 'blocked_by_command_index': index}))
-            raise BatchError(results)
+            raise BatchError(results, batch_summary(target, len(commands), results, continue_on_error))
 
         with self._lease(target, device_type, profile) as conn:
             for index, cmd in enumerate(commands):
@@ -2188,10 +2253,7 @@ class Collector:
                         and not dead_session(conn))
                     if not (continue_on_error and synchronized_cli_error):
                         stop(index)
-        successes = sum(r.get('ok') is True for r in results)
-        return normalize_result({'target': target, 'results': results,
-            'ok': successes == len(commands), 'total': len(commands), 'successes': successes,
-            'failures': len(commands)-successes, 'continue_on_error': continue_on_error})
+        return batch_summary(target, len(commands), results, continue_on_error)
 
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
@@ -2266,7 +2328,8 @@ class Collector:
                     return self.execute(**{k: v for k,v in item.items() if k in {"target","command","device_type","profile","read_timeout","expect_string","use_timing","save_output","use_textfsm"}})
                 return self.execute_many(**{k: v for k,v in item.items() if k in {"target","commands","device_type","profile","read_timeout","use_timing","save_output","expect_string","continue_on_error"}})
             except BatchError as exc:
-                return {"target": item.get("target"), "ok": False, "results": exc.results, "error": "Batch interrupted after command failure"}
+                return {**(getattr(exc, 'summary', None) or {"target": item.get("target"), "ok": False, "results": exc.results}),
+                        "error": "Batch interrupted after command failure"}
             except Exception as exc:
                 return self.failure_result(exc, item.get("target"))
             finally:
@@ -2475,9 +2538,34 @@ class Collector:
         return {"closed": count}
 
 
+def batch_summary(target, command_count, results, continue_on_error):
+    """One result shape for complete, partial, and stopped batches.
+
+    Legacy fields (results/ok/total/successes/failures/continue_on_error) stay
+    unchanged; the extra fields only describe the failure/skip state.
+    """
+    successes = sum(1 for item in results if item.get('ok') is True)
+    failed = next((item for item in results if not item.get('ok') and not item.get('skipped')), {})
+    return normalize_result({
+        'target': target, 'results': results,
+        'ok': successes == command_count,
+        'total': command_count, 'successes': successes,
+        'failures': command_count - successes,
+        'continue_on_error': continue_on_error,
+        'partial_failure': 0 < successes < command_count,
+        'skipped_commands': sum(1 for item in results if item.get('skipped')),
+        'failed_command_index': failed.get('command_index'),
+        'failed_status': failed.get('status'),
+        'failed_error_category': failed.get('error_category'),
+        'failed_error_stage': failed.get('error_stage'),
+        'failed_error_reason': failed.get('error_reason'),
+    })
+
+
 class BatchError(Exception):
-    def __init__(self, results: list[dict[str, Any]]):
+    def __init__(self, results: list[dict[str, Any]], summary: dict[str, Any] | None = None):
         self.results = results
+        self.summary = summary
         self.last_result = next((r for r in reversed(results) if not r.get("skipped")), {})
         super().__init__("A command failed during batch execution")
 
@@ -2563,7 +2651,8 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
                     audit_error = str(output.get("error") or "One or more commands/tasks failed verification")
             except BatchError as exc:
                 audit_error = type(exc).__name__ + ": " + str(exc)
-                result = {"content": [{"type": "text", "text": json.dumps(normalize_result({"ok": False, "results": exc.results}), ensure_ascii=False)}], "isError": True}
+                payload = getattr(exc, 'summary', None) or normalize_result({"ok": False, "results": exc.results})
+                result = {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}], "isError": True}
             except Exception as exc:
                 # Tool errors belong in tool result (not broken JSON-RPC). Never dump locals or tracebacks.
                 msg = collector.scrub_error(str(exc))

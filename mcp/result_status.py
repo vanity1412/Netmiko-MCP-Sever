@@ -35,10 +35,10 @@ def normalize_result(result):
     if result.get('awaiting_input'):
         complete = False
     if result.get('ok') is True and complete:
-        for key in ('error','error_category','error_stage','message','retryable'):
+        for key in ('error','error_category','error_stage','message','retryable','error_reason'):
             result.pop(key, None)
         category = ''
-    if category != 'cli_error':
+    if category != 'cli_error' and result.get('error_reason') in {'permission_denied', 'syntax_error', 'command_failed'}:
         result.pop('error_reason', None)
     result['data_state'] = 'FULL' if complete else ('PARTIAL' if has_data else 'NONE')
     if result.get('awaiting_input'):

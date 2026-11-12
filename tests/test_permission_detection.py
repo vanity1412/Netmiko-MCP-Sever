@@ -60,7 +60,7 @@ class PermissionTests(unittest.TestCase):
     def test_authentication_is_not_cli_permission(self):
         from netmiko.exceptions import NetmikoAuthenticationException
         r=self.c.failure_result(NetmikoAuthenticationException('Authentication failed'),'mock')
-        self.assertEqual(r['status'],'AUTH_ERROR');self.assertNotIn('error_reason',r)
+        self.assertEqual(r['status'],'AUTH_ERROR');self.assertEqual(r['error_reason'],'authentication_failed')
     def test_normalization_clears_stale_reason(self):
         for r in [{'ok':True,'output_complete':True,'error_reason':'permission_denied'},
                   {'ok':False,'output_complete':False,'error_category':'read_timeout','error_reason':'permission_denied'}]:
