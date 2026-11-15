@@ -1,5 +1,11 @@
 > Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
 
+## Unreleased — 2026-11-15
+
+- Default report bundles to FULL inline analysis and CLI with a bundled escaped HTML renderer (headings, tables, emphasis and styled raw blocks). Copy raw by script, retain evidence hashes and targeted AI reading; no model transcription required.
+- Private deployment senders send complete plain/HTML bodies without ZIP attachments, use the report title for the subject and reject old SUMMARY bundles with rebuild instructions. Keep recipient, credentials, SMTP/outbox/retry settings unchanged. No production SSH or email sent during development.
+- Validation: 15 report-bundle tests passed; offline MIME checks on all three private deployments retained the complete analysis and 10,000 synthetic CLI lines in both plain/HTML, zero attachments, correct subject and exact raw hashes. Python 3.10 syntax checked. No SMTP connections.
+
 ## Unreleased — 2026-11-12
 
 - Review the privately field-adjusted reader, diagnostics and batch summaries. Handle a provisional prompt followed by a full command echo, and the known Junos screen-width repaint only when no response body preceded it; keep no-echo devices working. Do not accept a truncated command prefix as echo or discard ambiguity after actual payload.

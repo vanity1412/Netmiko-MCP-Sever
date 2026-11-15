@@ -5,6 +5,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -132,3 +134,25 @@ class BundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):bundle.build(self.root/'brief.md',self.plan,self.output,mode='SUMMARY')
         self.assertFalse(self.output.exists())
         self.assertEqual((self.root/'raw.txt').read_bytes(),before)
+
+    def test_default_renderer_formats_analysis_and_keeps_full_cli_inline(self):
+        analysis='# INC-123 — Điều tra\n\n## Kết luận\n**Có bằng chứng** e1.\n\n| Đích | MTU |\n| --- | --- |\n| LAB | 9000 |\n'
+        (self.root/'brief.md').write_text(analysis,encoding='utf-8')
+        self.build()
+        rendered=bundle.verified_html(self.output/'report.md')
+        self.assertIn('<strong>Có bằng chứng</strong>',rendered)
+        self.assertIn('<table role="table"',rendered)
+        self.assertIn('INC-123 — Điều tra',rendered)
+        self.assertIn(self.raw.decode(),html.unescape(rendered))
+        self.assertLess(rendered.index('<section>'),rendered.index('Không có file đính kèm.'))
+        self.assertFalse((self.output/'evidence.zip').exists())
+        self.assertEqual(json.loads((self.output/'bundle.json').read_text(encoding='utf-8'))['title'],'INC-123 — Điều tra')
+
+    def test_cli_defaults_to_full_not_summary_zip(self):
+        result=subprocess.run([sys.executable,'-B',str(Path(bundle.__file__)),
+                               '--summary',str(self.root/'brief.md'),'--manifest',str(self.plan),
+                               '--output',str(self.output)],capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse((self.output/'evidence.zip').exists())
+        self.assertIn(self.raw,(self.output/'report.md').read_bytes())
+        self.assertIn('<h2 ',bundle.verified_html(self.output/'report.md'))

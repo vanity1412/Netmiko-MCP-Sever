@@ -17,6 +17,25 @@ import tempfile
 import zipfile
 
 
+def report_title(brief, fallback):
+    for line in brief.decode('utf-8').splitlines():
+        match = re.match(r'^#\s+(.+?)\s*$', line)
+        if match:
+            return match[1].strip()
+    return fallback
+
+
+def render_analysis(brief, title, renderer=None):
+    renderer = Path(renderer) if renderer else Path(__file__).with_name('report_html.py')
+    spec = importlib.util.spec_from_file_location('report_renderer', renderer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rendered = module.render_report(brief.decode('utf-8'), title)
+    if '</body>' not in rendered:
+        raise ValueError('Renderer must produce an HTML body')
+    return rendered
+
+
 def file_digest(path):
     with Path(path).open('rb') as handle:
         return stream_digest(handle)
@@ -58,15 +77,12 @@ def summary_bundle(summary, manifest, output, renderer=None):
             archive.writestr('source_manifest.json',plan_bytes)
             archive.writestr('manifest.json',json.dumps({'evidence':records},ensure_ascii=False,indent=2).encode())
             archive.writestr('summary.md',brief)
-        if renderer:
-            spec=importlib.util.spec_from_file_location('summary_renderer',renderer)
-            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-            rendered=module.render_report(brief.decode('utf-8'),summary.parent.name)
-        else:rendered='<!doctype html><html lang="vi"><meta charset="utf-8"><body><pre>'+html.escape(brief.decode('utf-8'))+'</pre></body></html>'
+        title = report_title(brief, summary.parent.name)
+        rendered = render_analysis(brief, title, renderer)
         (staging/'summary.md').write_bytes(brief)
         (staging/'report.md').write_bytes(brief)
         (staging/'report.html').write_bytes(rendered.encode())
-        metadata={'schema':2,'mode':'SUMMARY','evidence':records,'summary_sha256':digest(brief),
+        metadata={'schema':2,'mode':'SUMMARY','title':title,'evidence':records,'summary_sha256':digest(brief),
                   'report_sha256':digest(brief),'html_sha256':digest(rendered.encode()),
                   'archive':'evidence.zip','archive_sha256':file_digest(staging/'evidence.zip')}
         (staging/'bundle.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -150,19 +166,17 @@ def build(summary, manifest, output, renderer=None, mode='FULL'):
         markdown.extend(('\n\n## Evidence ' + label.replace('\n', ' ').replace('\r', ' ') + '\n\n' + fence + 'text\n').encode())
         markdown.extend(raw)
         markdown.extend(('\n' + fence + '\n').encode())
-        sections.append('<section><h2>' + html.escape(label) + '</h2><pre>'
+        sections.append('<section><h2 style="font:600 18px Arial;color:#123b65;margin:26px 0 12px">'
+                        + html.escape(label) + '</h2><pre style="white-space:pre-wrap;overflow-wrap:anywhere;'
+                        'font:12px/1.65 Consolas,monospace;background:#f3f6fa;border:1px solid #d7e0ea;'
+                        'border-left:4px solid #49769e;padding:16px;color:#203047">'
                         + html.escape(raw.decode('utf-8')) + '</pre></section>')
         index.append({**entry,'source_path':entry['path'],
                       'path':'evidence/'+ident+'.txt','bytes':len(raw)})
-    if renderer:
-        spec = importlib.util.spec_from_file_location('bundle_renderer', renderer)
-        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        heading = module.render_report(brief.decode('utf-8'), summary.parent.name)
-        if '</body>' not in heading:
-            raise ValueError('Renderer must produce an HTML body')
-        rendered = heading.replace('</body>', '\n'.join(sections) + '</body>')
-    else:
-        rendered = '<!doctype html><html lang="vi"><meta charset="utf-8"><body><pre>' + html.escape(brief.decode('utf-8')) + '</pre>' + '\n'.join(sections) + '</body></html>'
+    title = report_title(brief, summary.parent.name)
+    heading = render_analysis(brief, title, renderer)
+    marker = '<!-- REPORT-EVIDENCE -->' if '<!-- REPORT-EVIDENCE -->' in heading else '</body>'
+    rendered = heading.replace(marker, '\n'.join(sections) + ('' if marker.startswith('<!--') else marker), 1)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix='.report-bundle-', dir=output.parent))
     try:
@@ -173,7 +187,7 @@ def build(summary, manifest, output, renderer=None, mode='FULL'):
         (staging/'source_manifest.json').write_bytes(plan_bytes)
         (staging/'report.md').write_bytes(markdown)
         (staging/'report.html').write_bytes(rendered.encode('utf-8'))
-        metadata = {'schema':1,'evidence':index,'summary_sha256':digest(brief),
+        metadata = {'schema':1,'mode':'FULL','title':title,'evidence':index,'summary_sha256':digest(brief),
                     'report_sha256':digest(markdown),'html_sha256':digest(rendered.encode('utf-8'))}
         (staging/'bundle.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2),encoding='utf-8')
         staging.rename(output)
@@ -194,7 +208,7 @@ def main():
     parser.add_argument('--manifest',required=True,type=Path)
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--renderer',type=Path)
-    parser.add_argument('--mode',choices=['SUMMARY','FULL'],default='SUMMARY')
+    parser.add_argument('--mode',choices=['SUMMARY','FULL'],default='FULL')
     args=parser.parse_args()
     try:
         print(json.dumps(build(args.summary,args.manifest,args.output,args.renderer,args.mode),ensure_ascii=False))
