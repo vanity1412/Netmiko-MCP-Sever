@@ -1,3 +1,21 @@
+# Reader: snapshot cache và XML prefix guard
+
+Reader cache raw snapshot và kết quả container theo số ký tự đã nhận. Không có
+dữ liệu mới thì không đọc/parse lại spool; dữ liệu mới luôn invalidate snapshot.
+Candidate hash, quiet period tối thiểu 300 ms, polling, checkpoint, cancel, EOF,
+pager và quyền retry không đổi. Final verification chỉ tái dùng kết quả container
+nếu text canonical bằng đúng raw snapshot đã kiểm tra; pager/terminal rewrite
+thay đổi text vẫn đi qua verifier toàn transcript.
+
+XMLPrefixGuard dùng XMLParser target không tạo cây để chứng minh prefix còn mở.
+Format được chọn theo match pipeline đầu tiên giống verifier cũ.
+Nó giữ lại dòng cuối có thể là prompt, hỗ trợ CRLF bị chia chunk, và không xác nhận
+container đã đóng. Case đóng vẫn dùng output_container_open cũ. ANSI/backspace,
+control khác, bare CR, Unicode line separator, dòng giữ lại quá 64 Ki ký tự hoặc
+lệnh banner chuyển về verifier cũ. Guard không áp cho JSON/banner. Parser/target
+cycle được giải phóng khi kết thúc command. Không hứa RAM hằng số: output cuối
+vẫn materialize và normalize/hash/verify toàn transcript.
+
 # Inventory và telemetry hàng đợi
 
 Inventory trả thêm profile được chọn (mặc định `default`) và port hiệu lực theo

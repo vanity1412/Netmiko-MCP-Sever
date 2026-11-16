@@ -1,5 +1,7 @@
 # Reader baseline — 2026-11-16
 
+Kết quả sau tối ưu được ghi riêng tại [READER_OPTIMIZATION.md](READER_OPTIMIZATION.md).
+
 Đo reader hiện tại trước tối ưu, trên commit `10e8d9083e9d1ff0e2248ffcbcaad15b575b20a8`.
 Không sửa source backend, schema, timeout, quiet period, retry hoặc session policy.
 Harness: [tests/benchmark_reader.py](../tests/benchmark_reader.py).

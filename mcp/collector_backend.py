@@ -712,6 +712,80 @@ def output_container_open(command, text):
     return False
 
 
+class XMLPrefixGuard:
+    """Prove an XML prefix is still open without rereading its transcript.
+
+    This only supplies an open veto. Closed/unsupported cases still use the
+    original whole-transcript verifier. Hold the last line because that verifier
+    excludes a trailing CLI prompt, even if a newline has already arrived.
+    """
+    def __init__(self, command):
+        style = re.search(r'\|\s*(?:display\s+)?(json|xml)\b', command, re.I)
+        self.safe = bool(style and style[1].lower() == 'xml') and not bool(
+            re.match(r'^show\s+(?:run(?:ning-config)?|startup-config)\b', command, re.I))
+        self.pending = ''
+        self.parser = None
+        self.depth = 0
+        self.complete = False
+        self.failed = False
+
+    def start(self, tag, attrs): self.depth += 1
+    def end(self, tag):
+        self.depth -= 1
+        if self.depth == 0: self.complete = True
+    def data(self, text): pass
+    def close(self): pass
+
+    def feed(self, data):
+        if not self.safe: return
+        # ANSI/backspaces/control normalization can change prior syntax. Fall
+        # back instead of guessing. CRLF split across chunks is supported.
+        if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u2028\u2029]', data):
+            self.safe = False
+            self.pending = ''
+            return
+        parts = (self.pending + data).split('\n')
+        if parts[-1] == '' and len(parts) > 1:
+            self.pending = parts[-2] + '\n'
+            lines = parts[:-2]
+        else:
+            self.pending = parts[-1]
+            lines = parts[:-1]
+        if len(self.pending) > 65536 or '\r' in self.pending.rstrip('\r\n'):
+            self.safe = False
+            self.pending = ''
+            return
+        for line in lines:
+            if line.endswith('\r'): line = line[:-1]
+            if '\r' in line:
+                self.safe = False
+                self.pending = ''
+                return
+            if self.failed: continue
+            if self.parser is None:
+                if not re.match(r'^\s*<(?:\?xml|[A-Za-z_])', line): continue
+                import xml.etree.ElementTree as ET
+                self.parser = ET.XMLParser(target=self)
+                line = line.lstrip()
+            try:
+                self.parser.feed(line + '\n')
+            except Exception as exc:
+                import xml.etree.ElementTree as ET
+                if isinstance(exc, ET.ParseError):
+                    self.failed = True
+                else:
+                    # Optional acceleration must not introduce an earlier read
+                    # failure. Let the legacy verifier handle unsupported input.
+                    self.safe = False
+                    self.parser = None
+                    self.pending = ''
+                    return
+
+    def definitely_open(self):
+        return bool(self.safe and self.parser is not None and not self.complete
+                    and (not self.pending.strip() or last_prompt(self.pending)))
+
+
 class OutputBuffer:
     def __init__(self):
         self.file = tempfile.SpooledTemporaryFile(max_size=1024*1024, mode='w+t', encoding='utf-8', newline='')
@@ -762,6 +836,22 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     """
     deadline = time.monotonic() + timeout
     chunks, tail, received = OutputBuffer(), '', 0
+    xml_guard = XMLPrefixGuard(command)
+    snapshot, snapshot_revision = None, -1
+    container_revision, container_is_open = -1, False
+    cleaned = None
+    def current_raw():
+        nonlocal snapshot, snapshot_revision
+        if snapshot_revision != received:
+            snapshot = chunks.value()
+            snapshot_revision = received
+        return snapshot
+    def container_open():
+        nonlocal container_revision, container_is_open
+        if container_revision != received:
+            container_is_open = xml_guard.definitely_open() or output_container_open(command, current_raw())
+            container_revision = received
+        return container_is_open
     # Log/config payloads can contain a literal device prompt. Allow delayed
     # continuation, and report ambiguity rather than certify such a transcript.
     quiet = max(quiet, .3)
@@ -810,13 +900,18 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 raise TimeoutError('Command read timed out')
             data = conn.read_channel()
             if data:
+                # Invalidate before writes/callbacks: either may fail after
+                # appending partial data, which still belongs in the evidence.
+                snapshot, snapshot_revision = None, -1
                 chunks.append(data)
                 if on_data:
                     on_data(data)
                 received += len(data)
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
-            cleaned = clean_terminal(tail)
+                xml_guard.feed(data)
+            if data or cleaned is None:
+                cleaned = clean_terminal(tail)
             # Echo is optional. Reset a provisional prompt only when the old
             # transcript contains no response body and a complete echo follows.
             # Repeated echoes are accepted only for the known Junos width repaint.
@@ -828,10 +923,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                         and (candidate_echo_count == 0 or repaint_command)):
                     candidate = None
                     candidate_echo_count = 0
-            if ending_matches(pattern, cleaned) and not output_container_open(command, chunks.value()):
+            if ending_matches(pattern, cleaned) and not container_open():
                 if candidate is None:
                     candidate_echo_count = echo_seen
-                    candidate_raw = chunks.value()
+                    candidate_raw = current_raw()
                     if handled_pagers:
                         candidate_raw = strip_pager_spans(candidate_raw, list(handled_pagers.items()))
                     candidate_text = clean_terminal(candidate_raw)
@@ -843,7 +938,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     candidate = hashlib.sha256(candidate_text.rstrip().encode('utf-8')).digest()
                     del candidate_text
                     del candidate_raw
-            if pending_interaction(cleaned) and not output_container_open(command, chunks.value()):
+            if pending_interaction(cleaned) and not container_open():
                 break
             pagers = list(PAGER_RE.finditer(tail))
             if pagers and ending_matches(PAGER_RE.pattern + r'[ \t]*', cleaned):
@@ -853,13 +948,13 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
             elif (ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet
-                  and not output_container_open(command, chunks.value())):
+                  and not container_open()):
                 prompt_only_completion = True
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
                 if channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False)):
-                    if ending_matches(pattern, cleaned) and not output_container_open(command, chunks.value()):
+                    if ending_matches(pattern, cleaned) and not container_open():
                         break
                     raise EOFError('SSH channel closed before ending prompt')
             time.sleep(min(.01, max(0, deadline - time.monotonic())))
@@ -867,8 +962,9 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         failure = classify_error(exc, 'command')
         failure['message'] = 'Command interrupted; partial output retained'
         failure.setdefault('error_reason', ERROR_REASON_BY_CATEGORY.get(failure.get('error_category'), 'command_read_interrupted'))
-    raw = chunks.value()
+    raw = current_raw()
     chunks.close()
+    xml_guard.parser = None  # Break the parser/target cycle after this command.
     conn._network_pager_spans = list(handled_pagers.items())
     if handled_pagers:
         raw = strip_pager_spans(raw, conn._network_pager_spans)
@@ -881,7 +977,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         failure = {'error_category': 'output_verification', 'retryable': False,
                    'message': 'Data continued after a prompt candidate; completion is uncertain',
                    'error_stage': 'command', 'error_reason': 'prompt_candidate_continuation'}
-    if failure is None and ending_matches(device_pattern, output) and not output_container_open(command, output):
+    if failure is None and ending_matches(device_pattern, output) and not (
+            container_is_open if container_revision == received and output == snapshot else output_container_open(command, output)):
         prompt = last_prompt(output)
         if prompt:
             conn._network_prompt_text = prompt

@@ -1,3 +1,27 @@
+## Unreleased — 2026-11-17
+
+- Cache reader raw snapshots, cleaned tails and container checks per data revision;
+  invalidate before append/callback so partial-write failures retain new evidence.
+- Add a bounded, tree-free XML prefix guard that can only veto completion. Keep
+  the existing full verifier for closed/unsupported input, including terminal
+  rewrites and long pending lines. Preserve quiet/polling/deadline/retry behavior,
+  prompt ambiguity, pager handling and all ten input schemas.
+- Compare against 04d6449 with synthetic UTF-8 benchmarks: 158 measurements,
+  including 15 final-source checks, all matching expected hashes/status. Final
+  XML-prompt 10 MiB median processing drops 15.443 → 0.811 seconds; value() drops
+  164 → 1. 100 MiB JSON processing drops 33.0%; XML drops 27.3%. Memory results
+  remain format-dependent. See docs/READER_OPTIMIZATION.md for scope and limits.
+- Final-source differential replay matches the baseline on 1,440 seeded cases;
+  add ten cache/prefix/failure regressions, matching first pipeline format
+  selection, and benchmark backend selection with
+  per-case source hashes. No production SSH or new implicit CLI commands.
+- Final validation: all 408 tests passed in 493.289 seconds with no skips,
+  including the ten new reader regressions, JSON-RPC/schema contracts, mock
+  fleets, localhost SSH, worker lifecycle and crash-safe storage/scanner tests.
+  Python 3.10 syntax and diff checks passed. The earlier full run was deliberately
+  interrupted to include the pipeline-format compatibility fix; this result is
+  a fresh complete run on the final source.
+
 ## Unreleased — 2026-11-16
 
 - Add a subprocess-isolated synthetic reader benchmark for 1/10/100 MiB UTF-8,

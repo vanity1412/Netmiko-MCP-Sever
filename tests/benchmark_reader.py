@@ -9,8 +9,10 @@ from collections import deque
 import contextlib
 import cProfile
 import hashlib
+import importlib.util
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -21,7 +23,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
-import collector_backend as backend
+if os.environ.get('READER_BENCHMARK_BACKEND'):
+    spec = importlib.util.spec_from_file_location('reader_benchmark_backend', os.environ['READER_BENCHMARK_BACKEND'])
+    backend = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = backend
+    spec.loader.exec_module(backend)
+else:
+    import collector_backend as backend
 from stress_resources import ResourceMonitor
 
 
@@ -144,7 +152,8 @@ def measure(size_bytes, chunk_bytes, kind, clock_mode='accelerated', profile_pat
         profiler.dump_stats(profile_path)
     output_hash = hashlib.sha256(output.encode('utf-8')).hexdigest()
     for entry in stats.values(): entry['inclusive_seconds'] = round(entry['inclusive_seconds'], 6)
-    result = {'kind': kind, 'requested_bytes': size_bytes, 'wire_bytes': len(wire),
+    result = {'reader_sha256': hashlib.sha256(Path(backend.__file__).read_bytes()).hexdigest(),
+              'kind': kind, 'requested_bytes': size_bytes, 'wire_bytes': len(wire),
               'chunk_bytes': chunk_bytes, 'clock': clock_mode,
               'data_reads': channel.data_reads, 'output_chars': len(output),
               'sha256_expected': expected_hash, 'sha256_actual': output_hash,
