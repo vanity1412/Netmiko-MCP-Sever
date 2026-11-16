@@ -1,5 +1,19 @@
 ## Unreleased — 2026-11-16
 
+- Add a subprocess-isolated synthetic reader benchmark for 1/10/100 MiB UTF-8,
+  three chunk sizes, text/JSON/XML/banner, prompt ambiguity, pager and repeated
+  XML prompt-like lines. Record integrity hashes, CPU/RSS, full-buffer calls,
+  input character volume and requested sleeps; support real and accelerated
+  clocks plus optional cProfile. No backend/schema/timeout/quiet/retry changes.
+- Complete 74 offline measurements including repeat samples, real-clock checks
+  and profiles. Document measured polling/normalization costs and repeated-prefix
+  XML parsing in docs/READER_BENCHMARK.md; distinguish sampled process RSS from
+  reader allocations and synthetic timings from production SSH performance.
+- Stage-four validation: all 398 tests passed in 469.650 seconds, no skips;
+  all 74 benchmark/profile measurements matched expected hashes and failure
+  semantics. Four new harness correctness tests passed. Python 3.10 syntax and
+  diff checks passed. Runtime reader remains unchanged; optimization is deferred
+  to the measured follow-up priorities. Mock/synthetic channel/localhost only.
 - Add effective profile/port metadata to inventory without credential resolution.
   Preserve existing fields, paging, summary behavior and ten input schemas.
 - Add process-local parallel queue counts, bounded wait metrics, per-task queue
