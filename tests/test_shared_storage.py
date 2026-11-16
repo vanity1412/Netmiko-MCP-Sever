@@ -1,10 +1,12 @@
 """Real subprocess contention on temporary evidence; no SSH or private config."""
 import concurrent.futures
+import contextlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -13,6 +15,7 @@ MCP = Path(__file__).resolve().parents[1] / 'mcp'
 sys.path.insert(0, str(MCP))
 import collector_backend as b
 from output_storage import file_lock
+import output_storage
 
 CHILD = '''
 import json, sys
@@ -41,6 +44,56 @@ class SharedStorageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+
+    def test_empty_lock_initialization_is_protected_by_os_lock(self):
+        # Windows rejects writes to a byte another handle has locked. Verify
+        # initialization cannot write/flush before our own OS lock is acquired.
+        if output_storage.os.name == 'nt':
+            import msvcrt as locker
+            method, release_mode = 'locking', locker.LK_UNLCK
+        else:
+            import fcntl as locker
+            method, release_mode = 'flock', locker.LOCK_UN
+        original_lock = getattr(locker, method)
+        original_open = Path.open
+        owned = threading.local()
+        def tracked_lock(fd, mode, *args):
+            result = original_lock(fd, mode, *args)
+            owned.locked = mode != release_mode
+            return result
+        class GuardedHandle:
+            def __init__(inner, handle): inner.handle = handle
+            def __getattr__(inner, name): return getattr(inner.handle, name)
+            def write(inner, data):
+                self.assertTrue(getattr(owned, 'locked', False), 'lock byte written before OS acquisition')
+                return inner.handle.write(data)
+            def flush(inner):
+                self.assertTrue(getattr(owned, 'locked', False), 'lock byte flushed before OS acquisition')
+                return inner.handle.flush()
+        @contextlib.contextmanager
+        def guarded_open(path, *args, **kwargs):
+            with original_open(path, *args, **kwargs) as handle:
+                yield GuardedHandle(handle)
+        with patch.object(Path, 'open', guarded_open), patch.object(locker, method, tracked_lock):
+            with file_lock(Path(self.tmp.name) / 'new.lock'):
+                self.assertTrue(owned.locked)
+
+    def test_concurrent_empty_lock_creators_are_serialized(self):
+        for round_number in range(10):
+            path = Path(self.tmp.name) / f'creator-{round_number}.lock'
+            barrier = threading.Barrier(8)
+            active = []
+            def creator():
+                barrier.wait(timeout=5)
+                with file_lock(path):
+                    active.append(1)
+                    self.assertEqual(len(active), 1)
+                    time.sleep(.001)
+                    active.pop()
+            with concurrent.futures.ThreadPoolExecutor(8) as pool:
+                jobs = [pool.submit(creator) for _ in range(8)]
+                for job in jobs:
+                    job.result(10)
 
     def collector(self, **options):
         c = b.Collector({'defaults': {'output_dir': self.tmp.name,

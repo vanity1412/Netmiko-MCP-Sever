@@ -1,3 +1,23 @@
+# Inventory và telemetry hàng đợi
+
+Inventory trả thêm profile được chọn (mặc định `default`) và port hiệu lực theo
+defaults → profile → device, chuẩn hóa bằng cùng bounded_int như kết nối.
+Không nạp/xác minh credential khi liệt kê; các trường cũ và input schema giữ nguyên.
+
+`ssh_status.parallel_queue` đo riêng executor của ssh_parallel trong process hiện
+tại: queued/running là snapshot, submitted/completed/cancelled là tổng từ lúc khởi
+tạo Collector. completed bao gồm cả task trả lỗi hoặc ném exception; cancelled là
+future hủy trước khi chạy. wait_metrics giữ tổng và tối đa 128 mẫu queue_wait gần
+nhất. Không dùng queue nội bộ của ThreadPoolExecutor để đo.
+
+Mỗi kết quả parallel thêm queue_wait_ms (enqueue đến worker bắt đầu), kết quả tổng
+thêm worker_telemetry (tasks_requested, worker_limit, effective_worker_limit).
+Effective limit là trần concurrency của request, không bảo đảm số task chạy cùng
+lúc khi nhiều request dùng chung pool. Running có thể đang chờ session/SSH slot;
+không phải số kết nối SSH đang hoạt động. Số liệu này không bao gồm hàng đợi STDIO,
+scanner hoặc MCP process khác. Session/slot wait vẫn nằm trong phase_metrics.
+Không thay deadline, retry, worker hoặc semaphore để thu telemetry.
+
 # Batch continuation và kết quả chưa gửi
 
 User-authorized optional input `continue_on_error` mở rộng riêng ssh_execute_many, vẫn 10 tools. Mặc định false. True chỉ tiếp tục lỗi CLI đã đọc đủ và transport đồng bộ; không tiếp tục timeout/disconnect/storage/pending input. Mỗi suffix chưa gửi có skipped=true và status SKIPPED; BatchError.last_result xác định lệnh thực thi cuối để session retention không đọc nhầm entry SKIPPED. Scanner lấy nguyên nhân lỗi từ entry đã thử, giữ prefix/resume cũ và không bật continuation. Contract test được cập nhật duy nhất optional boolean này. Xem README để biết ví dụ.

@@ -1,5 +1,15 @@
 # Scanner — Netmiko MCP 1.9.1
 
+Summary/progress thêm `worker_telemetry`: requested_workers, effective_workers,
+lane_limits, running/queued và breakdown theo fast/slow lane. Running là attempt
+đã dispatch chưa thu kết quả; queued là số attempt còn trong lane. Không cộng
+chúng như số thiết bị duy nhất vì retry có thể tạo attempt mới. Khi cancel, queued
+có thể còn lớn hơn 0. Không thay ý nghĩa pending/running/retry_pending cũ.
+
+Record và attempt thêm queue_wait_ms: thời gian chờ lane của lần chạy hiện tại,
+không tính thời gian process dừng hoặc gán lại số đo cho checkpoint cũ. Retry slow
+lane bắt đầu phép đo chờ mới. Queue wait không thay ngân sách device/deadline.
+
 # Khóa job và tương thích resume
 
 Scanner giữ khóa OS trên `scan.lock`; file khóa được giữ lại sau khi kết thúc,

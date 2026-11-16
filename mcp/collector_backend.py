@@ -32,7 +32,7 @@ if _module_dir not in sys.path:
     sys.path.insert(0, _module_dir)
 from result_status import normalize_result
 from output_storage import SharedOutputStorage
-from telemetry import (PhaseMetrics, measured_phase, time_connection_method,
+from telemetry import (PhaseMetrics, WorkQueueMetrics, measured_phase, time_connection_method,
                        connection_measurements, current_connection_timings)
 import tempfile
 
@@ -1057,6 +1057,7 @@ class Collector:
         self._stop = threading.Event()
         self._request = threading.local()
         self._metrics = PhaseMetrics()
+        self._parallel_queue = WorkQueueMetrics()
         self._ssh_slots = threading.BoundedSemaphore(self.max_workers)
         self._task_pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix='ssh-task')
         self.request_timeout = bounded_int(self.defaults.get('request_timeout_seconds'), 120, 1, 3600)
@@ -2317,7 +2318,7 @@ class Collector:
         context = getattr(self._request, 'context', None)
         connection_timeouts = getattr(self._request, 'connection_timeouts', None)
         detection_timeout = getattr(self._request, 'detection_timeout', None)
-        def run_task(item: dict[str, Any]) -> dict[str, Any]:
+        def execute_task(item: dict[str, Any]) -> dict[str, Any]:
             self._request.context = context
             self._request.timings_ms = {}
             self._request.session_reused = False
@@ -2336,12 +2337,19 @@ class Collector:
                 self._request.context = None
                 self._request.connection_timeouts = None
                 self._request.detection_timeout = None
-        results = list(self._task_pool.map(run_task, tasks))
+        def run_task(item, queue_wait_ms):
+            result = execute_task(item)
+            result['queue_wait_ms'] = queue_wait_ms
+            return result
+        submitted = [self._parallel_queue.submit(self._task_pool, run_task, item) for item in tasks]
+        results = [future.result() for future in submitted]
         successes = sum(x.get("ok", False) is True for x in results)
         for item, result in zip(tasks, results):
             self.audit("ssh_parallel.task", item, bool(result.get("ok")), result.get("elapsed_ms", 0) / 1000, result.get("error"))
         return normalize_result({"total": len(results), "successes": successes, "failures": len(results)-successes,
-                "ok": successes == len(results), "partial_failure": 0 < successes < len(results), "results": results})
+                "ok": successes == len(results), "partial_failure": 0 < successes < len(results), "results": results,
+                "worker_telemetry": {"tasks_requested": len(tasks), "worker_limit": self.max_workers,
+                                     "effective_worker_limit": min(len(tasks), self.max_workers)}})
 
     def read_output(self, output_id: str, offset: int = 0, limit: int = 200) -> dict[str, Any]:
         offset = bounded_int(offset, 0, 0, 20_000_000)
@@ -2493,7 +2501,11 @@ class Collector:
                 continue
             type_counts[dtype] = type_counts.get(dtype, 0) + 1
             if not summary_only:
-                matches.append({"name": name, "host": host, "device_type": dtype, "tags": value.get("tags", [])})
+                profile = value.get('profile') or 'default'
+                prof = self.profiles.get(profile, {})
+                effective = {**self.defaults, **(prof if isinstance(prof, dict) else {}), **value}
+                matches.append({"name": name, "host": host, "device_type": dtype, "tags": value.get("tags", []),
+                                "profile": profile, "port": bounded_int(effective.get('port', 22), 22, 1, 65535)})
         total = sum(type_counts.values())
         page = [] if summary_only else (matches[offset:] if limit == 0 else matches[offset:offset + limit])
         returned = len(page)
@@ -2508,7 +2520,7 @@ class Collector:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": not dead_session(v.get("conn")),
                          "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "phase_metrics": self._metrics.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
+        return {"version": VERSION, "phase_metrics": self._metrics.snapshot(), "parallel_queue": self._parallel_queue.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
                 "autodetect_timeout_seconds": self.autodetect_timeout, "autodetect_probes": self._detection_probes,

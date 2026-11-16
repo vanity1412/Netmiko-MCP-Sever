@@ -1,5 +1,24 @@
 ## Unreleased — 2026-11-16
 
+- Add effective profile/port metadata to inventory without credential resolution.
+  Preserve existing fields, paging, summary behavior and ten input schemas.
+- Add process-local parallel queue counts, bounded wait metrics, per-task queue
+  waits and per-request worker limits; preserve ordering and deadline handling.
+  Scanner summaries/progress expose requested/effective workers and lane queues,
+  with queue waits persisted per attempt without changing retry/resume budgets.
+- The first stage-three suite exposed a Windows lock-file initialization race:
+  concurrent creators could flush the sentinel before taking the OS byte lock,
+  failing scanner evidence export with PermissionError. Capture a reproducing
+  traceback, initialize the sentinel only under the OS lock, and add initialization
+  ordering plus concurrent-creator regressions. Preserve export_pending recovery,
+  finite lock waits, quota and lease semantics; do not repeat SSH on export errors.
+- Stage-three final validation: all 394 tests passed in 468.254 seconds with no
+  skips, including 105-target scanner, bounded queue metrics, expired queued
+  requests, shared storage contention/crash and all ten frozen input schemas.
+  The initial 392-test run had one evidence-export PermissionError, reproduced
+  with its traceback and fixed above; the new ordering test fails before the fix.
+  Focused scanner (36), shared storage (9) and queue/inventory (4) tests passed.
+  Python 3.10 syntax and diff checks passed. Mock/localhost only; no production SSH.
 - Investigate the intermittent large-Unicode worker authentication count:
   the localhost fixture reused its 100 ms receive polling timeout for large
   sendall replies. Controlled receiver backpressure reproduced server-side

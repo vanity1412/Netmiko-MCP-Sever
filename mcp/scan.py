@@ -162,6 +162,7 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
         raise ValueError('retry_statuses must contain failed, partial or unknown')
     if collector.max_workers < 2:
         raise ValueError('Fast/slow scan needs max_workers >= 2 in collector configuration')
+    requested_workers = workers
     workers = min(bounded_int(workers,16,2,32), collector.max_workers)
     slow_workers = min(bounded_int(slow_workers,4,1,31), workers-1)
     fast_timeout = bounded_int(fast_timeout,90,1,3600)
@@ -172,7 +173,7 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
     lock = directory/'scan.lock'
     with scan_lock(lock):
         return _run_locked(collector,prepared,command_map,directory,workers,slow_workers,
-                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout)
+                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout,requested_workers)
 
 
 @contextlib.contextmanager
@@ -196,7 +197,7 @@ def scan_lock(path):
         yield
 
 
-def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout):
+def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout, requested_workers=None):
     manifest = directory/'scan-manifest.json'
     binding = {'version':1,'plan_hash':hashlib.sha256(json.dumps([tasks,command_map],sort_keys=True).encode()).hexdigest(),
                'total':len(tasks)}
@@ -282,6 +283,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
         'slow':{'deadline':slow_timeout,'connection':{'conn_timeout':30,'banner_timeout':45,'auth_timeout':60},'read_timeout':120}}
     limits = {'fast':workers-slow_workers,'slow':slow_workers}
     active = {'fast':0,'slow':0};pending = {}
+    queued_since = {task['task_id']: time.monotonic() for lane in lanes.values() for task in lane}
     device_clocks = {}
     def save(record):
         atomic_json(records_dir/(record['task_id']+'.json'),record);states[record['task_id']]=record
@@ -299,7 +301,11 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
         return {'total':len(tasks),'duplicates_removed':duplicates,
                 **{k:counts[k] for k in ['success','failed','partial','unknown','running','retry_pending']},
                 'pending':len(tasks)-len(states),'cancelled':cancel.is_set(),
-                'ok':counts['success']==len(tasks)}
+                'ok':counts['success']==len(tasks),
+                'worker_telemetry': {'requested_workers': requested_workers, 'effective_workers': workers,
+                    'lane_limits': dict(limits), 'running': sum(active.values()),
+                    'queued': sum(len(lane) for lane in lanes.values()),
+                    'running_by_lane': dict(active), 'queued_by_lane': {k:len(v) for k,v in lanes.items()}}}
     with futures.ThreadPoolExecutor(max_workers=limits['fast'],thread_name_prefix='scan-fast') as fast_pool, \
          futures.ThreadPoolExecutor(max_workers=limits['slow'],thread_name_prefix='scan-slow') as slow_pool:
         pools={'fast':fast_pool,'slow':slow_pool}
@@ -307,6 +313,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
             for lane in ['fast','slow']:
                 while not cancel.is_set() and lanes[lane] and active[lane]<limits[lane]:
                     task=lanes[lane].popleft();old=states.get(task['task_id'],{})
+                    queue_wait_ms = round((time.monotonic() - queued_since.pop(task['task_id'])) * 1000, 3)
                     identity = task['task_id']
                     cap = min(device_timeout, old.get('device_budget_seconds', device_timeout))
                     if identity not in device_clocks:
@@ -325,6 +332,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                     attempt_budgets[lane]['deadline'] = min(budgets[lane]['deadline'], remaining)
                     record={'task_id':task['task_id'],'target':task['target'],'status':'running',
                             'lane':lane,'started_at':stamp(),'attempts':old.get('attempts',[]),
+                            'queue_wait_ms':queue_wait_ms,
                             'cycle_attempts':old.get('cycle_attempts',len(old.get('attempts',[])))+1,
                             'replay_from_start':old.get('replay_from_start',False),
                             'device_budget_seconds':cap,'device_elapsed_seconds':elapsed,
@@ -342,7 +350,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 task,lane=pending.pop(future);active[lane]-=1
                 record=states[task['task_id']]
                 try:
-                    attempt=future.result();record['attempts'].append(attempt)
+                    attempt=future.result();attempt['queue_wait_ms']=record['queue_wait_ms'];record['attempts'].append(attempt)
                     record['next_command_index']=attempt['next_command_index']
                     cycle_start, prior_elapsed = device_clocks[task['task_id']]
                     record['device_elapsed_seconds'] = prior_elapsed + time.monotonic() - cycle_start
@@ -353,7 +361,9 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)
                     retire_owned_raw(attempt)
-                    if retry:lanes['slow'].append(task)
+                    if retry:
+                        lanes['slow'].append(task)
+                        queued_since[task['task_id']] = time.monotonic()
                 except Exception as exc:
                     record.update(status='unknown',message='Collection/export incomplete: '+type(exc).__name__)
                     save(record)

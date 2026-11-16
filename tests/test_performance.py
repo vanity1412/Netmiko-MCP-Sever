@@ -124,6 +124,22 @@ class Performance(unittest.TestCase):
  def task(self,target='MOCK',**kwargs):return dict(target=target,device_type='juniper_junos',commands=['show version'],**kwargs)
  def run_job(self,tasks,**kwargs):return scan.run_scan(self.c,tasks,self.directory/'job',workers=4,slow_workers=1,**kwargs)
  def records(self):return [json.loads(p.read_text(encoding='utf-8')) for p in (self.directory/'job/results').glob('*.json')]
+ def test_scan_worker_limit_queue_wait_and_resume_metadata(self):
+  tasks=[self.task('mock-'+str(i)) for i in range(8)]
+  snapshots=[]
+  result=scan.run_scan(self.c,tasks,self.directory/'job',workers=16,slow_workers=1,progress=snapshots.append)
+  self.assertTrue(result['ok'])
+  telemetry=result['worker_telemetry']
+  self.assertEqual((telemetry['requested_workers'],telemetry['effective_workers']),(16,4))
+  self.assertEqual(telemetry['lane_limits'],{'fast':3,'slow':1})
+  self.assertEqual((telemetry['running'],telemetry['queued']),(0,0))
+  self.assertTrue(any(s['worker_telemetry']['queued']>0 for s in snapshots))
+  for record in self.records():
+   self.assertGreaterEqual(record['queue_wait_ms'],0)
+   self.assertEqual(record['attempts'][0]['queue_wait_ms'],record['queue_wait_ms'])
+  connections=len(self.connections)
+  resumed=self.run_job(tasks)
+  self.assertTrue(resumed['ok']);self.assertEqual(len(self.connections),connections)
  def test_scan_fast_timeout_recovered_slow(self):
   calls={}
   def connect(**params):
@@ -154,7 +170,8 @@ class Performance(unittest.TestCase):
   self.assertTrue(again['ok']);self.assertEqual(len(self.connections),count)
  def test_scan_full_105_targets_not_limited_by_mcp100(self):
   result=self.run_job([self.task('mock-'+str(i)) for i in range(105)])
-  self.assertEqual(result['success'],105);self.assertTrue(result['ok'])
+  failures=[record for record in self.records() if record['status']!='success']
+  self.assertEqual(result['success'],105,failures);self.assertTrue(result['ok'])
   self.assertEqual(len(self.records()),105)
  def test_fast_results_saved_while_slow_busy(self):
   entered=threading.Event();release=threading.Event();fake=f.Fake()

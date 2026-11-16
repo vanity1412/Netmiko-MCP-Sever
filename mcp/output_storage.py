@@ -15,9 +15,6 @@ def file_lock(path, timeout=5, checkpoint=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a+b') as handle:
-        if handle.seek(0, os.SEEK_END) == 0:
-            handle.write(b'\0')
-            handle.flush()
         deadline = time.monotonic() + timeout
         while True:
             try:
@@ -40,6 +37,12 @@ def file_lock(path, timeout=5, checkpoint=None):
                     raise error from None
                 time.sleep(min(.01, max(0, deadline - time.monotonic())))
         try:
+            # Lock the byte range even on an empty file before initializing it.
+            # Windows byte locks are mandatory: initializing before acquisition
+            # can race another creator that has already locked the first byte.
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b'\0')
+                handle.flush()
             yield handle
         finally:
             handle.seek(0)

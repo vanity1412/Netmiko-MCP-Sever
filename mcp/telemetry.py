@@ -49,6 +49,53 @@ class PhaseMetrics:
             return result
 
 
+class WorkQueueMetrics:
+    """Process-local parallel executor counts, independent of private pool fields."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.queued = self.running = self.submitted = self.completed = self.cancelled = 0
+        self.waits = PhaseMetrics()
+
+    def submit(self, pool, function, *args):
+        queued_at = time.monotonic()
+        with self.lock:
+            self.queued += 1
+            self.submitted += 1
+        def run():
+            wait = (time.monotonic() - queued_at) * 1000
+            with self.lock:
+                self.queued -= 1
+                self.running += 1
+            self.waits.add('queue_wait', wait)
+            try:
+                return function(*args, queue_wait_ms=round(wait, 3))
+            finally:
+                with self.lock:
+                    self.running -= 1
+                    self.completed += 1
+        try:
+            future = pool.submit(run)
+        except BaseException:
+            with self.lock:
+                self.queued -= 1
+                self.submitted -= 1
+            raise
+        def finished(future):
+            if future.cancelled():
+                with self.lock:
+                    self.queued -= 1
+                    self.cancelled += 1
+        future.add_done_callback(finished)
+        return future
+
+    def snapshot(self):
+        with self.lock:
+            result = {name: getattr(self, name) for name in
+                      ('queued', 'running', 'submitted', 'completed', 'cancelled')}
+        result['wait_metrics'] = self.waits.snapshot().get('queue_wait', {})
+        return result
+
+
 def measured_phase(phase):
     def decorate(method):
         @functools.wraps(method)
