@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from result_status import normalize_result
+from output_storage import file_lock
 from collector_backend import Collector, BatchError, safe_command, readonly_command, bounded_int, is_replay_safe, MAX_COMMANDS
 
 DEFAULT_COMMANDS = {'juniper_junos':['show version'], 'cisco_ios':['show version'],
@@ -169,13 +170,30 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
     prepared, command_map = prepare_tasks(collector,tasks,command_map)
     directory = Path(directory).resolve();directory.mkdir(parents=True,exist_ok=True)
     lock = directory/'scan.lock'
-    with lock.open('x',encoding='utf-8') as handle:
-        handle.write(str(os.getpid()));handle.flush();os.fsync(handle.fileno())
-    try:
+    with scan_lock(lock):
         return _run_locked(collector,prepared,command_map,directory,workers,slow_workers,
                            fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout)
-    finally:
-        lock.unlink()
+
+
+@contextlib.contextmanager
+def scan_lock(path):
+    """Stable OS lock; never unlink a file another process may have opened.
+
+    Old PID-only locks are ambiguous: an older scanner does not hold an OS
+    lock. Refuse them rather than accidentally run alongside that scanner.
+    """
+    marker = b'netmiko-scan-os-lock-v1\n'
+    with file_lock(path, timeout=0) as handle:
+        handle.seek(0)
+        content = handle.read()
+        if content not in (b'\0', marker):
+            raise FileExistsError('Legacy or unrecognized scan.lock; verify no scanner is running before removing it')
+        if content != marker:
+            handle.truncate(0)
+            handle.write(marker)
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield
 
 
 def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout):

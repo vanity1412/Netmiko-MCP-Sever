@@ -1,3 +1,30 @@
+## Unreleased — 2026-11-16
+
+- Investigate the intermittent large-Unicode worker authentication count:
+  the localhost fixture reused its 100 ms receive polling timeout for large
+  sendall replies. Controlled receiver backpressure reproduced server-side
+  TimeoutError, connection_lost and one legitimate recovery (two logins).
+  Give static fixture replies a bounded five-second send timeout and restore
+  receive polling afterward; retain fixture errors for diagnosis. Backend
+  timeout/retry/connection behavior and the one-login assertion stay unchanged.
+  A small-window slow-reader regression fails with the old send timeout and
+  passes with the fix, preserving exact Unicode bytes with one authentication.
+  Validation after the fix: all 387 tests passed in 462.238 seconds, with no
+  failures or skips, including the original Unicode test and the new slow-reader
+  regression. The focused collection/status module also passed all 24 tests.
+  Python 3.10 syntax and diff checks passed. Mock/localhost only; no production SSH.
+- Expose the already-supported optional boolean continue_on_error in parallel
+  batch task schemas. Preserve ten tools, string interaction steps and defaults.
+- Use a stable OS-managed scanner job lock for crash recovery; refuse legacy
+  PID-only locks without deleting them. Document safe migration and rollback.
+- Add schema example validation and real subprocess lock contention/kill tests.
+- Validation: full suite ran 386 tests in 475.442 seconds; 385 passed and the
+  large-Unicode worker test failed its one-authentication assertion (2 vs 1).
+  Its entire 24-test module and five consecutive isolated repetitions then
+  passed unchanged. Cause remains unconfirmed; not a clean full-suite pass.
+  All five new contract/lock tests passed, including JSON Schema validation;
+  Python 3.10 syntax and diff checks passed. Mock/localhost only.
+
 > Các mục dưới đây là lịch sử theo phiên bản, không phải hướng dẫn vận hành hiện tại. Với 1.9.1, dùng [README](README.md) và [hướng dẫn scanner](docs/SCAN.md); các policy read-only cũ đã được thay thế.
 
 ## Unreleased — 2026-11-15

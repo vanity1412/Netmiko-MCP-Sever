@@ -1,5 +1,17 @@
 # Scanner — Netmiko MCP 1.9.1
 
+# Khóa job và tương thích resume
+
+Scanner giữ khóa OS trên `scan.lock`; file khóa được giữ lại sau khi kết thúc,
+không được xóa khi scanner đang chạy. OS giải phóng khóa khi process chết nên
+job của bản mới có thể resume sau crash mà không cần xóa file. Các kiểm tra
+plan, identity, hash evidence và quy tắc không tự replay cấu hình vẫn giữ nguyên.
+
+Khóa PID-only từ bản cũ hoặc nội dung không nhận diện được bị từ chối an toàn.
+Chỉ xóa khóa cũ sau khi đã xác minh không còn scanner dùng job đó. Không chạy
+scanner cũ và mới đồng thời trên cùng job. Muốn quay về bản cũ, dừng mọi scanner
+trước khi xóa file khóa mới; giữ nguyên checkpoint và evidence.
+
 Các mục phiên bản bên dưới mô tả hành vi kế thừa vẫn áp dụng; hướng dẫn chạy đã được đối chiếu với 1.9.1.
 
 # Reliability 1.8.2

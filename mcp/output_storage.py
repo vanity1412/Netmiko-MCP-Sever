@@ -40,7 +40,7 @@ def file_lock(path, timeout=5, checkpoint=None):
                     raise error from None
                 time.sleep(min(.01, max(0, deadline - time.monotonic())))
         try:
-            yield
+            yield handle
         finally:
             handle.seek(0)
             if os.name == 'nt':

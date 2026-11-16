@@ -294,6 +294,7 @@ class LocalSSHServer:
         self.stop = threading.Event()
         self.commands = []
         self.auth_attempts = 0
+        self.errors = []
         self.transports = []
         self.listener = socket.socket()
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -353,7 +354,15 @@ class LocalSSHServer:
                     if command in self.responses:
                         reply = self.responses[command]
                         if callable(reply): reply(channel)
-                        else: channel.sendall((reply + '\r\n' + self.prompt).encode())
+                        else:
+                            # The short receive polling timeout must not also
+                            # abort a large reply while the client drains its
+                            # SSH window / worker pipe under scheduler load.
+                            channel.settimeout(5)
+                            try:
+                                channel.sendall((reply + '\r\n' + self.prompt).encode())
+                            finally:
+                                channel.settimeout(.1)
                     elif command.startswith(('terminal width ', 'terminal length ', 'screen-length ', 'set cli ')):
                         channel.sendall(('\r\n' + self.prompt).encode())
                     elif command == 'uname -s':
@@ -366,8 +375,8 @@ class LocalSSHServer:
                         channel.sendall(b'up '); time.sleep(.2); channel.sendall(b'10 days\r\nrouter#')
                     elif command == 'exit': return
                     else: channel.sendall(('% Invalid input\r\n' + self.prompt).encode())
-        except (OSError, EOFError, paramiko.SSHException):
-            pass
+        except (OSError, EOFError, paramiko.SSHException) as exc:
+            self.errors.append(exc)
         finally:
             transport.close()
 
@@ -397,6 +406,34 @@ class RealSSHTests(unittest.TestCase):
             'devices': {'local': {'host': '127.0.0.1', 'port': self.server.port, 'device_type': dtype}}})
         self.addCleanup(c.shutdown)
         return c
+
+    def test_large_unicode_reply_survives_slow_window_reader(self):
+        body = 'dữ liệu đường truyền αβγ\r\n' * 10000
+        self.server.responses['hostname'] = body
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self.addCleanup(client.close)
+        client.connect('127.0.0.1', port=self.server.port, username='tester',
+                       password='loopback-only', allow_agent=False, look_for_keys=False)
+        channel = client.get_transport().open_session(window_size=32768)
+        self.addCleanup(channel.close)
+        channel.settimeout(5)
+        channel.get_pty()
+        channel.invoke_shell()
+        self.assertEqual(channel.recv(1024), b'router#')
+        channel.sendall(b'hostname\n')
+        # Fill the small SSH window longer than the receive polling timeout.
+        time.sleep(.35)
+        expected = (body + '\r\nrouter#').encode('utf-8')
+        received = bytearray()
+        while len(received) < len(expected):
+            data = channel.recv(65536)
+            if not data:
+                break
+            received.extend(data)
+        self.assertEqual(bytes(received), expected)
+        self.assertEqual(self.server.auth_attempts, 1)
+        self.assertEqual(self.server.errors, [])
 
     def test_real_no_echo_fragmented_delayed_paged_and_session_reuse(self):
         c = self.collector()

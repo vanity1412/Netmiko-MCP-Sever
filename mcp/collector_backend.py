@@ -2593,6 +2593,7 @@ def make_tool_list() -> list[dict[str, Any]]:
             if value == "array":
                 if key == "tasks":
                     task_fields = dict(TOOLS["ssh_execute"]["schema"])
+                    task_fields["continue_on_error"] = "boolean"
                     item["items"] = {"type": "object", "properties": {name: {"type": kind} for name, kind in task_fields.items()}, "required": ["target"], "additionalProperties": False}
                     item["items"]["properties"]["commands"] = {"type": "array", "items": {"type": "string"}}
                 else:
