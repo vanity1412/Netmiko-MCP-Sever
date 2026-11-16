@@ -87,7 +87,12 @@ Client thực hiện initialize rồi tools/list; cần thấy 10 tools. Gọi s
 
 Lỗi CLI giữ `status=CLI_ERROR` và `error_category=cli_error`, bổ sung `error_reason`: `permission_denied` (thiếu quyền), `syntax_error` (cú pháp được nhận diện), `command_failed` (lỗi CLI khác). Lỗi auth SSH vẫn là AUTH_ERROR. Phân loại dựa trên diagnostic CLI/RPC đã nhận diện, vẫn mang tính heuristic và giữ evidence để agent đối chiếu. Lỗi thiếu quyền có prompt hoàn tất không tự đóng session hoặc retry.
 
-Agent áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md), được liên kết từ AGENTS.md: đọc từng kết quả, tránh retry chồng, xử lý câu hỏi/evidence và kiểm chứng mục tiêu sau cấu hình. Client không tự đọc AGENTS.md cần đưa hai file này vào instructions/context của agent. Backend không tự chạy workflow và không thay schema 10 tools, Reader, pool, semaphore hay cơ chế retry hiện có.
+Agent nạp [AGENTS.md](AGENTS.md) và [mcp/WORKFLOW.md](mcp/WORKFLOW.md) khi bắt đầu tác vụ mạng, không đọc lại mỗi lượt. Workflow giữ quyền, mục tiêu, tiêu chí dừng, raw đầy đủ và cách chọn bằng chứng. Chỉ nạp tài liệu sâu theo nhu cầu: [hợp đồng tool](docs/MCP_TOOL_GUIDE.md) khi cần tham số/giới hạn; [evidence/nhật ký](docs/EVIDENCE.md) khi kết luận toàn phạm vi hoặc cần mẫu chi tiết; [phục hồi](docs/RECOVERY.md) khi lỗi/pending/resume; [reporting](docs/REPORTING.md) khi dựng báo cáo FULL. Client không tự đọc AGENTS.md cần đưa hai file cốt lõi vào instructions/context và cho phép agent truy xuất tài liệu liên kết khi cần. Backend không tự nạp/thực thi Markdown; đợt đồng bộ tài liệu này không đổi code/schema 10 tools, raw, Reader, pool, semaphore hay retry.
+
+Nếu client không có công cụ đọc file local, cần cung cấp phần tham chiếu liên quan
+khi phát sinh nhu cầu; không giả định nội dung của một liên kết đã được nạp.
+Khi triển khai hướng dẫn mới, đồng bộ cả AGENTS.md, workflow và tài liệu liên kết;
+nếu instructions đang dùng bản copy thì cập nhật bản copy cùng phiên bản.
 
 ## Credential dùng chung — 1.9.0
 

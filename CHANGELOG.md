@@ -1,5 +1,25 @@
 ## Unreleased — 2026-11-17
 
+- Synchronize agent workflow with current inventory/profile/port metadata,
+  parallel queue scope, string interaction steps, host-key modes and host-wide
+  close semantics. Document full-file search counts versus limited excerpts,
+  zero-based line readers, one-based search lines and UTF-8 byte continuation.
+- Keep a smaller core workflow with conditional tool/evidence/recovery/reporting
+  references. Preserve detailed findings/recovery guidance in linked documents,
+  full raw evidence and FULL inline reports. Clarify completion based on resolved
+  decision-relevant gaps instead of expanding investigation merely because more
+  commands exist. No runtime, ten-tool schema, storage, reader or retry changes.
+- Static context comparison against 83edc75: workflow characters decrease about
+  38.9%; AGENTS plus workflow decrease about 31.4%. These are character counts,
+  not measured model tokens/cost or a live-agent reasoning benchmark.
+- Add executable documentation-contract checks for all ten JSON call examples,
+  local links and full-raw search/long-line/UTF-8 paging behavior without SSH.
+- Stage-five validation: all 411 tests passed in 468.077 seconds with no skips,
+  including three new documentation/evidence contract checks. Runtime source,
+  requirements and frozen input schemas are unchanged from 83edc75. Python 3.10
+  test syntax and diff checks passed. Mock/localhost only; no production SSH,
+  email or live-agent token/cost benchmark.
+
 - Cache reader raw snapshots, cleaned tails and container checks per data revision;
   invalidate before append/callback so partial-write failures retain new evidence.
 - Add a bounded, tree-free XML prefix guard that can only veto completion. Keep

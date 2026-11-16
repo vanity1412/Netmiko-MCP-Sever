@@ -6,6 +6,11 @@ Agent viết phần phân tích kỹ thuật và manifest; script chép nguyên 
 
 Biên soạn từ nhật ký phát hiện theo mcp/WORKFLOW.md: câu hỏi/giả thuyết, nguồn thiết bị/lệnh, bằng chứng, phân tích và quyết định/bước tiếp. Gộp kết quả đơn giản; giải thích bất thường/mâu thuẫn, nguyên nhân/phụ thuộc/tác động và kiểm chứng. Bốn mục Kết luận/Bằng chứng/Hướng xử lý/Chưa xác minh là khung tổ chức, không giới hạn độ dài. Trích dữ kiện quan trọng trong phân tích; toàn output được script chèn tiếp thành các khối CLI có target/command/status/evidence ID.
 
+Mẫu nhật ký và điều kiện kết luận toàn phạm vi ở [EVIDENCE.md](EVIDENCE.md);
+giới hạn search/read ở [MCP_TOOL_GUIDE.md](MCP_TOOL_GUIDE.md). Chỉ đọc các phần cần
+thiết, không đưa toàn raw vào context để kiểm việc script sao chép. Việc tách tài
+liệu không đổi mặc định FULL, raw, HTML hoặc quyền gửi email.
+
 ## Dựng báo cáo
 
 Lưu toàn raw MCP thành file bền vững trước khi output_id hết TTL; giữ cả partial/lỗi. Agent viết analysis.md và manifest, không chép lại raw. Ví dụ manifest (path tương đối cạnh manifest):
