@@ -1,5 +1,10 @@
 # Reader: snapshot cache và XML prefix guard
 
+Junos optional-prep fallback và exact pre-Enter echo guard được mô tả trong
+[JUNOS_PREPARATION.md](JUNOS_PREPARATION.md). Guard chỉ bật trên phiên cần fallback.
+Lỗi prep Junos không kích hoạt refresh driver cache. Worker giữ guard trong chính
+connection sở hữu transport và chuyển diagnostic prep về parent.
+
 Reader cache raw snapshot và kết quả container theo số ký tự đã nhận. Không có
 dữ liệu mới thì không đọc/parse lại spool; dữ liệu mới luôn invalidate snapshot.
 Candidate hash, quiet period tối thiểu 300 ms, polling, checkpoint, cancel, EOF,

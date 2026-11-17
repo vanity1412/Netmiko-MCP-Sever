@@ -1,5 +1,24 @@
 ## Unreleased — 2026-11-17
 
+- Allow Junos optional session prep failures only at a synchronized operational
+  prompt. Keep the shared prompt-continuation guard; resynchronize ambiguous prep
+  with one different read-only probe rather than replaying failed setup commands.
+- Verify exact input before Enter when complete-on-space cannot be disabled.
+  Preserve quoted/repeated whitespace and known repaint controls; reject missing,
+  changed or unsupported echoes without submission. Retain existing pager,
+  timeout, cancellation and session-isolation behavior. Keep all ten tool schemas.
+- Carry skipped-prep diagnostics through direct and probe sessions. Suppress
+  inferred-driver refresh for Junos prep failures. Add mock/localhost regressions
+  for denial, syntax, repaint, completion, pager, timeout and reuse. No production
+  SSH, privilege escalation or persistent configuration changes.
+- Validation: all 434 tests passed in 536.428 seconds without skips, including 16
+  new Junos regressions. The old HEAD reproduces prompt_candidate_continuation at
+  width prep. Five normal loopback cold connections per version show median cold
+  execute 1440.661 -> 1449.657 ms (+0.62%); preparation 1108.818 -> 1108.089 ms.
+  Same one authentication/three prep commands/one show per measurement. All 52
+  Python files pass Python 3.10 syntax; ten frozen schemas and diff check pass.
+  See docs/JUNOS_PREPARATION.md for limits; no live MX/AAA validation is claimed.
+
 - Refine agent guidance for competing hypotheses/refutation, scoped physical and
   logical discovery, bidirectional VRF/AF forwarding and conditional service
   dependencies. Add effective/inherited configuration comparison, sourced minimal

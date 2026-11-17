@@ -117,7 +117,9 @@ ssh_mode mặc định compatible: nhận key mới/đổi, lưu atomic, ghi nh�
 
 Các cờ trên không hoạt động độc lập với `ssh_mode`; `false` không vô hiệu hóa strict. Compatible dùng policy tiếp nhận/lưu key riêng, nên `alt_host_keys=false` không tắt persistence. `ssh_mode` không truyền trực tiếp cho Netmiko. `alt_key_file` tùy chỉnh được giữ và chuẩn hóa thành đường dẫn tuyệt đối; `host_key_store_mode=process` thêm hậu tố PID chỉ trong compatible.
 
-Lỗi đọc/xác minh phản hồi trong các bước preparation Junos và terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang; chỉ che credential khi bật `redaction_enabled=true`; `preparation_command` chỉ rõ lệnh setup. Timeout và chính sách retry không thay đổi.
+Prep Junos tùy chọn có thể fallback khi CLI operational đồng bộ. Khi không tắt được complete-on-space, backend xác minh input chính xác trước Enter. Pager vẫn do reader xử lý. Xem [nguyên nhân, kiểm thử và giới hạn](docs/JUNOS_PREPARATION.md).
+
+Lỗi prep chưa thể phục hồi an toàn và lỗi terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang; chỉ che credential khi bật `redaction_enabled=true`; `preparation_command` chỉ rõ lệnh setup. Prep Junos lỗi không tự refresh driver suy ra từ cache.
 
 Profile/device hỗ trợ read_timeout, prompt_quiet_seconds, timing_quiet_seconds; tham số tool tường minh ưu tiên. Connection options gồm conn_timeout, auth_timeout, banner_timeout, key_file, passphrase, encoding, disable_sha2_fix, disabled_algorithms và ssh_config_file. Credential literal giữ nguyên; chuỗi ${ENV_NAME} nguyên vẹn lấy từ environment. auto_enable=true chủ động gọi enable cho Cisco bằng secret backend; mặc định false.
 
