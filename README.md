@@ -94,6 +94,10 @@ khi phát sinh nhu cầu; không giả định nội dung của một liên kế
 Khi triển khai hướng dẫn mới, đồng bộ cả AGENTS.md, workflow và tài liệu liên kết;
 nếu instructions đang dùng bản copy thì cập nhật bản copy cùng phiên bản.
 
+Audit suy luận, topology/cấu hình và tám tình huống synthetic có nguồn/đáp án:
+[NETWORK_REASONING.md](docs/NETWORK_REASONING.md). Replay test kiểm evidence qua
+MCP, không chứng nhận độ chính xác của model hoặc cấu hình production.
+
 ## Credential dùng chung — 1.9.0
 
 `devices.json` giữ tham số kết nối, `device.csv` chọn profile, `credentials.json` giữ tài khoản. Backend tự tìm file cạnh config; có thể dùng `--credentials-file` hoặc `NETWORK_MCP_CREDENTIALS_FILE` để chỉ tới file dùng chung ngoài repository. Profile ngoài thay trọn bộ auth, giữ cấu hình driver/timeout; file được chỉ định sai sẽ báo rõ, không dùng nhầm global. Các client giữ session pool riêng và cùng đọc một nguồn credential khi khởi động. Xem [hướng dẫn đầy đủ](docs/CREDENTIALS.md).
@@ -123,7 +127,7 @@ Request deadline mặc định 120s, read timeout mặc định 40s. Batch dài 
 
 Reader xử lý paging, giữ partial khi timeout/cancel/EOF, nhận mode prompt trong cùng thiết bị cho Cisco/Junos/Huawei. Banner Cisco chưa đóng và output XML/JSON chưa hoàn chỉnh không được kết thúc chỉ vì gặp một dòng giống prompt. Custom expect chỉ là ranh giới đọc; không được biến prompt thiết bị khác thành thành công.
 
-Dữ liệu đã có trước khi gửi lệnh tiếp theo được giữ trong preceding_output hoặc preceding_output_id, gắn association unattributed, thay vì bị xóa âm thầm. Output dài được lưu theo output_id, đọc bằng các tool dòng/byte/search hiện có. Redaction output tùy chọn; error và audit command vẫn scrub credential.
+Dữ liệu đã có trước khi gửi lệnh tiếp theo được giữ trong preceding_output hoặc preceding_output_id, gắn association unattributed, thay vì bị xóa âm thầm. Output dài được lưu theo output_id, đọc bằng các tool dòng/byte/search hiện có. Output, lỗi và audit tuân theo redaction_enabled; mặc định false giữ nguyên dữ liệu.
 
 Kết quả có prompt không chứng minh cấu hình đúng ý định: validation vẫn là heuristic CLI. Agent cần đọc phản hồi và dùng lệnh kiểm tra trạng thái để xác minh thay đổi thực tế. Prompt/firmware tùy biến ngoài các họ đã hỗ trợ có thể cần expect rõ ràng.
 
@@ -199,7 +203,7 @@ Kết quả thực thi thêm status chuẩn; giữ nguyên ok, error_category, o
 | CANCELLED | Request bị hủy |
 | UNKNOWN | Không thể kết luận kết quả, đặc biệt lệnh cấu hình có thể đã chạy |
 
-fault_status giữ nguyên nhóm nguyên nhân khi status=UNKNOWN. data_state=FULL/PARTIAL/NONE mô tả dữ liệu của attempt hiện tại; execution_state=COMPLETED/AWAITING_INPUT/NOT_SENT/UNCERTAIN/UNKNOWN mô tả độ chắc chắn trao đổi CLI. COMPLETED/SUCCESS không chứng minh cấu hình đã áp dụng đúng ý định; agent vẫn kiểm tra trạng thái thiết bị. previous_attempt giữ bằng chứng trước recovery. Storage failure có thể chỉ trả preview với output_truncated=true nếu không thể lưu dữ liệu lớn.
+fault_status giữ nguyên nhóm nguyên nhân khi status=UNKNOWN. data_state=FULL/PARTIAL/NONE mô tả dữ liệu của attempt hiện tại; execution_state=COMPLETED/AWAITING_INPUT/NOT_SENT/UNCERTAIN/UNKNOWN mô tả độ chắc chắn trao đổi CLI. COMPLETED/SUCCESS không chứng minh cấu hình đã áp dụng đúng ý định; agent vẫn kiểm tra trạng thái thiết bị. previous_attempt giữ bằng chứng trước recovery. Khi lưu output thất bại, response lỗi giữ toàn bộ dữ liệu đã nhận với output_truncated=false; không tự SSH lại để bù lỗi lưu trữ.
 
 Verification bổ sung envelope Junos/Cisco/Huawei và RPC error XML; Error: trong nội dung config/log có header không tự thành lỗi CLI. Vẫn là heuristic, cần kiểm chứng firmware/định dạng cụ thể, không tuyên bố nhận diện mọi CLI error.
 

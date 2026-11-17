@@ -1,0 +1,323 @@
+{
+  "synthetic": true,
+  "cases": [
+    {
+      "id": "wrong_vrf",
+      "question": "BLUE client 192.0.2.10 cannot reach 198.51.100.10. Does the global route prove reachability?",
+      "evidence": [
+        {
+          "id": "wrong_vrf-e1",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show running-config interface GigabitEthernet0/1",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "interface GigabitEthernet0/1\n vrf forwarding BLUE\n ip address 192.0.2.1 255.255.255.0\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "wrong_vrf-e2",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip route 198.51.100.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Routing entry for 198.51.100.0/24\n Known via static\n * 203.0.113.2\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "wrong_vrf-e3",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip route vrf BLUE 198.51.100.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Routing Table: BLUE\n% Network not in table\nPE-A#",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "healthy",
+      "question": "Same BLUE client/destination. Must a static route be added because BLUE has no /24?",
+      "evidence": [
+        {
+          "id": "healthy-e1",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip route vrf BLUE 198.51.100.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Routing Table: BLUE\nRouting entry for 0.0.0.0/0\n * 203.0.113.2\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "healthy-e2",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip cef vrf BLUE exact-route 192.0.2.10 198.51.100.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "192.0.2.10 -> 198.51.100.10 : GigabitEthernet0/2 (203.0.113.2)\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "healthy-e3",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show interfaces GigabitEthernet0/2",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "GigabitEthernet0/2 is up, line protocol is up\nPE-A#",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "missing",
+      "question": "No RT found in this configuration response. Can BLUE be declared to have no RT?",
+      "evidence": [
+        {
+          "id": "missing-e1",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration routing-instances BLUE",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "routing-instances {\n BLUE {\n  instance-type vrf;\n",
+          "expected_status": "PARTIAL"
+        },
+        {
+          "id": "missing-e2",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration groups",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "error: permission denied\nPE-J>",
+          "expected_status": "CLI_ERROR"
+        }
+      ]
+    },
+    {
+      "id": "asymmetry",
+      "question": "HTTPS fails for 192.0.2.10:50000 -> 198.51.100.10:443 in BLUE. Is a new route required?",
+      "evidence": [
+        {
+          "id": "asymmetry-e1",
+          "target": "FW-A",
+          "device_type": "linux",
+          "command": "ip vrf exec BLUE ip route get 198.51.100.10 from 192.0.2.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "198.51.100.10 from 192.0.2.10 via 203.0.113.1 dev eth1\nFW-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "asymmetry-e2",
+          "target": "EDGE",
+          "device_type": "cisco_ios",
+          "command": "show ip cef vrf BLUE exact-route 198.51.100.10 192.0.2.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "198.51.100.10 -> 192.0.2.10 : GigabitEthernet0/3 (203.0.113.6)\nEDGE#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "asymmetry-e3",
+          "target": "EDGE",
+          "device_type": "cisco_ios",
+          "command": "show lldp neighbors detail",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Local Intf: Gi0/3\nSystem Name: FW-B\nManagement Address: 192.0.2.202\nEDGE#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "asymmetry-e4",
+          "target": "FW-B",
+          "device_type": "linux",
+          "command": "cat /var/log/fixture-flow",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "2026-11-17T09:00:00+07:00 vrf=BLUE tcp 198.51.100.10:443 -> 192.0.2.10:50000 SYN-ACK drop=no-session nat=none\nFW-B#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "asymmetry-e5",
+          "target": "FW-A",
+          "device_type": "linux",
+          "command": "cat /run/fixture-session",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "vrf=BLUE tcp 192.0.2.10:50000 -> 198.51.100.10:443 state=SYN-SENT nat=none owner=FW-A\nFW-A#",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "inheritance",
+      "question": "Prepare a minimal Junos proposal for approved service S100 IP MTU 9000; do not apply. Can the shared group be edited?",
+      "evidence": [
+        {
+          "id": "inheritance-e1",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration interfaces xe-0/0/0 | display set",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "set interfaces xe-0/0/0 description S100\nset interfaces xe-0/0/0 mtu 9216\nset interfaces xe-0/0/0 unit 100 vlan-id 100\nset interfaces xe-0/0/0 unit 100 family inet address 192.0.2.1/30\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e2",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration interfaces xe-0/0/0 | display inheritance",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "interfaces {\n xe-0/0/0 {\n  mtu 9216;\n  unit 100 {\n   family inet {\n    ## inherited from group BASE-L3\n    mtu 1500;\n    address 192.0.2.1/30;\n   }\n  }\n }\n}\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e3",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration groups BASE-L3 | display set",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "set groups BASE-L3 interfaces <*> unit <*> family inet mtu 1500\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e4",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show version",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Model: mx204\nJunos: 23.4R2\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e5",
+          "target": "PE-J2",
+          "device_type": "juniper_junos",
+          "command": "show configuration interfaces xe-0/0/1 | display set",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "set interfaces xe-0/0/1 description S101\nset interfaces xe-0/0/1 mtu 9216\nset interfaces xe-0/0/1 unit 101 family inet mtu 9000\nPE-J2>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e6",
+          "target": "DESIGN",
+          "device_type": "linux",
+          "command": "cat /fixture/approved-S100",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Approved S100 and S101: same PE role, MX204 Junos 23.4R2; local per-unit family inet MTU override. S100 xe-0/0/0.100 to CE-J ge-0/0/0.100. IP MTU 9000; BASE-L3 shared by 12 other services must stay 1500.\nDESIGN#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "inheritance-e7",
+          "target": "CE-J",
+          "device_type": "juniper_junos",
+          "command": "show interfaces ge-0/0/0.100 extensive",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Logical interface ge-0/0/0.100\n Protocol inet, MTU: 9000\nCE-J>",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "conflict",
+      "question": "S200 needs a VLAN/VNI/RT. Can the values on PE-OTHER be copied?",
+      "evidence": [
+        {
+          "id": "conflict-e1",
+          "target": "DESIGN",
+          "device_type": "linux",
+          "command": "cat /fixture/S200",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "S200 endpoints PE-A and CE-A; allocation of VLAN/VNI/RT is not approved yet.\nDESIGN#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "conflict-e2",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show running-config interface Vlan200",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "interface Vlan200\n description TENANT-OTHER\n vrf forwarding RED\n ip address 192.0.2.1 255.255.255.0\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "conflict-e3",
+          "target": "PE-OTHER",
+          "device_type": "cisco_ios",
+          "command": "show running-config interface Vlan200",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "interface Vlan200\n description unrelated S999\n vrf forwarding GREEN\nPE-OTHER#",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "mpls",
+      "question": "VPN route is received but inactive. Is LLDP neighbor P1 the VPN remote PE, or must RT be changed?",
+      "evidence": [
+        {
+          "id": "mpls-e1",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show route table BLUE.inet.0 198.51.100.0/24 extensive",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "BLUE.inet.0: 1 destinations, 1 routes\n198.51.100.0/24 BGP Preference: 170\n Next hop: 203.0.113.22\n Inactive reason: Unusable path\n Communities: target:64512:100\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "mpls-e2",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show lldp neighbors detail",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Local interface: xe-0/0/2\nSystem name: P1\nManagement address: 192.0.2.201\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "mpls-e3",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show route table inet.3 203.0.113.22/32 exact",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "inet.3: 0 destinations, 0 routes\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "mpls-e4",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show mpls lsp ingress extensive",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Ingress LSP: to-PE-J2\nTo: 203.0.113.22\nState: Dn\nPE-J>",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "mpls-e5",
+          "target": "PE-J",
+          "device_type": "juniper_junos",
+          "command": "show configuration routing-instances BLUE | display inheritance",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "routing-instances { BLUE { vrf-target target:64512:100; } }\nPE-J>",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    },
+    {
+      "id": "contradiction",
+      "question": "Can route presence at 08:00 and absence at 09:00 be combined as simultaneous evidence of a policy fault?",
+      "evidence": [
+        {
+          "id": "contradiction-e1",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip route vrf BLUE 198.51.100.10",
+          "captured_at": "2026-11-17T08:00:00+07:00",
+          "raw": "Routing Table: BLUE\nRouting entry for 198.51.100.0/24\n * 203.0.113.2\nPE-A#",
+          "expected_status": "SUCCESS"
+        },
+        {
+          "id": "contradiction-e2",
+          "target": "PE-A",
+          "device_type": "cisco_ios",
+          "command": "show ip route vrf BLUE 198.51.100.10",
+          "captured_at": "2026-11-17T09:00:00+07:00",
+          "raw": "Routing Table: BLUE\n% Network not in table\nPE-A#",
+          "expected_status": "SUCCESS"
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,23 @@
 ## Unreleased — 2026-11-17
 
+- Refine agent guidance for competing hypotheses/refutation, scoped physical and
+  logical discovery, bidirectional VRF/AF forwarding and conditional service
+  dependencies. Add effective/inherited configuration comparison, sourced minimal
+  deltas, shared-object impact checks and rollback to the previous inherited state.
+- Correct all ten tool descriptions, especially UTF-8 byte-reader semantics,
+  limited search excerpts and host-wide close. Keep input schemas and executable
+  SSH/session/reader/retry/storage/dispatcher logic unchanged. Correct two stale
+  README statements about redaction and persistence-error evidence retention.
+- Add eight synthetic network scenarios with 30 evidence sources and three MCP
+  replay/fidelity regressions; record engineering assessments and configuration
+  limits in docs/NETWORK_REASONING.md. These verify evidence delivery and a manual
+  walkthrough, not blind model accuracy, production discovery or vendor validation.
+- Validation: all 418 tests passed in 492.979 seconds with no skips on the final
+  source, after an earlier conversation-interrupted run without a final result.
+  Eleven focused evidence/workflow/schema/lock tests passed. All 51 Python files
+  passed Python 3.10 syntax checks; backend AST differs only in descriptions.
+  Mock/localhost only; no production SSH, apply/commit or email.
+
 - Add bounded mock/localhost soak harness with CPU/RSS/thread/handle sampling,
   owned probe-worker measurements and durable hash-verified synthetic evidence.
   Keep warm credential-isolated pools, inject scanner faults, verify prefix-safe

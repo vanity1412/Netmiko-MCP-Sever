@@ -4,11 +4,9 @@ Backend SSH cho NOC/Network Engineering/Operations. Trả lời theo ngôn ngữ
 
 ## Khi làm tác vụ mạng
 
-Áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md), không nạp lại toàn bộ hướng dẫn mỗi bước. Agent tự điều tra theo mục tiêu, chọn CLI, mở rộng nguồn có căn cứ và kiểm chứng kết quả; không dừng sớm hoặc hỏi dữ liệu có thể tự thu thập. Quyền thay đổi theo yêu cầu người dùng, không tự chuyển từ đề xuất sang apply/commit. Giữ nguyên dữ liệu, không tự che; không gửi email/thông báo hoặc dùng dịch vụ cá nhân ngoài phạm vi được yêu cầu. SSH production chỉ khi tác vụ cho phép; test phát triển chỉ mock/localhost.
+Áp dụng [mcp/WORKFLOW.md](mcp/WORKFLOW.md) một lần đầu tác vụ. Agent tự chọn giả thuyết, CLI và thiết bị liên quan từ evidence; không giới hạn vào use case hoặc bộ lệnh có sẵn. Quyền theo yêu cầu người dùng: không tự chuyển điều tra/đề xuất sang apply/commit production, gửi thông báo hoặc dùng dịch vụ cá nhân ngoài phạm vi. SSH production chỉ khi tác vụ cho phép; test phát triển chỉ mock/localhost.
 
-Workflow chỉ rõ khi nào cần nạp hợp đồng tool, evidence/nhật ký, phục hồi hoặc reporting. Giữ các chốt quyền/raw/kiểm chứng trong context; không nạp toàn docs/transcript mặc định. Dừng khi đã đủ bằng chứng đạt mục tiêu và không còn khoảng trống ảnh hưởng quyết định, tiếp tục điều tra khi còn khoảng trống có thể giải quyết trong phạm vi/ngân sách.
-
-Khi tạo báo cáo, dùng [script bundle](docs/REPORTING.md) để chép đầy đủ output CLI inline/render HTML email, không đính kèm ZIP; agent viết phần phân tích và manifest, không viết lại raw bằng model. Theo mục nhật ký phát hiện trong workflow: ghi nguồn, diễn giải và quyết định có ý nghĩa; gộp kết quả đơn giản, phân tích sâu bất thường/mâu thuẫn và tự điều tra tiếp khi bằng chứng chưa đủ.
+Workflow là nguồn chính cho suy luận/topology/cấu hình/kiểm chứng; chỉ nạp tài liệu sâu khi cần. Giữ chốt quyền/raw/kiểm chứng, không nạp toàn docs/transcript mặc định. Kết luận/delta quan trọng phải truy xuất được nguồn, không bịa tham số. Giữ nguyên raw, không tự che. Báo cáo theo [REPORTING.md](docs/REPORTING.md).
 
 ## Cài/chạy
 

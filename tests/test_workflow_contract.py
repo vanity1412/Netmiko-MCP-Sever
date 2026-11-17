@@ -35,7 +35,8 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_local_links_in_core_and_reference_documents_resolve(self):
         files = ['AGENTS.md', 'README.md', 'mcp/WORKFLOW.md', 'docs/EVIDENCE.md',
-                 'docs/RECOVERY.md', 'docs/MCP_TOOL_GUIDE.md', 'docs/REPORTING.md']
+                 'docs/RECOVERY.md', 'docs/MCP_TOOL_GUIDE.md', 'docs/REPORTING.md',
+                 'docs/NETWORK_REASONING.md']
         for filename in files:
             path = ROOT / filename
             text = re.sub(r'```.*?```', '', path.read_text(encoding='utf-8'), flags=re.S)
