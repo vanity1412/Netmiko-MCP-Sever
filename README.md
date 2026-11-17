@@ -175,6 +175,10 @@ python -m unittest discover -s tests -v
 
 Tests gồm protocol, phiên SSH localhost, chế độ cấu hình, câu hỏi/phản hồi, partial output, retry/resume, evidence, tranh chấp storage bằng subprocess thật và stress 500/2.500 thiết bị ảo. Stress đo RAM, CPU, thread/handle, số session/connection và cleanup; kiểm tra timeout, resume, SHA-256 và dữ liệu không lẫn đích. Đây là mock SSH qua scanner thật, không phải benchmark handshake/AAA của hàng nghìn thiết bị thật. Đặt `SSH_STRESS_REPORT` tới file JSON ngoài repository để lưu báo cáo cả hai quy mô. Chưa chạy production.
 
+Soak có giới hạn bằng mock/127.0.0.1, cách đo CPU/RAM parent/worker và kết quả
+session/retry/resume/evidence: [STRESS_SOAK.md](docs/STRESS_SOAK.md). CLI chỉ dùng
+fixture, không nhận inventory/credential production; raw và số đo lưu ngoài Git.
+
 Python wrapper: CLIConnection là tên mới, ReadOnlyConnection giữ để tương thích import cũ nhưng không còn lọc lệnh. Xem docs/ARCHITECTURE.md, docs/SCAN.md, AGENTS.md và CHANGELOG.md.
 
 ## Trạng thái và độ tin cậy — 1.8.0

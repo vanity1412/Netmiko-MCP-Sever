@@ -1,5 +1,26 @@
 ## Unreleased — 2026-11-17
 
+- Add bounded mock/localhost soak harness with CPU/RSS/thread/handle sampling,
+  owned probe-worker measurements and durable hash-verified synthetic evidence.
+  Keep warm credential-isolated pools, inject scanner faults, verify prefix-safe
+  retry/resume, reject corrupt evidence and prohibit uncertain-write replay.
+- Complete isolated 500/2,500-target mock stress, 180-second mock soak (584 cycles,
+  59 fault jobs) and 120-second loopback soak (87 cycles, five bounded recoveries).
+  Retain raw and scope/resource limits in docs/STRESS_SOAK.md. Diagnose closed
+  test-server transport retention separately; do not claim multi-hour leak freedom.
+- Add four short harness regressions including network-free mock guards, loopback
+  worker shutdown and per-process resource sampling. No backend, schema, dependency
+  or deployment-setting changes; mock discovery requires explicit drivers.
+- Stage-six validation: all 415 tests passed in 481.408 seconds with no skips;
+  four focused harness tests passed. Verify 10,052 mock-soak and 385 loopback
+  evidence hashes, plus 118 error/partial payloads byte-for-byte. Both soaks end
+  with zero sessions; the loopback worker is reaped. Python 3.10 syntax and diff
+  checks passed. This is short mock/localhost testing, not production certification.
+- Build and independently verify a FULL local report bundle with 11,158 raw and
+  metadata sources (40,692,098 bytes), preserving excluded-startup diagnostics
+  separately from accepted measurements. Hashes/Markdown/HTML verified; no ZIP,
+  SMTP or device data committed.
+
 - Synchronize agent workflow with current inventory/profile/port metadata,
   parallel queue scope, string interaction steps, host-key modes and host-wide
   close semantics. Document full-file search counts versus limited excerpts,
