@@ -10,23 +10,20 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
 from test_ssh_scenarios import TimelineChannel, VirtualClock
+from test_junos_fallback import JunosChannel, ACKS, CAPS
 
 
 SETUP_COMMANDS = ('set cli screen-width 511', 'set cli complete-on-space off',
                   'set cli screen-length 0')
 
 
-class PreparationChannel(TimelineChannel):
+class PreparationChannel(JunosChannel):
+    prompt = 'noc@router>'
+
     def __init__(self, clock, responses):
-        super().__init__(clock, [], prompt='noc@router>')
-        self.responses = responses
-
-    def _test_channel_read(self, pattern): pass
-    def enter_cli_mode(self): pass
-
-    def write_channel(self, command):
-        super().write_channel(command)
-        self.events = list(self.responses[command.strip()])
+        # Preserve each command's independent response delay; echo is available
+        # before Enter so the adaptive probe exercises the real input guard.
+        super().__init__(clock, responses)
 
 
 class PreparationTimingTests(unittest.TestCase):
@@ -48,8 +45,8 @@ class PreparationTimingTests(unittest.TestCase):
     def test_junos_each_setup_command_can_respond_slowly_within_existing_budget(self):
         for delayed_command in SETUP_COMMANDS:
             with self.subTest(command=delayed_command):
-                responses = {cmd: [(0, 'noc@router>')] for cmd in SETUP_COMMANDS}
-                responses[delayed_command] = [(0, 'setup response\n'), (4.5, 'noc@router>')]
+                responses = {cmd: [(0, ACKS[cmd] + '\nnoc@router>')] for cmd in SETUP_COMMANDS}
+                responses[delayed_command] = [(0, ACKS[delayed_command] + '\n'), (4.5, 'noc@router>')]
                 started = self.clock.now()
                 conn = self.prepare(responses)
                 self.assertGreaterEqual(self.clock.now() - started, 4.5)
@@ -60,10 +57,11 @@ class PreparationTimingTests(unittest.TestCase):
     def test_junos_cli_setup_error_with_valid_prompt_keeps_existing_preparation_contract(self):
         for rejected_command in SETUP_COMMANDS:
             with self.subTest(command=rejected_command):
-                responses = {cmd: [(0, 'noc@router>')] for cmd in SETUP_COMMANDS}
+                responses = {cmd: [(0, ACKS[cmd] + '\nnoc@router>')] for cmd in SETUP_COMMANDS}
                 responses[rejected_command] = [(0, 'error: permission denied\nnoc@router>')]
                 conn = self.prepare(responses)
-                self.assertEqual(conn.writes, [cmd + '\n' for cmd in SETUP_COMMANDS])
+                index = SETUP_COMMANDS.index(rejected_command)
+                self.assertEqual(conn.submitted, list(SETUP_COMMANDS[:index+1]) + ['show cli'])
                 self.assertEqual(conn._network_prompt_text, 'noc@router>')
                 # Preparation readiness must not make a business CLI error SUCCESS.
                 result = self.collector(conn)._result('local', rejected_command,
@@ -78,7 +76,21 @@ class PreparationTimingTests(unittest.TestCase):
         with self.assertRaises(b.CollectionError) as caught:
             JuniperBase.session_preparation(conn)
         self.assertEqual(caught.exception.details['error_category'], 'read_timeout')
-        self.assertEqual(conn.writes, [SETUP_COMMANDS[0] + '\n'])
+        self.assertEqual(conn.writes, [SETUP_COMMANDS[0] + '\n', '\x03'])
+
+    def test_complete_syntax_error_uses_prompt_event_without_echo_deadline(self):
+        started = self.clock.now()
+        conn = self.prepare({SETUP_COMMANDS[0]: [(0, 'set cli screen-width511\n  ^\nsyntax error, expecting <command>.\nnoc@router>')]})
+        self.assertLess(self.clock.now() - started, 1.1)
+        self.assertEqual(conn.submitted, [SETUP_COMMANDS[0], 'show cli'])
+
+    def test_syntax_without_prompt_waits_for_late_completion_within_budget(self):
+        started = self.clock.now()
+        conn = self.prepare({SETUP_COMMANDS[0]: [(0, 'syntax error, expecting <command>.\n'),
+                                                (4.5, 'noc@router>')]})
+        self.assertGreaterEqual(self.clock.now() - started, 4.5)
+        self.assertEqual(conn.submitted, [SETUP_COMMANDS[0], 'show cli'])
+        self.assertNotIn('\x03', conn.writes)
 
     def collector(self, conn):
         c = b.Collector({'defaults': {'output_dir': self.tmp.name, 'session_sweep_seconds': 0},
@@ -118,7 +130,7 @@ class PreparationTimingTests(unittest.TestCase):
                 self.assertIn('bằng chứng', result['output'])
                 self.assertIn('secret-value', result['output'])
                 self.assertEqual(result['preparation_command'], command)
-                self.assertEqual(conn.writes, [command + '\n'])
+                self.assertEqual(conn.writes, [command + '\n'] + (['\x03'] if driver == 'juniper_junos' else []))
 
     def test_unrecognized_question_with_timing_preserves_output_without_success_or_replay(self):
         question = 'Chọn thao tác\nSelect maintenance slot (A/B):'

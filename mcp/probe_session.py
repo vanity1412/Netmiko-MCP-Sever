@@ -64,6 +64,7 @@ class ProbeSession:
             self._network_host_key_persisted = response.get('host_key_persisted')
             self._network_timings_ms = response.get('connection_timings_ms', {})
             self._network_junos_preparation = response.get('junos_preparation', [])
+            self._network_junos_capabilities = response.get('junos_capabilities', {})
         except Exception:
             self.close()
             raise
@@ -123,6 +124,7 @@ class ProbeSession:
         response = self._rpc({'op':'collect','command':command,'timeout':timeout,'pattern':pattern,'quiet':quiet},
                              timeout + .25, checkpoint)
         self._network_command_sent = response.get('command_sent', True)
+        self._network_junos_capabilities = response.get('junos_capabilities', {})
         self._network_preceding_output = response.get('preceding_output', '')
         if response.get('prompt') and not response.get('failure'):
             self._network_prompt_text = response['prompt']
@@ -136,6 +138,7 @@ class ProbeSession:
 
     def close(self):
         self.remote_conn.closed = True
+        self._network_junos_capabilities = {}
         self._reader_stop.set()
         with contextlib.suppress(Exception):
             if self._process.poll() is None:
@@ -183,6 +186,7 @@ def main():
             raise ValueError('CLI prompt could not be verified after redispatch')
         emit({'device_type':result['device_type'],'prompt':prompt,
               'junos_preparation':getattr(conn,'_network_junos_preparation',[]),
+              'junos_capabilities':getattr(conn,'_network_junos_capabilities',{}),
               'connection_timings_ms':getattr(conn,'_network_timings_ms',{}),
               'host_key_persisted':getattr(conn.remote_conn_pre,'_network_host_key_persisted',None)})
         for line in sys.stdin:
@@ -195,6 +199,7 @@ def main():
                     on_data=stream)
                 emit({'streamed_output':True,'pager_spans':getattr(conn,'_network_pager_spans',[]),'failure':failure,'command_sent':getattr(conn,'_network_command_sent',True),
                       'preceding_output':getattr(conn,'_network_preceding_output',''),
+                      'junos_capabilities':getattr(conn,'_network_junos_capabilities',{}),
                       'prompt':getattr(conn,'_network_prompt_text',None)})
                 del output
             else:

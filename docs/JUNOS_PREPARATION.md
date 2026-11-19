@@ -1,106 +1,126 @@
 # Junos optional preparation fallback
 
-Bản sửa cho phép bỏ qua prep tùy chọn khi CLI operational đã đồng bộ. Phiên không
-tắt được complete-on-space phải xác minh chính xác dòng nhập trước Enter. Guard
-prompt/output chung vẫn giữ nguyên. Không truy cập production trong đợt này.
+Bản bổ sung trên `ceb1fc7` giữ echo guard của mốc 434 test. Phạm vi chỉ là
+Junos preparation, capability theo SSH session và regression/benchmark offline.
+Không SSH production, apply cấu hình, đổi driver, commit hoặc push.
 
-## Nguyên nhân đã xác minh
+## Bằng chứng và nguyên nhân
 
-Baseline là `2d483e0`, đồng bộ với origin/main trước khi sửa. Reader lưu hash của
-prompt candidate. Nếu có body sau candidate, reader trả `prompt_candidate_continuation`.
-Chỉ preamble không có body và echo khớp mới được reset candidate. Echo bị biến đổi,
-ack xuất hiện trước repaint hoặc dữ liệu muộn đều có thể giữ candidate cũ.
+Backend cũ chưa đọc capability từ `show cli`, vẫn gửi cả ba prep và có thể coi
+phản hồi không có diagnostic quen thuộc là complete-on-space đã tắt. Probe bị
+sai echo dừng preparation ngay, chưa có cách hủy dòng nhập dở rồi tiếp tục an toàn.
+Echo đúng nhưng bị chia chunk cách nhau hơn 300 ms cũng có thể bị kết luận sai
+là mismatch trước khi hết deadline.
 
-Junos session_preparation hiện coi mọi reader failure là lỗi bắt buộc. Vì vậy SSH
-đã auth vẫn bị chặn trước lệnh nghiệp vụ. Reproducer synthetic trên source HEAD cũ
-thất bại ở width prep. Cùng tình huống trên bản sửa chạy qua probe đồng bộ rồi gửi
-show, không gửi lại width prep.
+Transcript width bị cắt hoặc dính token kèm syntax error và prompt sạch đã qua
+được ở cả mốc 434 lẫn bản bổ sung trong mock. Nó chưa đủ để chứng minh nguyên
+nhân của `junos_echo_mismatch` trên MX204. Các số liệu 590/595 và kết quả generic
+là bằng chứng người dùng cung cấp; chưa được chạy lại hoặc xác nhận độc lập.
 
-Permission/syntax error có prompt trọn vẹn vốn đã được vòng prep cũ bỏ qua, nhưng
-không ghi nhận rằng complete-on-space có thể còn bật. Echo nghiệp vụ cũ là tùy chọn
-và phép so echo gộp whitespace. Cách so đó chưa bảo vệ được nội dung quoted/repeated
-spaces khi prep bị bỏ qua.
+## Hành vi
 
-Đây là nguyên nhân trong backend đã tái hiện. Chưa có transcript raw từ MX bị ảnh
-hưởng để khẳng định permission, autocomplete hay repaint cụ thể gây ra lỗi thực tế.
-Không diễn giải prompt_candidate_continuation thành permission denied tự động.
+- Giữ đường bình thường: ba prep theo thứ tự cũ, cùng deadline, không thêm
+  `show cli` hoặc echo settle khi ACK chuẩn xác nhận từng setting.
+- Khi prep lỗi hoặc ACK chưa xác nhận, probe `show cli` một lần sau boundary
+  operational sạch. Không gửi lại prep đã lỗi. Các prep còn lại được bỏ qua
+  bằng capability đã biết hoặc thay bằng exact echo guard và pager reader.
+  Width chưa biết vẫn được thử một lần trên phiên mới; cách probe sau lỗi
+  tránh thêm round-trip vào mọi phiên Junos bình thường.
+- Chỉ ACK chuẩn, đơn nghĩa hoặc đủ ba trường capability không mâu thuẫn mới
+  xác nhận setting. Bare prompt, phản hồi lạ/bản địa hóa, ACK trộn nội dung,
+  field thiếu/lặp hoặc CLI error không xác nhận setting. Diagnostic chỉ giúp
+  gắn nhãn; quyết định an toàn không phụ thuộc danh sách chuỗi lỗi.
+- `screen-length 1000` vẫn có paging. Complete-on-space còn bật hoặc chưa rõ
+  luôn giữ kiểm echo chính xác trước Enter, kể cả khoảng trắng, quote và pipe.
+  Prefix echo chưa đủ được chờ đến deadline cũ; mismatch thật không gửi Enter.
+- Prep/probe chưa đồng bộ chỉ được hủy bằng tối đa một Ctrl-C cho cả lần prep.
+  Cần cancel echo rõ ràng, đúng operational prompt, không question và ổn định
+  ít nhất 300 ms. Prompt cũ đến trễ hoặc chuỗi `^C` trong payload không đủ.
+  Không có bằng chứng thì dừng; không retry prep hay gửi Enter để chữa mismatch.
+- Syntax error hoàn chỉnh cùng prompt được reader xử lý sau quiet period hiện
+  có, không chờ echo deadline 5 giây. Syntax chưa có prompt vẫn chờ dữ liệu
+  trong ngân sách cũ. Không đổi verifier/deadline chung cho lệnh nghiệp vụ.
+- Probe không xác nhận capability nhưng kết thúc ở boundary an toàn vẫn cho
+  phép lệnh chính đi qua strict echo guard. Lỗi lệnh chính vẫn là CLI_ERROR;
+  prep advisory không biến output thiếu, pager thiếu hoặc echo sai thành SUCCESS.
+- Cache gắn với connection đang sống, gồm width/length/complete-on-space và
+  trạng thái đã prep. Reuse không probe/prep lại; đóng/lỗi reconnect tạo trạng
+  thái mới. Worker chuyển capability về proxy. Lệnh `set cli` tường minh của
+  người dùng invalidate capability và bật guard cho lệnh sau.
+- Giữ nguyên lệnh có `| no-more` do người dùng cung cấp. Không tự nối pipe vì
+  không chứng minh được cú pháp mọi lệnh/quote/pipeline. Các lệnh có match,
+  count, display set, nhiều pipe và lệnh cấu hình giữ nguyên byte; pager reader
+  hiện có tiếp tục thu đủ trang hoặc trả incomplete.
 
-## Thay đổi
+Không sửa authentication, session key/isolation, retry transport, driver selection,
+10 tool schema hoặc cấu hình persistent. Ba lệnh prep chỉ đổi tùy chọn CLI của
+phiên. Transcript prep/probe/resync được giữ trong diagnostic hiện có.
 
-- `mcp/collector_backend.py`: phân loại diagnostic prep permission/syntax/other
-  và echo biến đổi. Chỉ bỏ qua khi prompt operational đúng identity, không pending
-  và transport còn sống. Lỗi timeout/disconnect hoặc prompt khác vẫn dừng.
-- Width/prep có continuation ambiguity cần một probe đọc `show cli` để xác lập
-  boundary mới. Probe xác minh input trước Enter và prompt kết thúc. Response CLI
-  error vẫn có thể chứng minh boundary, không chứng minh setting đã được áp dụng.
-  Không gửi lại prep lỗi và không nới guard chung.
-- Khi bỏ qua complete-on-space hoặc phải resync, gửi nguyên command chưa kèm Enter.
-  So chính xác echo, kể cả whitespace/quotes/Unicode. Chỉ gửi Enter nếu dòng nhập
-  đã xác minh. Không tự sửa abbreviation, xóa khoảng trắng hay gõ lại command.
-- Guard echo chỉ hiểu CR, backspace và ANSI màu/erase-to-end đã định nghĩa. Netmiko
-  giữ nguyên các control này trong bước kiểm input rồi khôi phục các cờ normalize.
-  Echo wrap/control không hỗ trợ, mismatch hoặc timeout đều fail closed và đóng
-  transport trước cleanup. Raw CLI chuẩn hóa vẫn được giữ theo hợp đồng hiện có.
-- Khi bỏ qua screen-length, dùng pager reader hiện có. Thiếu trang/prompt hoặc
-  timeout không thành SUCCESS. `junos_preparation` giữ diagnostic/raw của prep đã
-  bỏ qua. Đây là metadata bổ sung, không đổi 10 input schema.
-- Prep Junos thất bại không kích hoạt refresh driver suy ra từ cache. Cơ chế retry
-  transport của lệnh đọc và retry của scanner giữ nguyên.
-- `mcp/probe_session.py`: chuyển diagnostic prep từ worker về parent. Echo guard
-  tiếp tục chạy trong worker đang sở hữu chính kết nối đó.
-- `tests/test_junos_fallback.py`: thêm ca mock/localhost cho prep bình thường,
-  permission/syntax, ambiguity/resync, echo sai/mất dấu cách, quoted whitespace,
-  Unicode, CR repaint, pager, timeout và reuse direct/probe.
+## Kiểm thử và benchmark
 
-Đường bình thường giữ ba prep và cách gửi command cũ. Guard pre-Enter chỉ thêm
-khoảng settle 300 ms khi phiên cần fallback. Không thay credential, host-key policy,
-worker limit hoặc cấu hình persistent. Cần restart MCP để nạp source mới.
+Kết quả của mốc 434: 434/434 PASS trong 536,428 giây; localhost cold execute
+1440,661 → 1449,657 ms, tăng 0,62%. Đây là số đo lịch sử, không phải kết quả của
+bản bổ sung.
 
-## Kiểm thử và thời gian
+Benchmark bản bổ sung so với `ceb1fc7`, năm cold connection localhost mỗi bản:
 
-Toàn suite đạt **434/434 test trong 536,428 giây**, không failure hoặc skip.
-16 regression mới đạt trong 41,550 giây ở lượt focused. 52 file Python đạt kiểm
-tra cú pháp Python 3.10. Schema 10 tool khớp bản đóng băng, diff check đạt.
-Log full suite nằm ngoài Git tại TEMP, tên `junos-fallback-full-dlltgkli.log`.
-
-Các regression prep/prompt cũ đã đạt 21 test. Các regression mới được chạy bằng
-mock clock và SSH server chỉ bind 127.0.0.1. Server echo bytes trước Enter, cho phép
-kiểm tra lệnh sai không được submit. Direct và probe dùng một authentication khi
-reuse. Thử pager kiểm cả trang cuối nhận đủ và trường hợp không có trang cuối.
-
-Đo normal cold connection dùng cùng Python/Netmiko, localhost server và ba ack prep
-chuẩn. Mỗi bản có năm kết nối mới, lấy median. Cold execute gồm connect/prep và một
-show version. Không bao gồm RSA key generation. Source baseline/current và JSON
-số đo nằm ngoài Git trong TEMP, thư mục `junos-fallback-bench-0rzmu9_s`.
-
-| Median, 5 cold connections mỗi bản | HEAD trước sửa | Bản sửa |
+| Median | Mốc 434 | Bản bổ sung |
 | --- | ---: | ---: |
-| Cold execute | 1440,661 ms | 1449,657 ms |
-| Connect + prepare | 1124,904 ms | 1133,590 ms |
-| Riêng Netmiko preparation | 1108,818 ms | 1108,089 ms |
+| Cold execute | 1444,293 ms | 1437,464 ms |
+| Connect + prepare | 1129,910 ms | 1116,120 ms |
+| Riêng preparation | 1109,328 ms | 1106,610 ms |
 
-Cold execute tăng khoảng 9 ms, tương đương 0,62% trong fixture. Mỗi lượt chỉ có
-ba prep và một show version, một authentication. Bản source được đo khớp byte với
-backend dùng cho kiểm thử cuối. Không thêm probe hoặc echo settle ở đường bình thường.
+Cold execute chênh −0,47%; chưa đủ để kết luận tăng tốc. Mỗi mẫu giữ một auth,
+ba prep và một show, không probe. Chạy tuần tự, không pin CPU; suite offline
+cũng chạy cùng máy nên có nhiễu scheduler. SHA-256 backend sau benchmark khớp
+source được dùng cho lượt suite cuối.
 
-Số đo localhost chỉ phát hiện overhead ở fixture bình thường. Không đại diện cho
-RTT, AAA, tải MX hoặc thời gian trên production. Các lượt trước/sau chạy tuần tự,
-không pin CPU. Chênh lệch nhỏ có thể do scheduler. Không suy percentile từ năm mẫu.
+Mock clock, năm mẫu mỗi tình huống (prep + một show): đường bình thường giữ
+1200 → 1200 ms; width bị cắt/dính token với syntax + prompt sạch giữ 5/5 ở cả
+hai bản, 1200 → 1500 ms do probe/echo guard bổ sung. Ca tiêm lỗi echo của probe
+sau prompt continuation: mốc 434 dừng an toàn 0/5 ở 650 ms; bản bổ sung hủy input
+rồi chạy show đúng 5/5 ở 1550 ms. Đây là thời gian ảo và lỗi tiêm tổng hợp,
+không phải kết quả của năm MX204 thật hay benchmark cả 595 thiết bị.
 
-## Giới hạn
+Hai kiểm chứng SSH localhost bổ sung đạt với cả `juniper_junos` và worker
+`autodetect`: tiêm echo sai cho `show cli` trước Enter, hủy bằng Ctrl-C, xác nhận
+prompt sạch, chạy hai show đúng và reuse một authentication. Probe sai chưa hề
+được submit. Log của hai ca này cũng nằm trong thư mục TEMP trên.
 
-Bản này giữ phạm vi của mốc 434 test. Chưa bao gồm cơ chế "setting chưa xác nhận"
-cho mọi phản hồi lạ hoặc bản địa hóa; phần tổng quát hóa sau mốc đó đã được bỏ.
-
-Quiet period không chứng minh thiết bị sẽ không gửi dữ liệu trễ tùy ý. Guard
-không phải terminal emulator đầy đủ. Phiên fallback có echo bị wrap, control không
-hỗ trợ hoặc không echo sẽ bị từ chối an toàn. Chưa kiểm chứng firmware MX thật,
-quyền của tài khoản noc-net hoặc transcript lỗi thực. Không tự đổi driver, nâng
-quyền, apply cấu hình hoặc gửi thông báo để xử lý các trường hợp chưa rõ.
+Suite cuối đạt **452/452 test trong 546,032 giây**, không failure hoặc skip:
+giữ toàn bộ 434 ca của baseline và bổ sung 18 ca. Trong đó 34 ca mock/timing
+đạt riêng trước lượt full; các ca localhost direct/worker đều đạt trong suite.
+Schema của cả 10 tool khớp hợp đồng đóng băng và 52 file Python đạt kiểm tra
+cú pháp Python 3.10. Diff check đạt. Test/log/JSON benchmark nằm
+ngoài Git trong TEMP (`junos-adaptive-20261118-_t_lups6`); log suite là
+`junos-adaptive-full-final-20261118.log`. Fixture chỉ dùng dữ liệu tổng hợp và SSH
+server bind 127.0.0.1. ACK trong fixture Junos bình thường được làm rõ theo
+phản hồi chuẩn; bare/unknown/mixed ACK có test từ chối riêng.
 
 Chạy lại:
 
 ```text
 python -m unittest discover -s tests -p test_junos_fallback.py -v
+python -m unittest discover -s tests -p test_preparation_timing.py -v
 python -m unittest discover -s tests -v
 ```
+
+Sau lượt full 452 test, bổ sung hai regression lâu dài cho rủi ro resync/cache:
+continuation hoặc question đến trong cửa sổ chờ sau cancel/prompt phải bị từ
+chối; lệnh sau `set cli` trên session reuse phải qua exact echo guard, echo sai
+không được Enter. Toàn nhóm mock/timing hiện tại đạt **36/36 trong 0,644 giây**.
+Không đổi backend trong lượt kiểm tra này; chưa chạy lại full suite 454 test.
+Các test dữ liệu muộn chỉ kiểm chứng lịch phát đã mô phỏng, không bảo đảm không
+có dữ liệu đến sau cửa sổ quan sát.
+
+## Giới hạn
+
+Chưa nghiệm thu 5 MX204 bằng juniper_junos hoặc benchmark 595 thiết bị thật.
+Quiet period không chứng minh thiết bị sẽ không gửi dữ liệu trễ tùy ý. Guard
+không phải terminal emulator đầy đủ; echo wrap/control không hỗ trợ hoặc mất
+cancel echo có thể khiến phiên bị từ chối an toàn. Phản hồi bản địa hóa chưa
+được xác nhận giữ guard, không được suy là prep thành công.
+
+Probe/cancel không phản hồi có thể dùng hết deadline riêng hiện có; chỉ lỗi đã
+hoàn chỉnh mới fail-fast. Nhánh fallback có thêm chi phí kiểm chứng an toàn.
+Số đo localhost/mock không đại diện RTT, AAA, firmware hoặc tải MX production.

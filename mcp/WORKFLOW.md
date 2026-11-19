@@ -133,7 +133,9 @@ hay che. Phân biệt dữ liệu thật, mô phỏng và test hướng dẫn v�
 Đọc [REPORTING.md](../docs/REPORTING.md) khi dựng báo cáo: agent viết phân tích và
 manifest, script chép đủ raw/nhật ký/cấu hình liên quan, mặc định FULL inline
 Markdown/HTML/email, không ZIP. Kiểm tra hash/metadata và vùng render có mục tiêu,
-không nạp lại toàn report để kiểm sao chép. Không gửi thật nếu chưa có quyền.
+không nạp lại toàn report để kiểm sao chép. Nếu yêu cầu có gửi email, chạy
+`python email/send_report.py <bundle>/report.md` sau khi kiểm tra bundle và báo
+trạng thái SMTP theo [hướng dẫn email](../email/README.md).
 
 Client phải cung cấp AGENTS.md và workflow; backend không tự nạp/thực thi Markdown.
 Giữ quy tắc/kết quả cần thiết, truy xuất lại nguồn khi có câu hỏi mới.

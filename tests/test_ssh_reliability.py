@@ -344,6 +344,10 @@ class LocalSSHServer:
                     channel.sendall(b'\b\b\b\b\b\b\b\b        \b\b\b\b\b\b\b\b\r\nsecond-page\r\nrouter#')
                     paging = False
                     data = data.replace(' ', '', 1)
+                if getattr(self, 'cancel_input', False) and '\x03' in data:
+                    buffer = ''
+                    channel.sendall(('^C\r\n' + self.prompt).encode())
+                    continue
                 buffer += data.replace('\r', '\n')
                 while '\n' in buffer:
                     command, buffer = buffer.split('\n', 1)
@@ -363,6 +367,11 @@ class LocalSSHServer:
                                 channel.sendall((reply + '\r\n' + self.prompt).encode())
                             finally:
                                 channel.settimeout(.1)
+                    elif command in {'set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'}:
+                        ack = {'set cli screen-width 511': 'Screen width set to 511',
+                               'set cli complete-on-space off': 'Disabling complete-on-space',
+                               'set cli screen-length 0': 'Screen length set to 0'}[command]
+                        channel.sendall((ack + '\r\n' + self.prompt).encode())
                     elif command.startswith(('terminal width ', 'terminal length ', 'screen-length ', 'set cli ')):
                         channel.sendall(('\r\n' + self.prompt).encode())
                     elif command == 'uname -s':

@@ -31,17 +31,17 @@ Bundle mới chứa summary.md (phân tích), source_manifest.json, report.md, r
 
 Đích phải là thư mục mới; file thiếu/hash sai/ID sai hoặc trùng làm hủy lần dựng, không sửa nguồn. Sau render, xác minh hash/metadata và vùng trình bày cần thiết; không nạp lại toàn thư vào AI để kiểm sao chép. Kiểm tra chất lượng phân tích riêng trước render, truy xuất thêm evidence khi luận cứ chưa đủ.
 
-## Gửi email ở OpenCode
+## Gửi email sau khi hoàn thành báo cáo
 
-Sender triển khai nhận bundle/report.md, xác minh Markdown/HTML/raw rồi tạo MIME plain + HTML không attachment. SMTP settings/recipient/credential và retry/outbox vẫn theo triển khai; không đổi hoặc xóa trạng thái unknown/sending. Dedup ràng buộc recipient, subject và toàn body. Chỉ gửi thật theo quyền đã có; test dùng dry-run:
+Khi yêu cầu có gửi email, hoàn thành và kiểm tra bundle FULL rồi chạy sender với `bundle/report.md`. Sender xác minh Markdown, HTML và raw trước khi tạo thư UTF-8 có bản văn bản và HTML. Xem cấu hình SMTP và cách xử lý kết quả gửi trong [hướng dẫn email](../email/README.md).
 
 ```powershell
-python output/email-notification/send_report.py output/INC-001/bundle/report.md --dry-run --preview preview.eml --html-preview preview.html
+python email/send_report.py output/INC-001/bundle/report.md
 ```
 
 SUMMARY còn là chế độ lưu trữ ZIP tường minh để tương thích, không phải luồng email. Sender từ chối bundle SUMMARY cũ với hướng dẫn dựng lại FULL; không âm thầm gửi thiếu output hoặc đính kèm ZIP. Không chỉnh hash để gửi lại artifact đã sửa; dựng bundle mới từ nguồn gốc. File/email cũ không tự thay đổi.
 
-Sender là thành phần triển khai riêng, không chứa trong Git công khai. Có thể dùng verified_html(report) cho tích hợp khác. Không đổi SSH/backend hay 10 tools. Không commit inventory, credentials hoặc evidence thật.
+Thêm `--dry-run` để tạo bản xem trước tại chỗ. Kiểm thử sender dùng chế độ này hoặc SMTP giả lập.
 
 ## Kiểm chứng
 

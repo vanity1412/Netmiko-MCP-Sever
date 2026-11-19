@@ -1,4 +1,5 @@
 # Local deployment data and integrations: never publish with MCP source
+/email/smtp-settings.json
 /input/
 /runtime/
 /temp/

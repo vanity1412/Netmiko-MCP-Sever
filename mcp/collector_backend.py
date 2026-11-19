@@ -17,6 +17,7 @@ import functools
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import sys
 import subprocess
@@ -37,6 +38,8 @@ from telemetry import (PhaseMetrics, WorkQueueMetrics, measured_phase, time_conn
 import tempfile
 
 VERSION = "1.9.1"
+# Local, backwards-compatible reader patch; public MCP tool schemas are unchanged.
+JUNOS_READER_PATCH = "2026-11-19.1"
 MAX_INLINE = 200_000
 MAX_TASKS = 100
 MAX_COMMANDS = 1000
@@ -47,6 +50,11 @@ KNOWN_KEYS = {"host", "port", "device_type", "username", "password", "secret", "
 
 
 _TOFU_LOCK = threading.Lock()
+_JUNOS_ECHO_INCOMPLETE = object()
+_PREPARATION_CONTEXT = threading.local()
+_JUNOS_TRACE_LOCK = threading.Lock()
+_JUNOS_TRACE_QUEUE = None
+_JUNOS_TRACE_THREAD = None
 PAGER_RE = re.compile(r'(?i)(?:Press any key to continue \(Q to quit\)|--More-- or \(q\)uit|-- More --, next page: Space, next line: Enter, quit: Control-C|<--- More --->|--- MORE ---|---- More ----|---\(more[^\r\n)]*\)---|--\s*More\s*--(?:[ \t]*\(\d+%\))?)')
 CONFIRM_RE = re.compile(r'(?i)(?:\[(?:yes/no|y/n|confirm)\]|\((?:yes/no|y/n)\))')
 
@@ -224,6 +232,25 @@ def classify_error(exc, stage='unknown'):
         category = 'invalid_input'
     return {'error': type(exc).__name__, 'error_category': category,
             'error_stage': stage, 'retryable': retry}
+
+
+@contextlib.contextmanager
+def preparation_request_context(checkpoint):
+    """Scope a caller's budget to synchronous Netmiko preparation only.
+
+    Worker processes retain their existing parent-enforced budget. A nested
+    connection must restore, never leak, the previous thread's callback.
+    """
+    previous = getattr(_PREPARATION_CONTEXT, 'checkpoint', None)
+    _PREPARATION_CONTEXT.checkpoint = checkpoint
+    try:
+        yield
+    finally:
+        if previous is None:
+            with contextlib.suppress(AttributeError):
+                del _PREPARATION_CONTEXT.checkpoint
+        else:
+            _PREPARATION_CONTEXT.checkpoint = previous
 
 
 # Stable, machine-readable reasons for failures that are not CLI syntax errors.
@@ -629,13 +656,117 @@ def pending_interaction(text):
     return bool(re.fullmatch(r'(?i)(?:(?:enter|retype|confirm)\s+)?(?:(?:old|new|current)\s+)?(?:password|passphrase)\s*:|press\s+(?:enter|return|any key)\s+to\s+continue[.:]?', line))
 
 
+def _junos_trace_writer(pending):
+    """Best-effort stderr only; a blocked diagnostic pipe never blocks SSH.
+
+    Use the descriptor directly: a daemon must not hold Python's buffered
+    stderr lock during interpreter shutdown. Never join/flush on a request.
+    """
+    while True:
+        record = pending.get()
+        try:
+            wire = (json.dumps(record, ensure_ascii=True) + '\n').encode('ascii')
+            while wire:
+                written = os.write(2, wire)
+                if written <= 0:
+                    return
+                wire = wire[written:]
+        except Exception:
+            return  # Diagnostics are optional; do not restart a failed sink.
+
+
+def _junos_trace_enqueue(record):
+    global _JUNOS_TRACE_QUEUE, _JUNOS_TRACE_THREAD
+    try:
+        with _JUNOS_TRACE_LOCK:
+            if _JUNOS_TRACE_QUEUE is None:
+                _JUNOS_TRACE_QUEUE = queue.Queue(maxsize=64)
+                _JUNOS_TRACE_THREAD = threading.Thread(target=_junos_trace_writer,
+                    args=(_JUNOS_TRACE_QUEUE,), name='junos-diagnostic-trace', daemon=True)
+                _JUNOS_TRACE_THREAD.start()
+            pending = _JUNOS_TRACE_QUEUE
+            alive = _JUNOS_TRACE_THREAD is not None and _JUNOS_TRACE_THREAD.is_alive()
+        if not alive:
+            return False
+        pending.put_nowait(record)
+        return True
+    except Exception:
+        return False
+
+
+def _junos_trace_event(conn, direction, data):
+    """Record actual RX bytes / attempted TX bytes; never alter channel I/O.
+
+    Opt-in traces may include command/output secrets. They are bounded and
+    lossy on saturation; truncated/dropped records are not wire completeness.
+    """
+    state = getattr(conn, '_network_junos_trace', None)
+    if state is None:
+        return
+    try:
+        if not isinstance(data, bytes):
+            return
+        if state['events'] >= 256 or state['bytes'] >= 65536:
+            return
+        size = min(len(data), 2048, 65536 - state['bytes'])
+        state['events'] += 1
+        state['bytes'] += size
+        record = {'trace': 'junos_channel', 'patch': JUNOS_READER_PATCH,
+            'session_id': state['session_id'], 'event': state['events'],
+            'command_index': state.get('command_index', 0),
+            'phase': getattr(conn, '_network_junos_trace_phase', 'preparation'),
+            'monotonic': round(time.monotonic(), 6), 'direction': direction,
+            'length': len(data), 'data_repr': repr(data[:size]),
+            'truncated': size < len(data),
+            'budget_exhausted': state['events'] >= 256 or state['bytes'] >= 65536,
+            'dropped_before': state['dropped']}
+        if not _junos_trace_enqueue(record):
+            state['dropped'] += 1
+    except Exception:
+        pass  # A diagnostic failure must never change command execution.
+
+
+def _install_junos_trace(conn, channel):
+    if getattr(conn, '_network_junos_trace_checked', False):
+        return
+    if not (str(getattr(conn, 'device_type', '')).startswith('juniper_junos')
+            or getattr(conn, '_network_junos_preparing', False)):
+        return
+    conn._network_junos_trace_checked = True
+    if os.environ.get('GOOSE_TRACE_JUNOS') != '1':
+        return
+    targets = {item.strip() for item in os.environ.get('GOOSE_TRACE_JUNOS_TARGET', '').split(',') if item.strip()}
+    if targets and str(getattr(conn, 'host', '')) not in targets:
+        return
+    # Read the environment once per connection, not on every empty poll.
+    try:
+        from netmiko.channel import write_bytes
+        original = channel.write_channel
+        conn._network_junos_trace = {'session_id': uuid.uuid4().hex[:12],
+            'events': 0, 'bytes': 0, 'dropped': 0, 'command_index': 0}
+
+        def traced_write(data):
+            try:
+                _junos_trace_event(conn, 'TX_ATTEMPT', write_bytes(data, encoding=channel.encoding))
+            except Exception:
+                pass
+            return original(data)  # Preserve send errors and partial-send uncertainty.
+
+        channel.write_channel = traced_write
+    except Exception:
+        conn._network_junos_trace = None
+
+
 def preserve_channel_encoding(conn):
     """Keep multibyte characters across SSH packets on this channel only."""
     channel = getattr(conn, 'channel', None)
-    if channel is None or getattr(channel, '_network_incremental_reader', False):
+    if channel is None:
         return
     from netmiko.channel import SSHChannel, MAX_BUFFER, ReadException
     if not isinstance(channel, SSHChannel):
+        return
+    _install_junos_trace(conn, channel)
+    if getattr(channel, '_network_incremental_reader', False):
         return
     import codecs
     decoder = codecs.getincrementaldecoder(channel.encoding)(errors='ignore')
@@ -648,6 +779,8 @@ def preserve_channel_encoding(conn):
         data = channel.remote_conn.recv(MAX_BUFFER)
         if not data:
             raise ReadException('Channel stream closed by remote device.')
+        if getattr(conn, '_network_junos_trace', None) is not None:
+            _junos_trace_event(conn, 'RX', data)
         return decoder.decode(data)
 
     channel.read_buffer = read_buffer
@@ -837,7 +970,12 @@ def junos_input_line(raw):
     while index < len(raw):
         char = raw[index]
         if char == '\x1b':
-            match = re.match(r'\x1b\[([0-9;]*)([mK])', raw[index:])
+            rest = raw[index:]
+            # SSH reads can end anywhere, including inside a supported CSI.
+            # Missing bytes are not proof of a mismatched or unsupported echo.
+            if re.fullmatch(r'\x1b(?:\[[0-9;]*)?', rest):
+                return _JUNOS_ECHO_INCOMPLETE
+            match = re.match(r'\x1b\[([0-9;]*)([mK])', rest)
             if not match:
                 return None
             if match[2] == 'K':
@@ -901,8 +1039,26 @@ def junos_verified_write(conn, command, deadline, checkpoint, on_data=None):
             return raw, 'junos_echo_channel_closed'
         if time.monotonic() - last_data >= .3:
             line = junos_input_line(raw)
-            if line not in {command, prompt + ' ' + command, prompt + command}:
+            if line is _JUNOS_ECHO_INCOMPLETE:
+                time.sleep(min(.01, max(0, deadline - time.monotonic())))
+                continue
+            expected = {command, prompt + ' ' + command, prompt + command}
+            if line not in expected and (not raw or (line is not None and any(
+                    value.startswith(line) for value in expected))):
+                # A slow, still valid prefix is not a mismatched command. Keep
+                # receiving within the original deadline, without sending Enter.
+                time.sleep(min(.01, max(0, deadline - time.monotonic())))
+                continue
+            if line not in expected:
                 return raw, 'junos_echo_mismatch'
+            if checkpoint:
+                try:
+                    checkpoint()
+                except Exception as exc:
+                    exc._network_echo_output = raw
+                    raise
+            if time.monotonic() >= deadline:
+                return raw, 'junos_echo_timeout'
             conn._network_command_sent = True
             try:
                 conn.write_channel(getattr(conn, 'RETURN', '\n'))
@@ -960,7 +1116,13 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         pattern = device_pattern
     try:
         preserve_channel_encoding(conn)
+        trace_state = getattr(conn, '_network_junos_trace', None)
+        trace_phase = 'preparation' if getattr(conn, '_network_junos_preparing', False) else 'command'
+        if trace_state is not None:
+            trace_state['command_index'] += 1
+            conn._network_junos_trace_phase = trace_phase + '_drain'
         # Drop a buffered old prompt/login banner before sending this command.
+        drained = False
         for _ in range(16):
             if checkpoint:
                 checkpoint()
@@ -968,9 +1130,20 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 raise TimeoutError('Command read timed out before send')
             stale = conn.read_channel()
             if not stale:
+                drained = True
                 break
             conn._network_preceding_output += stale
+        if not drained:
+            # Never attribute the next old chunk/prompt to the new command.
+            # Preparation may attempt its one controlled resync; ordinary
+            # callers will quarantine this connection through read_failure.
+            raise CollectionError({'error': 'ChannelNotQuiescent',
+                'error_category': 'output_verification', 'error_stage': 'command',
+                'error_reason': 'pre_send_buffer_not_quiet', 'retryable': False,
+                'command_sent': False, 'command_echo_verified': False})
         if getattr(conn, '_network_junos_verify_echo', False) and command.strip():
+            if trace_state is not None:
+                conn._network_junos_trace_phase = trace_phase + '_echo'
             # Netmiko normally turns a repaint CR into LF and may strip cursor
             # controls. Keep them only while verifying the unsubmitted input.
             preserved = {name: getattr(conn, name) for name in
@@ -996,8 +1169,12 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 conn._network_pager_spans = []
                 return output, failure
         else:
+            if trace_state is not None:
+                conn._network_junos_trace_phase = trace_phase + '_submit'
             conn._network_command_sent = True
             conn.write_channel(conn.normalize_cmd(command))
+        if trace_state is not None:
+            conn._network_junos_trace_phase = trace_phase + '_output'
         normalized_command = ' '.join(str(command).split())
         # Match the whole echoed line, never an arbitrary 60-character payload prefix.
         echo_body = r'[ \t]+'.join(re.escape(part) for part in normalized_command.split())
@@ -1100,6 +1277,13 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
             if re.match(r'^hostname\s+', command.strip(), re.I):
                 conn._network_prompt_root = prompt
             conn._network_prompt_regex = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
+    if (hasattr(conn, '_network_junos_capabilities')
+            and not getattr(conn, '_network_junos_preparing', False)
+            and re.match(r'^\s*set\s+cli\b', command)):
+        # Session-local preferences may have changed through an explicit user
+        # command. Never retain a stale "autocomplete off" capability.
+        conn._network_junos_capabilities = {}
+        conn._network_junos_verify_echo = True
     return output, failure
 
 
@@ -1190,6 +1374,286 @@ def install_tolerant_width():
     BaseConnection.set_terminal_width = set_width
 
 
+def junos_cli_capabilities(output, prompt):
+    """Only complete, unambiguous show-cli fields establish capabilities."""
+    fields = {'screen_width': [], 'screen_length': [], 'complete_on_space': []}
+    ignored = {'', prompt, 'show cli', prompt + ' show cli', prompt + 'show cli'}
+    for line in output.splitlines():
+        line = line.strip()
+        if line in ignored or re.fullmatch(r'\{(?:master|backup|primary|secondary)(?::\d+)?\}', line):
+            continue
+        if not line.startswith('CLI '):
+            return {}
+        # A malformed version of a known field must not be ignored beside a
+        # contradictory, well-formed value that could disable the echo guard.
+        recognized = False
+        for label, pattern in (
+                ('screen_width', r'CLI screen-width set to (\d{1,6})'),
+                ('screen_length', r'CLI screen-length set to (\d{1,6})'),
+                ('complete_on_space', r'CLI complete-on-space set to (on|off)')):
+            match = re.fullmatch(pattern, line)
+            if match:
+                fields[label].append(match[1])
+                recognized = True
+        if not recognized and re.match(r'^CLI (?:screen-width|screen-length|complete-on-space)\b', line):
+            return {}
+    if not all(len(values) == 1 for values in fields.values()):
+        return {}
+    width, length = int(fields['screen_width'][0]), int(fields['screen_length'][0])
+    if not (1 <= width <= 65535 and 0 <= length <= 65535):
+        return {}
+    return {'screen_width': width, 'screen_length': length,
+            'complete_on_space': fields['complete_on_space'][0] == 'on',
+            'paging_disabled': length == 0}
+
+
+def junos_resync(conn, prompt, timeout=5, checkpoint=None):
+    """One preparation-only Ctrl-C, never Enter, with positive cancel evidence."""
+    deadline, last_data = time.monotonic() + timeout, time.monotonic()
+    buffer, candidate = OutputBuffer(), None
+    pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
+    failure = {'error_category': 'output_verification', 'error_reason': 'junos_resync_failed',
+               'error_stage': 'preparation', 'retryable': False}
+    previous_phase = getattr(conn, '_network_junos_trace_phase', 'preparation')
+    try:
+        if checkpoint:
+            deadline = min(deadline, time.monotonic() + checkpoint())
+        if time.monotonic() >= deadline:
+            return '', failure
+        conn._network_junos_trace_phase = 'resync'
+        conn.write_channel('\x03')
+        while time.monotonic() < deadline:
+            if checkpoint:
+                checkpoint()
+            data = conn.read_channel()
+            if data:
+                buffer.append(data)
+                last_data = time.monotonic()
+            if dead_session(conn):
+                break
+            if data or candidate is not None:
+                text = clean_terminal(buffer.value())
+                # A late old prompt alone is not evidence of cancellation.
+                cancelled = bool(re.search(r'(?m)^(?:' + re.escape(prompt)
+                    + r'[^\n]*)?\^C[ \t]*\r?$', text))
+                if cancelled and ending_matches(pattern, text) and not any(pending_interaction(line) for line in text.splitlines()):
+                    digest = hashlib.sha256(text.rstrip().encode('utf-8')).digest()
+                    if candidate is None:
+                        candidate = digest
+                    if time.monotonic() - last_data >= .3:
+                        if candidate == digest:
+                            if checkpoint:
+                                checkpoint()
+                            if time.monotonic() >= deadline:
+                                break
+                            return text, None
+                        break
+            time.sleep(min(.01, max(0, deadline - time.monotonic())))
+        if checkpoint:
+            checkpoint()
+        return clean_terminal(buffer.value()), failure
+    except Exception as exc:
+        details = classify_error(exc, 'preparation')
+        category = details.get('error_category')
+        details.update(error_stage='preparation', retryable=False,
+            error_reason=ERROR_REASON_BY_CATEGORY.get(category, 'junos_resync_failed')
+            if category in {'deadline', 'cancelled'} else 'junos_resync_failed')
+        return clean_terminal(buffer.value()), details
+    finally:
+        conn._network_junos_trace_phase = previous_phase
+        buffer.close()
+
+
+def junos_initial_prompt(conn, checkpoint):
+    """Keep Netmiko's mode handling and check the budget at each channel poll."""
+    from netmiko.base_connection import BaseConnection
+
+    if checkpoint is None or not isinstance(conn, BaseConnection):
+        conn._test_channel_read(pattern=r"[%>$#]")
+        conn.enter_cli_mode()
+        return last_prompt(conn.find_prompt())
+
+    read, write = conn.read_channel, conn.write_channel
+    overrides = {name: conn.__dict__[name] for name in ('read_channel', 'write_channel')
+                 if name in conn.__dict__}
+    with contextlib.closing(OutputBuffer()) as evidence:
+        def checked_read():
+            checkpoint()
+            data = read()
+            if data:
+                evidence.append(data)
+            return data
+
+        def checked_write(data):
+            checkpoint()
+            return write(data)
+
+        conn.read_channel, conn.write_channel = checked_read, checked_write
+        try:
+            conn._test_channel_read(pattern=r"[%>$#]")
+            conn.enter_cli_mode()
+            while checked_read():
+                pass
+            checked_write(conn.RETURN)
+            prompt = conn.read_until_pattern(
+                pattern=r'^[^\r\n]*[>%$#][ \t]*\r?$', re_flags=re.MULTILINE)
+            checkpoint()
+            return last_prompt(prompt)
+        except Exception as exc:
+            failure = classify_error(exc, 'preparation')
+            raise preparation_error(failure, clean_terminal(evidence.value()), '[initial prompt]') from exc
+        finally:
+            for name in ('read_channel', 'write_channel'):
+                if name in overrides:
+                    setattr(conn, name, overrides[name])
+                else:
+                    delattr(conn, name)
+
+
+def junos_prepare_session(conn):
+    """Keep the normal path; discover capabilities once after advisory failure."""
+    checkpoint = getattr(_PREPARATION_CONTEXT, 'checkpoint', None)
+    def remaining():
+        if checkpoint is None:
+            return 5
+        try:
+            return min(5, checkpoint())
+        except Exception as exc:
+            exc._network_error_stage = 'preparation'
+            raise
+
+    def reset_session(prompt):
+        # Keep the legacy worker/fake connection call shape when no caller
+        # budget is available; direct requests carry the real checkpoint.
+        if checkpoint is None:
+            return junos_resync(conn, prompt)
+        return junos_resync(conn, prompt, checkpoint=checkpoint)
+
+    def prep_read(command, pattern):
+        if checkpoint is None:
+            return read_cli_output(conn, command, 5, pattern)
+        output = ''
+        try:
+            output, failure = read_cli_output(conn, command, remaining(), pattern, checkpoint=checkpoint)
+            # The local read deadline can fire between checkpoint polls.
+            checkpoint()
+            return output, failure
+        except (TimeoutError, concurrent.futures.CancelledError) as exc:
+            failure = classify_error(exc, 'preparation')
+            failure['error_reason'] = ERROR_REASON_BY_CATEGORY.get(failure['error_category'], 'command_read_interrupted')
+            return output, failure
+
+    remaining()
+    if getattr(conn, '_network_junos_prepared', False) and not dead_session(conn):
+        return
+    if os.environ.get('GOOSE_TRACE_JUNOS') == '1':
+        # Authentication is already complete here. Observe existing I/O only,
+        # including initial prompt discovery; never open a second reader.
+        preserve_channel_encoding(conn)
+    prompt = junos_initial_prompt(conn, checkpoint)
+    remaining()
+    if not prompt or not prompt.endswith('>'):
+        raise preparation_error({'error_category': 'output_verification',
+            'error_reason': 'junos_preparation_not_operational', 'retryable': False}, '', '[initial prompt]')
+    pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
+    conn._network_prompt_text, conn._network_prompt_regex = prompt, pattern
+    conn._network_junos_verify_echo = False
+    conn._network_junos_capabilities = {}
+    conn._network_junos_preparation = []
+    conn._network_junos_preparing = True
+    adaptive, probed, resynced = False, False, False
+    steps = [('set cli screen-width 511', 'screen_width', 511, 'Screen width set to 511'),
+             ('set cli complete-on-space off', 'complete_on_space', False, 'Disabling complete-on-space'),
+             ('set cli screen-length 0', 'screen_length', 0, 'Screen length set to 0')]
+    try:
+        for command, field, desired, ack in steps:
+            caps = conn._network_junos_capabilities
+            if adaptive:
+                known = field in caps and caps[field] == desired
+                conn._network_junos_preparation.append({'command': command, 'skipped': True,
+                    'command_sent': False, 'reason': 'already_verified' if known else
+                    'using_echo_guard' if field == 'complete_on_space' else 'using_reader_fallback'})
+                continue
+            # Existing three-command fast path: no extra probe or round-trip.
+            verify_echo = conn._network_junos_verify_echo
+            conn._network_junos_verify_echo = False
+            try:
+                reply, failure = prep_read(command, pattern)
+            finally:
+                conn._network_junos_verify_echo = verify_echo
+            ignored = {'', prompt, command, prompt + ' ' + command, prompt + command}
+            body = [line.strip() for line in reply.splitlines() if line.strip() not in ignored
+                    and not re.fullmatch(r'\{(?:master|backup|primary|secondary)(?::\d+)?\}', line.strip())]
+            if not failure and body == [ack]:
+                caps[field] = desired
+                if field == 'screen_length':
+                    caps['paging_disabled'] = True
+                if field == 'complete_on_space':
+                    conn._network_junos_verify_echo = False
+                continue
+            caps.pop(field, None)
+            if field == 'complete_on_space':
+                conn._network_junos_verify_echo = True
+            diagnostic = re.search(r'(?im)^\s*(?:error:|syntax error|unknown command|permission denied|access denied)[^\n]*', reply)
+            reason = ('permission_denied' if diagnostic and PERMISSION_DENIAL_RE.search(diagnostic[0]) else
+                      'syntax_error' if diagnostic and CLI_SYNTAX_RE.search(diagnostic[0]) else
+                      (failure or {}).get('error_reason') or 'unconfirmed_response')
+            record = {'command': command, 'output': reply, 'skipped': True, 'reason': reason}
+            conn._network_junos_preparation.append(record)
+            fatal = failure and failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
+            clean = ending_matches(pattern, reply) and not any(pending_interaction(line) for line in reply.splitlines()) and not dead_session(conn) and (
+                failure is None or failure.get('error_reason') == 'prompt_candidate_continuation')
+            if fatal:
+                raise preparation_error(failure, reply, command)
+            if not clean:
+                resynced = True
+                reset, reset_failure = reset_session(prompt)
+                record['resync_output'] = reset
+                if reset_failure:
+                    fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
+                    error = preparation_error(reset_failure if fatal_reset else (failure or reset_failure), reply, command)
+                    error.details['resync_output'] = reset
+                    raise error
+            adaptive = True
+            # Probe once on this SSH session, after a verified boundary. If the
+            # probe cannot establish settings, the business echo guard stays on.
+            if not probed:
+                probed = True
+                conn._network_junos_verify_echo = caps.get('complete_on_space') is not False
+                probe, probe_failure = prep_read('show cli', pattern)
+                probe_record = {'command': 'show cli', 'output': probe, 'reason': 'capability_probe'}
+                conn._network_junos_preparation.append(probe_record)
+                # A partial/contradictory probe must not preserve an earlier
+                # autocomplete-off assumption from the preparation response.
+                caps.clear()
+                if probe_failure or not ending_matches(pattern, probe) or any(pending_interaction(line) for line in probe.splitlines()) or dead_session(conn):
+                    if resynced or (probe_failure or {}).get('error_category') in {'cancelled', 'deadline', 'storage_error'}:
+                        reset, reset_failure = '', probe_failure or {'error_category': 'output_verification',
+                            'error_reason': 'junos_resync_failed', 'retryable': False}
+                    else:
+                        resynced = True
+                        reset, reset_failure = reset_session(prompt)
+                    probe_record['resync_output'] = reset
+                    if reset_failure:
+                        fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
+                        error = preparation_error(reset_failure if fatal_reset else (probe_failure or reset_failure), reply, command)
+                        error.details['junos_preparation'] = conn._network_junos_preparation
+                        error.details['resync_output'] = reset
+                        raise error
+                else:
+                    caps.update(junos_cli_capabilities(probe, prompt))
+                conn._network_junos_verify_echo = caps.get('complete_on_space') is not False
+        conn.base_prompt = prompt[:-1]
+        conn._network_prompt_text, conn._network_prompt_regex = prompt, pattern
+        conn._network_junos_prepared = True
+    except Exception:
+        conn._network_junos_capabilities = {}
+        conn._network_junos_prepared = False
+        raise
+    finally:
+        conn._network_junos_preparing = False
+
+
 def install_tolerant_preparation():
     """Configure vendor preparation without allocating a Collector or storage."""
     install_tolerant_width()
@@ -1202,65 +1666,18 @@ def install_tolerant_preparation():
     if getattr(JuniperBase, '_goose_tolerant_prep', False):
         return
 
-    def tolerant_session_preparation(conn: Any) -> None:
-        conn._test_channel_read(pattern=r"[%>$#]")
-        conn.enter_cli_mode()
-        prompt = last_prompt(conn.find_prompt())
-        if not prompt:
-            raise ValueError('Junos did not return a valid CLI prompt before setup')
-        pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
-        conn._network_prompt_text = prompt
-        conn._network_prompt_regex = pattern
-        conn._network_junos_verify_echo = False
-        conn._network_junos_preparation = []
-        for command in ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0'):
-            # Preparation strings are complete session-local commands. Keep the
-            # old send path; a failed optional setting is never resent.
-            verify_echo = conn._network_junos_verify_echo
-            conn._network_junos_verify_echo = False
-            reply, failure = read_cli_output(conn, command, 5, pattern)
-            conn._network_junos_verify_echo = verify_echo
-            diagnostic = re.search(r'(?im)^\s*(?:error:|syntax error|unknown command|permission denied|access denied)[^\n]*', reply)
-            reason = ('permission_denied' if diagnostic and PERMISSION_DENIAL_RE.search(diagnostic[0]) else
-                      'syntax_error' if diagnostic and CLI_SYNTAX_RE.search(diagnostic[0]) else
-                      'command_failed' if diagnostic else None)
-            echoed = re.findall(r'(?m)^(?:' + re.escape(prompt) + r'[ \t]*)?(set[^\n]*)$', reply)
-            if not reason and echoed and any(line.rstrip() != command for line in echoed):
-                reason = 'echo_mismatch'
-            ambiguous = bool(failure and failure.get('error_reason') == 'prompt_candidate_continuation')
-            safe_prompt = (prompt.endswith('>') and ending_matches(pattern, reply)
-                           and not pending_interaction(reply) and not dead_session(conn))
-            if failure and not (ambiguous and safe_prompt):
-                raise preparation_error(failure, reply, command)
-            if not ending_matches(pattern, reply):
-                raise preparation_error({'error': 'PreparationPromptError', 'error_category': 'output_verification',
-                                         'error_reason': 'preparation_prompt_not_verified',
-                                         'retryable': False}, reply, command)
-            if reason or ambiguous:
-                if not safe_prompt:
-                    raise preparation_error({'error_category': 'output_verification',
-                        'error_reason': 'junos_preparation_not_operational', 'retryable': False}, reply, command)
-                conn._network_junos_preparation.append({'command': command, 'output': reply,
-                    'skipped': True, 'reason': reason or 'prompt_candidate_continuation'})
-                if command == 'set cli complete-on-space off' or ambiguous:
-                    conn._network_junos_verify_echo = True
-                if ambiguous:
-                    # One different read-only probe establishes a fresh boundary
-                    # using exact pre-Enter echo. Never relax the shared reader.
-                    probe, probe_failure = read_cli_output(conn, 'show cli', 5, pattern)
-                    if probe_failure or not ending_matches(pattern, probe) or dead_session(conn):
-                        err = preparation_error(probe_failure or {'error_category': 'output_verification',
-                            'error_reason': 'junos_resync_failed', 'retryable': False}, reply, command)
-                        err.details['resync_output'] = probe
-                        raise err
-                    conn._network_junos_preparation[-1]['resync_output'] = probe
-            elif command == 'set cli complete-on-space off':
-                conn._network_junos_verify_echo = False
-        conn.base_prompt = prompt[:-1]
-        conn._network_prompt_text = prompt
-        conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"\s*$"
+    def prepare(conn):
+        try:
+            junos_prepare_session(conn)
+        except Exception:
+            if getattr(_PREPARATION_CONTEXT, 'checkpoint', None) is not None:
+                # Netmiko disconnects failed constructors. Skip its CLI
+                # cleanup on this unusable session so it cannot send input
+                # or wait for another prompt after a preparation failure.
+                conn.cleanup = lambda: None
+            raise
 
-    JuniperBase.session_preparation = tolerant_session_preparation
+    JuniperBase.session_preparation = prepare
     JuniperBase._goose_tolerant_prep = True
 
 
@@ -1803,7 +2220,7 @@ class Collector:
         started = time.monotonic()
         auto_enable = params.pop('_auto_enable', False)
         try:
-            with connection_measurements() as connection_timings:
+            with preparation_request_context(self._checkpoint), connection_measurements() as connection_timings:
                 conn = self._connect(**params)
         except Exception as exc:
             exc._network_timings_ms = dict(connection_timings)
@@ -1962,6 +2379,9 @@ class Collector:
         conn = entry.get("conn")
         entry["conn"] = None
         if conn is not None:
+            if hasattr(conn, '_network_junos_capabilities'):
+                conn._network_junos_capabilities = {}
+                conn._network_junos_prepared = False
             if not graceful or getattr(conn, '_network_awaiting_input', False):
                 # Driver cleanup may write "exit". Never send that as a reply
                 # to an unfinished command, pager or confirmation question.
@@ -2028,6 +2448,8 @@ class Collector:
             details['preparation_command'] = self.redact_output(details.get('preparation_command', ''))
             if 'resync_output' in details:
                 details['resync_output'] = self.redact_output(details['resync_output'])
+            if 'junos_preparation' in details:
+                details['junos_preparation'] = self.redact_structured(details['junos_preparation'])
         details['command_sent'] = getattr(exc, '_network_command_sent', True if getattr(exc,'_network_keep_session',False) else None) if details['error_stage'] in {'command','persistence','parsing'} else False
         if details.get('command'):
             details['replay_safe'] = is_replay_safe(details['command'])

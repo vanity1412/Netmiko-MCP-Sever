@@ -19,6 +19,8 @@ else:
 from test_ssh_scenarios import VirtualClock
 
 PREP = ('set cli screen-width 511', 'set cli complete-on-space off', 'set cli screen-length 0')
+ACKS = dict(zip(PREP, ('Screen width set to 511', 'Disabling complete-on-space', 'Screen length set to 0')))
+CAPS = "CLI complete-on-space set to on\nCLI screen-length set to 1000\nCLI screen-width set to 511\nCLI terminal is 'vt100'"
 
 
 class JunosChannel:
@@ -29,6 +31,7 @@ class JunosChannel:
         self.clock, self.responses, self.echo = clock, responses or {}, echo or (lambda cmd: cmd)
         self.events, self.writes, self.submitted = [], [], []
         self.pending, self.page = '', None
+        self.cancel_input = False
         self.remote_conn = SimpleNamespace(closed=False, eof_received=False)
     def _test_channel_read(self, **kw): pass
     def enter_cli_mode(self): pass
@@ -38,6 +41,11 @@ class JunosChannel:
     def normalize_cmd(self, cmd): return cmd.rstrip() + self.RETURN
     def write_channel(self, text):
         self.writes.append(text)
+        if text == '\x03':
+            if self.cancel_input:
+                self.pending = ''
+                self.events.append((self.clock.now(), '^C\n' + self.prompt))
+            return
         if text == ' ' and self.page is not None:
             self.events.extend((self.clock.now()+delay, data) for delay, data in self.page)
             self.page = None
@@ -47,7 +55,7 @@ class JunosChannel:
             prefix = '\n' if self.pending else ''
             self.pending = ''
             self.submitted.append(command)
-            response = self.responses.get(command, 'Disabling complete-on-space' if command == PREP[1] else 'DATA')
+            response = self.responses.get(command, ACKS.get(command, CAPS if command == 'show cli' else 'DATA'))
             if isinstance(response, str):
                 response = [(0, response + '\n' + self.prompt)]
             self.events.extend((self.clock.now()+delay, prefix + data if i == 0 else data)
@@ -58,6 +66,7 @@ class JunosChannel:
             if echo is not None:
                 self.events.append((self.clock.now(), echo))
     def read_channel(self):
+        self.events.sort(key=lambda event: event[0])
         if self.events and self.events[0][0] <= self.clock.now():
             return self.events.pop(0)[1]
         return ''
@@ -72,7 +81,7 @@ class JunosFallbackTests(unittest.TestCase):
         b.install_tolerant_preparation()
     def prepare(self, responses=None, echo=None):
         from netmiko.juniper.juniper import JuniperBase
-        conn = JunosChannel(self.clock, responses, echo)
+        conn = JunosChannel(self.clock, responses, (lambda cmd: cmd if cmd == 'show cli' else echo(cmd)) if echo else None)
         JuniperBase.session_preparation(conn)
         return conn
     def collector(self, conn):
@@ -99,22 +108,22 @@ class JunosFallbackTests(unittest.TestCase):
                 c = self.collector(conn)
                 result = c.execute('mx', 'show version')
                 self.assertTrue(result['ok'], result)
-                self.assertEqual([x['reason'] for x in result['junos_preparation']], [reason]*3)
+                self.assertEqual([x['reason'] for x in result['junos_preparation']], [reason, 'capability_probe', 'using_echo_guard', 'using_reader_fallback'])
                 self.assertEqual(conn.submitted.count('show version'), 1)
-                self.assertEqual(conn.submitted[:3], list(PREP))
+                self.assertEqual(conn.submitted[:2], [PREP[0], 'show cli'])
     def test_ambiguous_width_resyncs_once_without_replaying_prep(self):
         events = [(0, 'Screen width set to 511\n' + JunosChannel.prompt),
                   (.05, '\nset cli screen-width 511\nerror: permission denied\n' + JunosChannel.prompt)]
         conn = self.prepare({PREP[0]: events})
-        self.assertEqual(conn.submitted, [PREP[0], 'show cli', PREP[1], PREP[2]])
+        self.assertEqual(conn.submitted, [PREP[0], 'show cli'])
         self.assertTrue(self.collector(conn).execute('mx', 'show version')['ok'])
-        self.assertIn('resync_output', conn._network_junos_preparation[0])
+        self.assertEqual(conn.submitted.count('show cli'), 1)
 
     def test_resync_wrong_echo_never_sends_enter_or_show_version(self):
         events = [(0, 'Screen width set to 511\n' + JunosChannel.prompt),
                   (.05, '\nlate response\n' + JunosChannel.prompt)]
         with self.assertRaises(b.CollectionError) as caught:
-            self.prepare({PREP[0]: events}, echo=lambda cmd: 'show clisomething')
+            b.junos_prepare_session(JunosChannel(self.clock, {PREP[0]: events}, echo=lambda cmd: 'show clisomething'))
         self.assertEqual(caught.exception.details['error_reason'], 'junos_echo_mismatch')
         self.assertIn('late response', caught.exception.details['output'])
     def test_spaces_quotes_and_unicode_preserved_before_enter(self):
@@ -163,7 +172,192 @@ class JunosFallbackTests(unittest.TestCase):
     def test_mutated_prep_echo_enables_strict_business_echo(self):
         conn = self.prepare({PREP[1]: 'setcli complete-on-space off'})
         self.assertTrue(conn._network_junos_verify_echo)
-        self.assertEqual(conn._network_junos_preparation[0]['reason'], 'echo_mismatch')
+        self.assertEqual(conn._network_junos_preparation[0]['reason'], 'unconfirmed_response')
+
+
+    def test_truncated_and_joined_width_fail_fast_then_probe_once(self):
+        for malformed in ('set cli screen-width', 'set cli screen-width511'):
+            with self.subTest(command=malformed):
+                started = self.clock.now()
+                conn = self.prepare({PREP[0]: malformed + '\n                      ^\nsyntax error, expecting <command>.'})
+                self.assertLess(self.clock.now() - started, 1.1)
+                self.assertEqual(conn.submitted, [PREP[0], 'show cli'])
+                self.assertEqual(conn._network_junos_capabilities['screen_width'], 511)
+                self.assertFalse(conn._network_junos_capabilities['paging_disabled'])
+                self.assertTrue(conn._network_junos_verify_echo)
+                result = self.collector(conn).execute('mx', 'show version')
+                self.assertTrue(result['ok'], result)
+                self.assertTrue(result['command_echo_verified'])
+                self.assertEqual(conn.writes[-2:], ['show version', '\n'])
+
+    def test_unknown_localized_bare_and_mixed_ack_do_not_confirm_settings(self):
+        for response in ('', 'không được hỗ trợ', 'Screen width set to 511\nstrange response'):
+            with self.subTest(response=response):
+                conn = self.prepare({PREP[0]: response, 'show cli': 'CLI terminal is vt100'})
+                self.assertEqual(conn._network_junos_capabilities, {})
+                self.assertTrue(conn._network_junos_verify_echo)
+                self.assertTrue(self.collector(conn).execute('mx', 'show version')['ok'])
+                self.assertEqual(conn.submitted[:2], [PREP[0], 'show cli'])
+
+    def test_capability_parser_rejects_missing_conflicting_and_error_body(self):
+        parsed = b.junos_cli_capabilities(CAPS + '\n' + JunosChannel.prompt, JunosChannel.prompt)
+        self.assertEqual(parsed, {'screen_width': 511, 'screen_length': 1000,
+                                 'complete_on_space': True, 'paging_disabled': False})
+        for output in (CAPS.replace('CLI screen-width set to 511', ''),
+                       CAPS + '\nCLI complete-on-space set to off',
+                       CAPS + '\nerror: unexpected', CAPS.replace('511', '999999')):
+            with self.subTest(output=output):
+                self.assertEqual(b.junos_cli_capabilities(output, JunosChannel.prompt), {})
+
+    def test_verified_off_capability_skips_remaining_prep_and_echo_guard(self):
+        conn = self.prepare({PREP[0]: 'syntax error', 'show cli': CAPS.replace('set to on', 'set to off').replace('1000', '0')})
+        self.assertFalse(conn._network_junos_verify_echo)
+        self.assertTrue(conn._network_junos_capabilities['paging_disabled'])
+        self.assertEqual(conn.submitted, [PREP[0], 'show cli'])
+        self.assertEqual([x['reason'] for x in conn._network_junos_preparation[-2:]], ['already_verified']*2)
+
+    def test_partial_probe_cannot_keep_prior_autocomplete_off_assumption(self):
+        conn = self.prepare({PREP[2]: 'syntax error', 'show cli': 'CLI complete-on-space set to on'})
+        self.assertEqual(conn._network_junos_capabilities, {})
+        self.assertTrue(conn._network_junos_verify_echo)
+
+    def test_syntax_without_clean_prompt_stops_without_business_command(self):
+        conn = JunosChannel(self.clock, {PREP[0]: [(0, 'syntax error\nnoc@other>')]})
+        with self.assertRaises(b.CollectionError) as caught:
+            b.junos_prepare_session(conn)
+        self.assertFalse(self.collector(conn).failure_result(caught.exception, 'mx', 'show version')['command_sent'])
+        self.assertEqual(conn.submitted, [PREP[0]])
+        self.assertEqual(conn.writes.count('\x03'), 1)
+        self.assertNotIn('show cli', conn.submitted)
+
+    def test_single_ctrl_c_cancels_pending_probe_without_enter(self):
+        conn = JunosChannel(self.clock, {PREP[0]: 'syntax error'}, echo=lambda cmd: 'showcli')
+        conn.cancel_input = True
+        b.junos_prepare_session(conn)
+        self.assertEqual(conn.submitted, [PREP[0]])  # Probe was typed, never entered.
+        self.assertEqual(conn.pending, '')
+        self.assertEqual(conn.writes[-2:], ['show cli', '\x03'])
+        conn.echo = lambda cmd: cmd
+        self.assertTrue(self.collector(conn).execute('mx', 'show version')['ok'])
+        self.assertEqual(conn.submitted, [PREP[0], 'show version'])
+
+    def test_late_old_prompt_without_cancel_ack_does_not_resync(self):
+        conn = JunosChannel(self.clock)
+        conn.events = [(self.clock.now() + .1, conn.prompt)]
+        _, failure = b.junos_resync(conn, conn.prompt, timeout=1)
+        self.assertEqual(failure['error_reason'], 'junos_resync_failed')
+        self.assertEqual(conn.writes, ['\x03'])
+
+    def test_pending_question_with_prompt_is_not_a_clean_boundary(self):
+        conn = JunosChannel(self.clock, {PREP[0]: 'Continue? [yes/no]\n' + JunosChannel.prompt})
+        with self.assertRaises(b.CollectionError):
+            b.junos_prepare_session(conn)
+        self.assertEqual(conn.submitted, [PREP[0]])
+        self.assertNotIn('show cli', conn.submitted)
+        self.assertEqual(conn._network_junos_capabilities, {})
+
+    def test_cancel_marker_inside_payload_cannot_verify_resync(self):
+        conn = JunosChannel(self.clock)
+        conn.events = [(self.clock.now() + .1, 'description contains ^C text\n' + conn.prompt)]
+        _, failure = b.junos_resync(conn, conn.prompt, timeout=1)
+        self.assertIsNotNone(failure)
+
+    def test_resync_rejects_late_continuation_after_cancel_prompt(self):
+        for continuation in ('\nlate output\n' + JunosChannel.prompt,
+                             '\nContinue? [yes/no]'):
+            with self.subTest(continuation=continuation):
+                conn = JunosChannel(self.clock)
+                conn.cancel_input = True
+                conn.events = [(self.clock.now() + .1, continuation)]
+                output, failure = b.junos_resync(conn, conn.prompt, timeout=1)
+                self.assertIsNotNone(failure)
+                self.assertIn(continuation.strip(), output)
+                self.assertEqual(conn.writes, ['\x03'])
+                self.assertEqual(conn.submitted, [])
+
+    def test_slow_prefix_echo_is_not_declared_mismatch_before_deadline(self):
+        conn = self.prepare({PREP[0]: 'syntax error'})
+        def delayed_echo(command):
+            conn.events.append((self.clock.now() + .7, command[5:]))
+            return command[:5]
+        conn.echo = delayed_echo
+        result = self.collector(conn).execute('mx', 'show version', read_timeout=2)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(conn.submitted.count('show version'), 1)
+
+    def test_echo_after_deadline_never_causes_enter_or_success(self):
+        conn = self.prepare({PREP[0]: 'syntax error'})
+        def late_echo(command):
+            conn.events.append((self.clock.now() + 1.1, command))
+            return None
+        conn.echo = late_echo
+        result = self.collector(conn).execute('mx', 'show version', read_timeout=1)
+        self.assertFalse(result['ok']); self.assertFalse(result['command_sent'])
+        self.assertNotIn('show version', conn.submitted)
+        self.assertNotIn('\n', conn.writes[-1:])
+
+    def test_session_capabilities_reused_then_cleared_at_disconnect(self):
+        conn = self.prepare({PREP[0]: 'syntax error'})
+        writes = list(conn.writes)
+        b.junos_prepare_session(conn)
+        self.assertEqual(conn.writes, writes)
+        c = self.collector(conn)
+        self.assertTrue(c.execute('mx', 'show version')['ok'])
+        self.assertTrue(c.execute('mx', 'show version')['session_reused'])
+        self.assertEqual(conn.submitted.count('show cli'), 1)
+        c.shutdown()
+        self.assertEqual(conn._network_junos_capabilities, {})
+        self.assertFalse(conn._network_junos_prepared)
+        fresh = self.prepare()
+        self.assertEqual(fresh.submitted, list(PREP))
+
+    def test_user_cli_preference_change_invalidates_session_capabilities(self):
+        conn = self.prepare()
+        result = self.collector(conn).execute('mx', 'set cli complete-on-space on')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(conn._network_junos_capabilities, {})
+        self.assertTrue(conn._network_junos_verify_echo)
+
+    def test_cli_preference_change_guards_next_command_on_reused_session(self):
+        for correct_echo in (True, False):
+            with self.subTest(correct_echo=correct_echo):
+                conn = self.prepare()
+                c = self.collector(conn)
+                self.assertTrue(c.execute('mx', 'set cli complete-on-space on')['ok'])
+                before = list(conn.submitted)
+                conn.echo = lambda cmd: cmd if correct_echo else cmd.replace(' ', '')
+                result = c.execute('mx', 'show version')
+                self.assertTrue(result['session_reused'])
+                if correct_echo:
+                    self.assertTrue(result['ok'], result)
+                    self.assertTrue(result['command_echo_verified'])
+                    self.assertEqual(conn.writes[-2:], ['show version', '\n'])
+                else:
+                    self.assertFalse(result['ok'])
+                    self.assertFalse(result['command_sent'])
+                    self.assertEqual(result['error_reason'], 'junos_echo_mismatch')
+                    self.assertEqual(conn.submitted, before)
+                    self.assertEqual(conn.writes[-1], 'show version')
+
+    def test_pipes_quotes_explicit_no_more_and_config_are_not_rewritten(self):
+        for command in ('show interfaces | no-more', 'show route | match "a | b" | count',
+                        'show configuration | display set | match "a  b"',
+                        'show interfaces | match "no-more"', 'set interfaces lo0 description "a  b"'):
+            with self.subTest(command=command):
+                conn = self.prepare({PREP[0]: 'syntax error'})
+                result = self.collector(conn).execute('mx', command)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(conn.writes[-2:], [command, '\n'])
+                self.assertEqual(conn.submitted[-1], command)
+
+    def test_probe_error_is_advisory_but_business_error_is_not_success(self):
+        conn = self.prepare({PREP[0]: 'unfamiliar error', 'show cli': 'syntax error',
+                             'show version': 'syntax error'})
+        result = self.collector(conn).execute('mx', 'show version')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error_category'], 'cli_error')
+        self.assertTrue(result['command_sent'])
+        self.assertTrue(result['output_complete'])
 
 
 
@@ -180,6 +374,8 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
         from test_ssh_reliability import RealSSHTests
         RealSSHTests.setUp(self)
         self.server.prompt = 'noc@router>'
+        self.server.cancel_input = True
+        self.server.responses['show cli'] = CAPS
         self.server.responses.update({cmd: 'error: permission denied' for cmd in PREP})
         self.server.responses['show version'] = 'Junos: 23.4R2'
         original = paramiko.Channel.recv
@@ -204,18 +400,59 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
         for _ in range(2):
             result = c.execute('local', 'show version', read_timeout=3)
             self.assertTrue(result['ok'], result)
-            self.assertEqual(len(result['junos_preparation']), 3)
+            self.assertEqual(len(result['junos_preparation']), 4)
         self.assertEqual(self.server.auth_attempts, 1)
         self.assertEqual(self.server.commands.count('show version'), 2)
-        for cmd in PREP: self.assertEqual(self.server.commands.count(cmd), 1)
+        self.assertEqual(self.server.commands.count(PREP[0]), 1)
+        self.assertEqual(self.server.commands.count('show cli'), 1)
+        for cmd in PREP[1:]: self.assertNotIn(cmd, self.server.commands)
+    def test_all_three_prep_rejected_still_collects_complete_paged_show_version(self):
+        self.server.responses.update(dict(zip(PREP, (
+            'set cli screen-width511\n  ^\nsyntax error, expecting <command>.',
+            'error: permission denied', 'unrecognized CLI preparation option'))))
+        first_page = 'Hostname: LAB-MX\nModel: mx204'
+        last_page = 'Junos: 23.4R2\nEND-OF-SHOW-VERSION'
+        def pages(channel):
+            channel.sendall((first_page.replace('\n', '\r\n') + '\r\n---(more)---').encode())
+            channel.settimeout(3)
+            self.assertEqual(channel.recv(1), b' ')
+            channel.sendall(('\r\n' + last_page.replace('\n', '\r\n')
+                             + '\r\n' + self.server.prompt).encode())
+        self.server.responses['show version'] = pages
+        result = self.collector('juniper_junos').execute('local', 'show version', read_timeout=4)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertTrue(result['command_sent'])
+        self.assertTrue(result['command_echo_verified'])
+        self.assertTrue(result['output_complete'])
+        body = result['output'][result['output'].index('Hostname: LAB-MX'):]
+        # Reader erases the pager into a blank line; compare every payload
+        # line exactly, including the final sentinel and operational prompt.
+        self.assertEqual([line for line in body.splitlines() if line.strip()],
+                         (first_page + '\n' + last_page + '\n' + self.server.prompt).splitlines())
+        self.assertNotIn('---(more)---', result['output'])
+        # All three settings are rejected by the fixture. Adaptive preparation
+        # sends the first once and skips the other two, rather than provoking
+        # three errors before allowing business collection.
+        self.assertEqual(self.server.commands, [PREP[0], 'show cli', 'show version'])
+        self.assertEqual(self.server.auth_attempts, 1)
+        self.assertEqual([item['command'] for item in result['junos_preparation']
+                          if item.get('command_sent') is False], list(PREP[1:]))
+
     def test_probe_worker_denied_prep_keeps_guard_and_diagnostics(self):
         c = self.collector('autodetect')
         first = c.execute('local', 'show version', read_timeout=3)
         second = c.execute('local', 'show version', read_timeout=3)
         self.assertTrue(first['ok'], first); self.assertTrue(second['ok'], second)
-        self.assertEqual(len(first['junos_preparation']), 3)
+        self.assertEqual(len(first['junos_preparation']), 4)
         self.assertEqual(self.server.auth_attempts, 1)
         self.assertEqual(self.server.commands.count('show version'), 3)  # Probe + two reads.
+        conn = next(iter(c._sessions.values()))['conn']
+        self.assertEqual(conn._network_junos_capabilities['screen_width'], 511)
+        self.assertFalse(conn._network_junos_capabilities['paging_disabled'])
+        self.assertEqual(self.server.commands.count('show cli'), 1)
+        c.shutdown()
+        self.assertEqual(conn._network_junos_capabilities, {})
     def test_wrong_echo_never_submits_show_on_real_ssh(self):
         c = self.collector('juniper_junos')
         self.mutate = True

@@ -1,3 +1,23 @@
+## Unreleased — 2026-11-18
+
+- Keep the 434-test Junos fallback and normal three-prep fast path. Discover CLI
+  capabilities once after an advisory failure; skip remaining optional prep and
+  retain exact pre-Enter echo verification when autocomplete is on or unknown.
+- Add one bounded preparation-only Ctrl-C resync requiring cancellation evidence
+  and a stable operational prompt. Never repair echo mismatch with Enter or
+  replay failed prep. Wait for delayed valid echo prefixes within existing budgets.
+- Cache verified capabilities per live SSH session, propagate through the probe
+  worker, and invalidate on close/reconnect or explicit CLI preference changes.
+  Preserve supplied no-more pipelines; use the existing pager reader without
+  automatic command rewriting. See docs/JUNOS_PREPARATION.md for offline results
+  and unverified production limits.
+- Offline validation: 452/452 tests pass in 546.032 seconds, including 18 added
+  regressions; two extra localhost cancellation/reuse checks pass for direct and
+  probe-worker sessions. Ten frozen schemas and Python 3.10 syntax checks pass.
+  Five normal cold connections per version: median 1444.293 -> 1437.464 ms
+  (-0.47%, scheduler noise), with unchanged auth/prep/show counts. No production
+  validation, commit or push performed.
+
 ## Unreleased — 2026-11-17
 
 - Allow Junos optional session prep failures only at a synchronized operational
