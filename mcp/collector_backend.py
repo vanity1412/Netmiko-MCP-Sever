@@ -1513,11 +1513,11 @@ def junos_initial_prompt(conn, checkpoint):
 def junos_prepare_session(conn):
     """Keep the normal path; discover capabilities once after advisory failure."""
     checkpoint = getattr(_PREPARATION_CONTEXT, 'checkpoint', None)
-    def remaining():
+    def remaining(limit=5):
         if checkpoint is None:
-            return 5
+            return limit
         try:
-            return min(5, checkpoint())
+            return min(limit, checkpoint())
         except Exception as exc:
             exc._network_error_stage = 'preparation'
             raise
@@ -1530,11 +1530,14 @@ def junos_prepare_session(conn):
         return junos_resync(conn, prompt, checkpoint=checkpoint)
 
     def prep_read(command, pattern):
+        # Autocomplete can delay the remainder of the echo by several seconds.
+        # Leave room for both exact echo verification and the final prompt.
+        limit = 10 if command == 'show cli' and conn._network_junos_verify_echo else 5
         if checkpoint is None:
-            return read_cli_output(conn, command, 5, pattern)
+            return read_cli_output(conn, command, limit, pattern)
         output = ''
         try:
-            output, failure = read_cli_output(conn, command, remaining(), pattern, checkpoint=checkpoint)
+            output, failure = read_cli_output(conn, command, remaining(limit), pattern, checkpoint=checkpoint)
             # The local read deadline can fire between checkpoint polls.
             checkpoint()
             return output, failure
