@@ -6,7 +6,7 @@ thêm mẫu chỉ để chép raw. Quyền và vòng điều tra vẫn theo [wor
 
 ## Đọc evidence có mục tiêu, giữ nguyên dữ liệu
 
-Raw output và lỗi theo từng đích phải được giữ đầy đủ; không cắt/xóa/sửa evidence để giảm token, không tự che hoặc thay bằng placeholder. Giảm phần đưa vào context, không giảm dữ liệu gốc:
+Lưu nguyên output và lỗi theo từng đích trong hồ sơ. Đưa cùng dữ liệu đó vào phụ lục báo cáo và thân thư theo [luồng báo cáo](REPORTING.md). Giảm phần đưa vào context bằng cách đọc đúng phạm vi cần phân tích:
 
 - Dùng `save_output=true` khi dự kiến output lớn. Preview/text inline bị cắt không phải toàn bộ output; lưu output_id cùng target/command/thời điểm và vị trí evidence bền vững khi cần báo cáo/resume.
 - Cần thông tin cụ thể: search với ngữ cảnh, rồi đọc các đoạn liên quan và vùng cấu hình/phụ thuộc bao quanh. Tìm không thấy trong preview, excerpt bị giới hạn hoặc phạm vi search chưa đủ không chứng minh không tồn tại.
@@ -42,9 +42,9 @@ Trước khi chấp nhận một mục nhật ký, kiểm tra xem người đọ
 
 Nếu còn khoảng trống, chọn phép kiểm có khả năng phân biệt giả thuyết: đọc thêm vùng cấu hình/phụ thuộc khi chưa rõ ngữ nghĩa; đối chiếu đầu xa khi cần kiểm quan hệ; lấy trạng thái hiệu lực khi cấu hình chưa chứng minh hành vi; bổ sung mẫu theo thời gian khi counter chưa đủ. Ưu tiên nguồn đã lưu trước khi SSH lại và tự điều tra tiếp trong quyền/ngân sách còn có. Chỉ ghi giới hạn thật sau khi xét các nguồn hợp lý; không biến việc chưa đọc thành thiếu dữ liệu.
 
-Tối ưu bằng tìm/parse đúng phạm vi, tái sử dụng phát hiện và không chép raw dài. Không bỏ giả thuyết còn ảnh hưởng quyết định, nguyên nhân, phụ thuộc, tác động hoặc bước kiểm chứng cần thiết để đạt số token thấp hơn. Raw lưu nguyên vẹn; nhật ký và báo cáo chỉ trích dữ kiện quan trọng, dẫn tới evidence đầy đủ.
+Tối ưu bằng tìm/parse đúng phạm vi và tái sử dụng phát hiện. Giữ các giả thuyết và phép kiểm còn ảnh hưởng đến quyết định. Nhật ký và phần phân tích trích dữ kiện quan trọng, dẫn tới phụ lục chứa output nguyên vẹn.
 
 ### Phụ lục và email bằng script
 
-Agent chỉ viết kết luận/phân tích và manifest tham chiếu evidence đã lưu (id, path, target, command, status; hash có thể tự tính bằng script); không chép lại raw hoặc tự sinh HTML bằng model. Dùng `python scripts/report_bundle.py --mode FULL --summary <summary.md> --manifest <manifest.json> --output <bundle-mới>`; chi tiết ở docs/REPORTING.md, chỉ đọc khi cần. Email theo bốn mục, giữ đủ phân tích các phát hiện quan trọng và toàn bộ output CLI inline; không đính kèm ZIP. Liệt kê toàn bộ raw CLI, nhật ký, cấu hình và evidence liên quan trong manifest để script chép vào report.md/report.html bằng renderer mặc định. Script không tự phát hiện file bị bỏ sót. Kiểm tra metadata/hash và mẫu render có mục tiêu, không nạp lại toàn report/email để kiểm việc sao chép. integrity_verified không chứng minh mục tiêu mạng đạt. Thiếu file/hash sai thì dừng dựng bundle, giữ nguồn và tiếp tục phần điều tra độc lập; không cắt dữ liệu để chạy tiếp. Sender chỉ gửi theo quyền hiện có; test dùng dry-run.
+Agent viết phân tích và manifest tham chiếu bằng chứng gốc. Liệt kê đủ output CLI, nhật ký và cấu hình liên quan để builder chép vào Markdown và HTML. Kiểm tra metadata, hash và phần render cần dùng. Kiểm tra toàn vẹn bundle chỉ xác nhận dữ liệu được đóng gói theo manifest. Dựng và gửi theo [luồng báo cáo](REPORTING.md).
 

@@ -165,7 +165,7 @@ Mặc định `redaction_enabled=false`: nội dung CLI, evidence, structured ou
 
 Dùng `redaction_enabled=false` để giữ dữ liệu; không cần monkey-patch `redact_output`. Backend giữ keyword tùy chọn `force` cho caller cũ, nhưng các đường lỗi CLI/preparation nội bộ chỉ truyền message để tương thích override một tham số. Nếu có override tùy biến, nên giữ chữ ký `redact_output(self, message, *, force=False)`; traceback và đường dẫn module đang nạp giúp xác định code ngoài repository gây lỗi.
 
-Các script tạo báo cáo/email riêng phải tự tuân theo cùng cấu hình. Gọi thẳng `redact_text()` luôn thực hiện redaction, không kiểm tra `redaction_enabled`. Backend trả đủ output không bảo đảm agent hoặc renderer bên ngoài sẽ giữ nguyên dữ liệu. Báo cáo đã thay nội dung bằng `[redacted]` phải dựng lại từ evidence còn đầy đủ, không tự đoán phần bị mất.
+Giữ nguyên output đã thu trong hồ sơ, báo cáo và email theo [luồng báo cáo](docs/REPORTING.md). `redaction_enabled` điều khiển output từ backend. Luồng báo cáo giữ nguyên kết quả nhận được.
 
 ## Đo hiệu năng SSH
 
@@ -239,4 +239,4 @@ Từ 1.9.0 có loader credentials.json dùng chung cho mọi client. Xem [cấu 
 
 ## Báo cáo và phụ lục không dùng model để sao chép
 
-Xem [docs/REPORTING.md](docs/REPORTING.md). scripts/report_bundle.py dựng Markdown/HTML và sao chép raw đầy đủ theo manifest có SHA-256; không gọi SSH/model/SMTP và không sửa backend.
+Xem [luồng báo cáo](docs/REPORTING.md). `scripts/report_bundle.py` dựng Markdown và HTML từ phân tích và bằng chứng gốc trong manifest.

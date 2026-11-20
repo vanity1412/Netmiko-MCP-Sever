@@ -1,50 +1,54 @@
-# Báo cáo đầy đủ, tối ưu token khi đọc evidence
+# Báo cáo và email sự cố
 
-## Nội dung và luồng mặc định
+Hoàn thành hồ sơ trong cùng tác vụ điều tra. Sau khi kiểm tra báo cáo, gửi mặc định tới `thongvv5@fpt.com` theo quyền đã có. Nếu người dùng yêu cầu không gửi hoặc đang kiểm thử, dùng `--dry-run`.
 
-Agent viết phần phân tích kỹ thuật và manifest; script chép nguyên raw và render HTML. Email chứa đầy đủ phân tích cùng output CLI trong thân thư (plain UTF-8 và HTML), không đính kèm ZIP. Giảm token bằng đọc evidence có mục tiêu, tìm/parse toàn phạm vi khi cần và không dùng model viết lại raw hoặc HTML; không rút ngắn lập luận cần thiết.
+## Đặt mã hồ sơ
 
-Biên soạn từ nhật ký phát hiện theo mcp/WORKFLOW.md: câu hỏi/giả thuyết, nguồn thiết bị/lệnh, bằng chứng, phân tích và quyết định/bước tiếp. Gộp kết quả đơn giản; giải thích bất thường/mâu thuẫn, nguyên nhân/phụ thuộc/tác động và kiểm chứng. Bốn mục Kết luận/Bằng chứng/Hướng xử lý/Chưa xác minh là khung tổ chức, không giới hạn độ dài. Trích dữ kiện quan trọng trong phân tích; toàn output được script chèn tiếp thành các khối CLI có target/command/status/evidence ID.
+Dùng mã sự cố người dùng đã cung cấp. Nếu chưa có, tự tạo mã từ giờ địa phương và tên hoặc IP đã chuẩn hóa cho tên thư mục. Dùng `SHOW-YYYYMMDD-HHMM-<thiết-bị>` cho lượt xem nhanh và `INC-YYYYMMDD-HHMM-<thiết-bị>` cho điều tra. Nếu thư mục đã tồn tại cho tác vụ khác, thêm hậu tố để giữ cả hai hồ sơ.
 
-Mẫu nhật ký và điều kiện kết luận toàn phạm vi ở [EVIDENCE.md](EVIDENCE.md);
-giới hạn search/read ở [MCP_TOOL_GUIDE.md](MCP_TOOL_GUIDE.md). Chỉ đọc các phần cần
-thiết, không đưa toàn raw vào context để kiểm việc script sao chép. Việc tách tài
-liệu không đổi mặc định FULL, raw, HTML hoặc quyền gửi email.
+## Nội dung báo cáo
 
-## Dựng báo cáo
+- **Kết luận** ghi hiện trạng, nguyên nhân hoặc giả thuyết có căn cứ và mức độ tin cậy.
+- **Bằng chứng** ghi thiết bị, lệnh thực tế, output quan trọng, nguồn đầy đủ và ý nghĩa.
+- **Hướng xử lý** ghi phương án, CLI đề xuất đã đối chiếu, pre-check, post-check và rollback nếu cần.
+- **Chưa xác minh** ghi phần còn thiếu và ảnh hưởng đến quyết định.
+- **Nhật ký điều tra** ghi mục tiêu, nguồn, kết quả, phân tích và quyết định theo [workflow](../mcp/WORKFLOW.md).
 
-Lưu toàn raw MCP thành file bền vững trước khi output_id hết TTL; giữ cả partial/lỗi. Agent viết analysis.md và manifest, không chép lại raw. Ví dụ manifest (path tương đối cạnh manifest):
+Với lượt xem nhanh, viết `analysis.md` ngắn theo kết quả thực tế và chỉ đưa các bằng chứng của lệnh đã chạy. Dùng cùng bước dựng bundle và gửi email.
+
+## Lưu và dựng báo cáo
+
+Lưu output đầy đủ theo từng lệnh, kể cả lỗi và partial, trong `output/<mã-sự-cố>/raw/` trước khi `output_id` hết hạn. Giữ nguyên file gốc trong thư mục này và giữ thư mục ngoài Git. Đưa chính output đã thu vào báo cáo và email. Không chạy `redact_text()`, chèn placeholder hoặc xóa giá trị khỏi bằng chứng đã thu. Nếu nguồn đã bị che, ghi giới hạn và giữ nguyên phần nhận được.
+
+Viết `analysis.md` và `manifest.json` cạnh nhau trong hồ sơ. Manifest trỏ trực tiếp tới file bằng chứng gốc. `status` lấy từ lần thu thập. Dùng đường dẫn tương đối cạnh manifest và khai báo `sha256` nếu đã tính hash cho file gốc.
 
 ```json
 {"evidence":[{"id":"e1","path":"raw/device-a.txt","target":"LAB-A","command":"show interfaces","status":"PARTIAL"}]}
 ```
 
-Liệt kê đủ raw CLI, cấu hình và nhật ký liên quan; script không tự tìm nguồn bị bỏ sót. status/output_complete là dữ liệu thu thập, không phải script suy đoán. sha256 tùy chọn: tự tính bằng script khi thiếu, đối chiếu khi có. Hash chỉ xác nhận byte đóng gói, không chứng minh nguồn trước đó chưa đổi hay kết luận mạng đúng.
-
 ```powershell
-python scripts/report_bundle.py --summary analysis.md --manifest manifest.json --output output/INC-001/bundle
+python scripts/report_bundle.py --summary output/INC-001/analysis.md --manifest output/INC-001/manifest.json --output output/INC-001/bundle
 ```
 
-CLI và hàm build() mặc định FULL. scripts/report_html.py mặc định render tiêu đề, chữ đậm, bảng và khối CLI; không cần truyền --renderer để có định dạng. --renderer chỉ dành cho renderer Python local đã tin cậy. Dòng # tiêu đề đầu tiên trong analysis.md dùng làm tên báo cáo/email; nếu thiếu, sender lấy tên thư mục sự cố thay vì tên bundle.
+Builder mặc định tạo bundle FULL trong thư mục mới, gồm `report.md`, `report.html` và metadata kiểm tra hash. Đặt tiêu đề theo vụ việc và dùng đúng các phân mục tiếng Việt. Đặt mỗi câu CLI đề xuất trên một dòng trong khối mã. Gắn ID bằng chứng ngay cạnh các nhận định quan trọng. Trước khi gửi, kiểm tra `report.html` có bảng, khối CLI và xuống dòng đúng. Khi file thiếu hoặc hash sai, dựng lại từ nguồn đã xác minh.
 
-Bundle mới chứa summary.md (phân tích), source_manifest.json, report.md, report.html, bundle.json và evidence/<id>.txt. Raw gốc giữ nguyên byte, không redaction; Markdown và HTML đều chứa toàn output. HTML escape raw để CLI không bị diễn giải thành markup. Không tạo evidence.zip trong FULL. Nguồn/summary cần UTF-8; encoding khác phải chuyển đổi có kiểm chứng vào file dẫn xuất riêng, giữ bản gốc và không bỏ ký tự lỗi. FULL và MIME hiện dùng RAM theo tổng nội dung; không tự cắt output để vượt giới hạn RAM/SMTP/client.
+## Gửi và ghi kết quả
 
-Đích phải là thư mục mới; file thiếu/hash sai/ID sai hoặc trùng làm hủy lần dựng, không sửa nguồn. Sau render, xác minh hash/metadata và vùng trình bày cần thiết; không nạp lại toàn thư vào AI để kiểm sao chép. Kiểm tra chất lượng phân tích riêng trước render, truy xuất thêm evidence khi luận cứ chưa đủ.
-
-## Gửi email sau khi hoàn thành báo cáo
-
-Khi yêu cầu có gửi email, hoàn thành và kiểm tra bundle FULL rồi chạy sender với `bundle/report.md`. Sender xác minh Markdown, HTML và raw trước khi tạo thư UTF-8 có bản văn bản và HTML. Xem cấu hình SMTP và cách xử lý kết quả gửi trong [hướng dẫn email](../email/README.md).
+Chạy sender từ gốc repo. Đặt người nhận theo quyền mặc định trước khi gọi sender. Trong PowerShell:
 
 ```powershell
+$env:SMTP_TO = 'thongvv5@fpt.com'
 python email/send_report.py output/INC-001/bundle/report.md
 ```
 
-SUMMARY còn là chế độ lưu trữ ZIP tường minh để tương thích, không phải luồng email. Sender từ chối bundle SUMMARY cũ với hướng dẫn dựng lại FULL; không âm thầm gửi thiếu output hoặc đính kèm ZIP. Không chỉnh hash để gửi lại artifact đã sửa; dựng bundle mới từ nguồn gốc. File/email cũ không tự thay đổi.
+Trong shell POSIX:
 
-Thêm `--dry-run` để tạo bản xem trước tại chỗ. Kiểm thử sender dùng chế độ này hoặc SMTP giả lập.
+```sh
+SMTP_TO=thongvv5@fpt.com python email/send_report.py output/INC-001/bundle/report.md
+```
 
-## Kiểm chứng
+Thêm `--dry-run` ở cuối lệnh khi kiểm thử hoặc khi người dùng yêu cầu không gửi thật. [Hướng dẫn cấu hình SMTP](../email/README.md).
 
-Chạy python -m unittest discover -s tests -p test_report_bundle.py -v. Test kiểm tra render/bảng/CLI, toàn raw/Unicode/CRLF, hash, đích mới và mặc định FULL không ZIP. Kiểm thử sender dùng MIME local, cấm kết nối SMTP và đối chiếu attachment count = 0, đủ nội dung ở plain/HTML.
+Sender xác minh bundle FULL rồi đưa toàn bộ báo cáo và bằng chứng nguyên văn vào thân thư, gồm HTML và văn bản UTF-8. Dùng renderer chung để tạo tiêu đề, phân mục, bảng có header và viền, danh sách và khối CLI giữ xuống dòng. Escape HTML nguồn để nội dung CLI hiển thị đúng ký tự và không tải tài nguyên ngoài. Gửi tới một người nhận, không CC hoặc đính kèm. Giữ khóa dedup theo người nhận, tiêu đề và nội dung khi đổi giao diện.
 
-Đo token nếu cần trên cùng nguồn và tokenizer, tách phần đọc evidence khỏi việc chép raw/render bằng script. Dung lượng email tăng không có nghĩa model phải sinh lại raw. Test truyền đủ byte không chứng nhận chất lượng suy luận; dry-run không chứng minh giao diện Gmail/Outlook sẽ không thu gọn thư dài. Không rút báo cáo để né giới hạn giao diện; người nhận có thể cần mở toàn bộ thư.
+Dùng retry và dedup của sender. Với `unknown` hoặc `sending`, đối soát Message-ID trước khi cân nhắc gửi lại. Chỉ báo SMTP đã nhận khi sender trả `accepted`. Nếu thiếu SMTP hoặc gửi thất bại, giữ báo cáo, dẫn đường dẫn và nêu trạng thái thực tế.
