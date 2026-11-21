@@ -521,6 +521,41 @@ def is_replay_safe(command):
                 re.fullmatch(r'(?:uname(?: -[a-z]+)?|uptime|date|whoami|id|hostname|ip (?:-[a-z]+ )?(?:address|addr|link|route|neigh) show(?: .*)?|ss -[a-z]+)', parts[0], re.I))
 
 
+def read_only_policy_allows(command, driver):
+    """Recognize observational CLI forms for the supported device drivers."""
+    if not command.isprintable() or re.search(r'[;&`<>$\\]', command):
+        return False
+    try:
+        head, *filters = cli_pipeline(command)
+    except PermissionError:
+        return False
+    # A quoted pipe is ambiguous across CLI parsers. Reject it rather than
+    # treating a potential additional device-side stage as a filter argument.
+    if any('|' in part for part in (head, *filters)):
+        return False
+    unresolved = driver in {'autodetect', 'generic_termserver'}
+    if (unresolved or driver == 'linux') and not filters and re.fullmatch(
+            r'(?:uname(?: -[asrvmnpo]+)?|uptime|date|whoami|id|hostname|'
+            r'ip (?:-[46] )?(?:address|addr|link|route|neigh) show|ss -[a-z]+)', head):
+        return True
+    verbs = {'show', 'display'} if unresolved else (
+        {'display'} if driver.startswith('huawei') else
+        {'show'} if driver == 'juniper_junos' or driver.startswith('cisco_') else set())
+    words = head.split(maxsplit=1)
+    if len(words) != 2 or words[0].casefold() not in verbs:
+        return False
+    return all(re.fullmatch(
+        r'(?:(?:include|exclude|begin|section|match|except|find|last) +.+'
+        r'|count|no-more|display (?:set(?: relative)?|xml|json|inheritance(?: no-comments)?|detail|omit))',
+        part, re.I) for part in filters)
+
+
+def execution_policy_error(message):
+    return CollectionError({'error': 'ExecutionPolicyDenied', 'error_category': 'policy_denied',
+                            'error_reason': 'execution_policy_read_only', 'error_stage': 'validation',
+                            'command_sent': False, 'retryable': False, 'message': message})
+
+
 def command_prompt_pattern(conn, command, exact):
     """Accept mode transitions only within this device's prompt family."""
     old = getattr(conn, '_network_prompt_text', '')
@@ -1785,6 +1820,10 @@ class Collector:
         self.profiles = config.get("profiles", {})
         if not isinstance(self.defaults, dict) or not isinstance(self.devices, dict) or not isinstance(self.profiles, dict):
             raise ValueError("defaults, profiles and devices must be JSON objects")
+        self.execution_policy_configured = 'execution_policy' in self.defaults
+        self.execution_policy = self.defaults.get('execution_policy', 'read_write')
+        if self.execution_policy not in ('read_only', 'read_write'):
+            raise ValueError('execution_policy must be read_only or read_write')
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
         self.health_check_interval = bounded_int(self.defaults.get('health_check_interval_seconds'), 30, 0, 3600)
         self.auth_cooldown = bounded_int(self.defaults.get('auth_failure_cooldown_seconds'), 300, 0, 3600)
@@ -2140,7 +2179,12 @@ class Collector:
             settings.update({key:source[key] for key in auth_keys if key in source})
             settings.setdefault('password','')
         settings["host"] = safe_target(device.get("host") or target)
-        if device_type:
+        if self.execution_policy == 'read_only':
+            known_driver = settings.get('device_type') or 'autodetect'
+            if device_type and device_type not in (known_driver, 'autodetect', 'generic_termserver'):
+                raise execution_policy_error('Use the configured driver or autodetect in read_only mode')
+            settings['device_type'] = known_driver
+        elif device_type:
             known = device.get('device_type')
             settings['device_type'] = known if (self.prefer_inventory_driver and device_type in {'autodetect', 'generic_termserver'} and known and known not in {'autodetect', 'generic_termserver'}) else device_type
         settings.setdefault("device_type", "cisco_ios")
@@ -2423,15 +2467,17 @@ class Collector:
 
     @contextlib.contextmanager
     def _lease(self, target: str, device_type: str | None = None, profile: str | None = None,
-               *, recover_junos=False):
-        with self._lease_inner(target, device_type, profile, recover_junos=recover_junos) as conn:
+               *, recover_junos=False, resolved_params=None):
+        with self._lease_inner(target, device_type, profile, recover_junos=recover_junos,
+                               resolved_params=resolved_params) as conn:
             yield conn
 
     @contextlib.contextmanager
-    def _lease_inner(self, target, device_type=None, profile=None, *, recover_junos=False):
+    def _lease_inner(self, target, device_type=None, profile=None, *, recover_junos=False, resolved_params=None):
         yielded = False
         try:
-            with self._lease_once(target, device_type, profile, recover_junos=recover_junos) as conn:
+            with self._lease_once(target, device_type, profile, recover_junos=recover_junos,
+                                  resolved_params=resolved_params) as conn:
                 yielded = True
                 yield conn
         except Exception as exc:
@@ -2456,9 +2502,10 @@ class Collector:
 
     @contextlib.contextmanager
     def _lease_once(self, target: str, device_type: str | None = None, profile: str | None = None,
-                    *, recover_junos=False):
+                    *, recover_junos=False, resolved_params=None):
         self._checkpoint()
-        params = self._get_settings(target, device_type, profile)
+        params = (dict(resolved_params) if resolved_params is not None
+                  else self._get_settings(target, device_type, profile))
         minimal_enabled = (params['device_type'] == 'juniper_junos'
                            and self._request.cli_options.get('junos_minimal_recovery') is True)
         self._resolve_platform(params)
@@ -2679,11 +2726,17 @@ class Collector:
         finally:
             lock.release()
 
-    def _preflight(self, target, commands, device_type=None, profile=None):
+    def _preflight(self, target, commands, device_type=None, profile=None, *, resolved_params=None):
         self._request.stage = 'validation'
-        params = self._get_settings(target, device_type, profile)
-        # Framing is validated before opening SSH; command content is agent-owned.
-        return [prepare_noc_command(command, params['device_type']) for command in commands]
+        params = resolved_params if resolved_params is not None else self._get_settings(target, device_type, profile)
+        return self.validate_execution_commands(commands, params['device_type'])
+
+    def validate_execution_commands(self, commands, driver):
+        commands = [prepare_noc_command(command, driver) for command in commands]
+        if self.execution_policy == 'read_only' and any(
+                not read_only_policy_allows(command, driver) for command in commands):
+            raise execution_policy_error('Command is outside the supported read_only CLI forms')
+        return commands
 
     @contextlib.contextmanager
     def _output_lease(self, output_id: str):
@@ -2972,6 +3025,13 @@ class Collector:
         self._request.command_sent = False
         conn._network_command_sent = False
         timeout = min(timeout, self._checkpoint())
+        if self.execution_policy == 'read_only':
+            driver = getattr(self._request, 'resolved_driver', '') or ''
+            try:
+                self.validate_execution_commands([command], driver)
+            except CollectionError as exc:
+                exc._network_keep_session = True
+                raise
         if getattr(conn, '_network_awaiting_input', False) and not allow_reply:
             error = CollectionError({'error': 'SessionAwaitingInput', 'error_category': 'awaiting_input',
                                      'error_stage': 'command', 'awaiting_input': True, 'retryable': False,
@@ -3145,13 +3205,13 @@ class Collector:
     def execute_many(self, target: str, commands: list[str], device_type: str | None = None, profile: str | None = None,
                      read_timeout: int | None = None, save_output: bool = False, use_timing: bool = False,
                      expect_string: str | None = None, continue_on_error: bool = False,
-                     *, allow_junos_recovery: bool = True) -> dict[str, Any]:
+                     *, allow_junos_recovery: bool = True, _resolved_scan_params=None) -> dict[str, Any]:
         if not isinstance(continue_on_error, bool):
             raise ValueError("continue_on_error must be boolean")
         if not isinstance(commands, list) or not 1 <= len(commands) <= MAX_COMMANDS:
             raise ValueError("commands must be an array containing 1 to 1000 commands")
         commands = [safe_command(c) for c in commands]
-        commands = self._preflight(target, commands, device_type, profile)
+        commands = self._preflight(target, commands, device_type, profile, resolved_params=_resolved_scan_params)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         results = []
         recovery = {}
@@ -3168,7 +3228,8 @@ class Collector:
         recover_junos = allow_junos_recovery and all(
             is_replay_safe(command) and re.match(r'^(?:show|display)\s', command, re.I)
             for command in commands)
-        with self._lease(target, device_type, profile, recover_junos=recover_junos) as conn:
+        with self._lease(target, device_type, profile, recover_junos=recover_junos,
+                         resolved_params=_resolved_scan_params) as conn:
             previous = getattr(conn, '_network_previous_preparation', None)
             if previous is not None:
                 del conn._network_previous_preparation
@@ -3200,6 +3261,8 @@ class Collector:
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
                  read_timeout: int | None = None, save_output: bool = False) -> dict[str, Any]:
+        if self.execution_policy == 'read_only':
+            raise execution_policy_error('ssh_interact is disabled in read_only mode; use a read command or batch')
         if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_COMMANDS:
             raise ValueError("steps must be an array containing 1 to 1000 strings")
         # Every command or reply must be provided as an explicit step.
@@ -3486,7 +3549,9 @@ class Collector:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": not dead_session(v.get("conn")),
                          "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "phase_metrics": self._metrics.snapshot(), "parallel_queue": self._parallel_queue.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
+        return {"version": VERSION, "execution_policy": self.execution_policy,
+                "execution_policy_configured": self.execution_policy_configured,
+                "phase_metrics": self._metrics.snapshot(), "parallel_queue": self._parallel_queue.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
                 "max_sessions": self.max_sessions, "session_max_age_seconds": self.session_max_age,
                 "autodetect_timeout_seconds": self.autodetect_timeout, "autodetect_probes": self._detection_probes,
@@ -3551,13 +3616,13 @@ class BatchError(Exception):
 TOOLS: dict[str, dict[str, Any]] = {
     "ssh_execute": {"description": 'Execute one agent-selected CLI command on an alias/hostname/IP within user scope. Use device/VRF evidence for syntax and save_output for large raw. Check completeness/awaiting_input; SUCCESS is CLI collection, not network health.', "schema": {"target": "string", "command": "string", "device_type": "string", "profile": "string", "read_timeout": "integer", "expect_string": "string", "use_timing": "boolean", "save_output": "boolean", "use_textfsm": "boolean"}, "required": ["target", "command"], "method": "execute"},
     "ssh_execute_many": {"description": 'Execute commands (string array) in order on one session. Stops on failure; unsent suffix is SKIPPED. continue_on_error only continues complete synchronized CLI errors for independent commands. Inspect each result.', "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string", "continue_on_error": "boolean"}, "required": ["target", "commands"], "method": "execute_many"},
-    "ssh_interact": {"description": 'Send steps (string array), including authorized configuration/replies, on the same target/profile/mode. Empty string/newline sends Enter; no implicit reply. Inspect each step and current awaiting_input.', "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
+    "ssh_interact": {"description": 'Requires read_write. Send steps, including authorized configuration/replies, on the same target/profile/mode. Empty string/newline sends Enter; no implicit reply. Inspect each step and current awaiting_input.', "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
     "ssh_parallel": {"description": 'Run 1-100 independent tasks; each needs target and exactly one of command or commands. Output/result order retained per task. Inspect each result; task count is not SSH concurrency.', "schema": {"tasks": "array"}, "required": ["tasks"], "method": "parallel"},
     "ssh_read_output": {"description": 'Read saved text by output_id, zero-based line offset and limit. Follow next_offset while more=true; use byte reader if oversized_line prevents progress. A slice is not full configuration.', "schema": {"output_id": "string", "offset": "integer", "limit": "integer"}, "required": ["output_id"], "method": "read_output"},
     "ssh_read_output_bytes": {"description": 'Read saved output as best-effort UTF-8 text with byte offsets, including long lines. Start at zero, follow next_byte_offset (may extend length to finish UTF-8). For byte-exact export, copy/hash the source file.', "schema": {"output_id": "string", "byte_offset": "integer", "length": "integer"}, "required": ["output_id"], "method": "read_output_bytes"},
     "ssh_search_output": {"description": 'Search the entire saved file by query (literal/regex). total_matches counts lines; limited excerpts use one-based lines and may omit text even if truncated=false. Zero matches are not network absence; check collection scope/completeness/inheritance. Errors are not zero.', "schema": {"output_id": "string", "query": "string", "regex": "boolean", "ignore_case": "boolean", "max_matches": "integer", "context_lines": "integer"}, "required": ["output_id", "query"], "method": "search_output"},
     "ssh_inventory": {"description": 'Search configured alias/host IP by query and optional device_type. Returns profile/port and resolution warnings, not live topology/auth proof. Default 100 rows; limit=0 returns all matches; summary_only counts. Do not guess profiles.', "schema": {"query": "string", "device_type": "string", "offset": "integer", "limit": "integer", "summary_only": "boolean"}, "required": [], "method": "inventory"},
-    "ssh_status": {"description": 'Inspect collector/session state and limits when needed. parallel_queue is process-local; running may await session/SSH slots. Metadata is not network health. No passwords returned.', "schema": {}, "required": [], "method": "status"},
+    "ssh_status": {"description": 'Inspect execution_policy, execution_policy_configured, and collector/session state. parallel_queue is process-local; running may await session/SSH slots. Metadata is not network health. No passwords returned.', "schema": {}, "required": [], "method": "status"},
     "ssh_close": {"description": 'Close all sessions for the resolved host, across profiles/ports; missing/empty target closes the entire pool. Use only when all affected sessions are in scope, not after every command.', "schema": {"target": "string"}, "required": [], "method": "close"},
 }
 
@@ -3601,7 +3666,7 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
         if method == "initialize":
             requested = (req.get("params") or {}).get("protocolVersion", "2025-06-18")
             protocol = requested if requested in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"} else "2025-06-18"
-            return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Network CLI executor. Agent selects commands and authorizes configuration changes. Content is not filtered; responses and completion are verified. Use credential profiles."})
+            return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Network CLI executor. Call ssh_status to check execution policy. Configuration changes require explicit user authorization and an explicitly configured read_write policy. Responses and completion are verified. Use credential profiles."})
         if method == "ping":
             return rpc_response(rid, {})
         if method == "tools/list":

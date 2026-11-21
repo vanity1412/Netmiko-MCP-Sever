@@ -18,11 +18,18 @@ Chỉ chạy tiếp nếu lỗi thuộc CLI, transport còn khỏe, output đã 
 
 Có SUCCESS và CLI_ERROR thì batch là PARTIAL, không phải SUCCESS; tất cả lỗi CLI thì là CLI_ERROR. SKIPPED không thay thế nguyên nhân lỗi của lệnh đã chạy. Lỗi CLI đã đọc đủ vẫn có thể giữ session để dùng tiếp. `ssh_parallel` cũng chuyển tiếp tùy chọn này cho task có `commands`. Scanner chưa bật tùy chọn này; vẫn dừng theo prefix, checkpoint/resume bỏ qua các entry SKIPPED và giữ lỗi thật. Không thay đổi mặc định không che dữ liệu.
 
-## Thực thi do agent quyết định
+## Chế độ thực thi
 
-Không còn allowlist/denylist nội dung lệnh. Agent có thể gửi show/display, configure, set, commit, save, shell command và pipeline do agent lựa chọn. Server không tự đổi abbreviation, sửa lệnh hoặc thêm count cho ping.
+Đặt `defaults.execution_policy` trong cấu hình của từng triển khai. Mẫu đi kèm chọn `read_only`.
 
-Chỉ kiểm tra framing: mỗi command là string một dòng, không rỗng, tối đa 8192 ký tự, không có ký tự điều khiển. Dùng execute_many cho batch tối đa 1000 lệnh; interact nhận tối đa 1000 bước, có thể dùng chuỗi rỗng hoặc newline làm Enter rõ ràng. Parallel tối đa 100 task mỗi lời gọi; scanner --all không có giới hạn số thiết bị này. Số kết nối đang làm việc vẫn theo max_workers để bảo vệ tài nguyên; không đổi pool/storage hoặc benchmark trong bản này.
+| Chế độ | Hành vi |
+|---|---|
+| `read_only` | Collector nhận các dạng lệnh đọc được hỗ trợ theo driver. Ví dụ gồm `show` trên Junos và Cisco, `display` trên Huawei và `ip route show` trên Linux. Pipeline chỉ nhận các bộ lọc đọc được hỗ trợ. Pipe trong dấu nháy, lệnh ngoài phạm vi và `ssh_interact` trả `POLICY_DENIED`. |
+| `read_write` | Collector nhận lệnh CLI do agent chọn. Agent chỉ thực thi thay đổi khi tác vụ cấp quyền rõ ràng. |
+
+`ssh_status` trả chế độ hiệu lực qua `execution_policy`. `execution_policy_configured` cho biết cấu hình đã đặt chế độ tường minh hay chưa. Nếu cấu hình thiếu `defaults.execution_policy`, Collector dùng `read_write` để tương thích với các tích hợp cũ. Quyền của tài khoản SSH được quản lý trên thiết bị.
+
+Mỗi lệnh phải có một dòng, tối đa 8192 ký tự. Collector từ chối chuỗi rỗng và ký tự điều khiển. Collector giữ nguyên cú pháp do agent gửi. `ssh_execute_many` nhận tối đa 1000 lệnh. `ssh_interact` nhận tối đa 1000 bước và hỗ trợ gửi Enter tường minh. `ssh_parallel` nhận tối đa 100 tác vụ mỗi lần gọi. `scan.py --all` dùng giới hạn worker của Collector.
 
 Agent chịu trách nhiệm phạm vi lệnh và thay đổi cấu hình mà người dùng yêu cầu. Các test phát triển chỉ dùng mock/SSH localhost.
 

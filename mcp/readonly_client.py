@@ -1,4 +1,4 @@
-"""Python CLI wrapper. Legacy ReadOnlyConnection name retained; content is not filtered."""
+"""Python CLI wrapper using the Collector's execution policy."""
 from pathlib import Path
 import re
 import collector_backend as backend
@@ -11,7 +11,7 @@ BATCH_OPTIONS = (SINGLE_OPTIONS - {'use_textfsm'}) | {'continue_on_error'}
 LEGACY_CONNECTION_OPTIONS = KNOWN_KEYS | {
     'ssh_mode', 'host_key_store_mode', 'auto_enable', 'junos_minimal_recovery',
     'prompt_quiet_seconds', 'timing_quiet_seconds', 'read_timeout', 'request_timeout_seconds',
-    'output_dir', 'session_sweep_seconds', 'inline_max_chars',
+    'output_dir', 'session_sweep_seconds', 'inline_max_chars', 'execution_policy',
 }
 
 
@@ -105,5 +105,5 @@ class ReadOnlyConnection:
                 offset = part['next_byte_offset']
         return result['output']
 
-# New name reflects unrestricted CLI; old imports remain compatible.
+# Keep both names available for existing callers.
 CLIConnection = ReadOnlyConnection

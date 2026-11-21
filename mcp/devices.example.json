@@ -1,5 +1,6 @@
 {
   "defaults": {
+    "execution_policy": "read_only",
     "device_type": "autodetect",
     "ssh_mode": "compatible",
     "auto_enable": false,
