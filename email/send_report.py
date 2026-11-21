@@ -214,6 +214,27 @@ def settings_from_env() -> dict:
             "username": username, "password": password}
 
 
+def validate_preview_paths(report: Path, preview: Path, html_preview: Path) -> None:
+    root = report.parent
+    meta = json.loads((root / "bundle.json").read_text(encoding="utf-8"))
+    members = [report, root / "report.html", root / "summary.md",
+               root / "bundle.json", root / "source_manifest.json"]
+    members.extend(root / item["path"] for item in meta["evidence"])
+    protected = {member.resolve() for member in members}
+    destinations = (preview.resolve(), html_preview.resolve())
+    if destinations[0] == destinations[1]:
+        raise ValueError("Preview paths must be distinct")
+    for destination in destinations:
+        if destination in protected or destination.is_dir():
+            raise ValueError("Preview must not overwrite a bundle member")
+        if destination.exists() and any(member.exists() and destination.samefile(member)
+                                        for member in protected):
+            raise ValueError("Preview must not overwrite a bundle member")
+    first, second = destinations
+    if first.exists() and second.exists() and first.samefile(second):
+        raise ValueError("Preview paths must be distinct")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
@@ -237,9 +258,7 @@ def main() -> int:
             message["X-Unsent"] = "1"
             preview = args.preview or args.report.parent / "email-preview.eml"
             html_preview = args.html_preview or args.report.parent / "email-preview.html"
-            if (preview.resolve() == args.report.resolve() or html_preview.resolve() == args.report.resolve()
-                    or preview.resolve() == html_preview.resolve()):
-                raise ValueError("Preview must not overwrite the report")
+            validate_preview_paths(args.report, preview, html_preview)
             preview.parent.mkdir(parents=True, exist_ok=True)
             html_preview.parent.mkdir(parents=True, exist_ok=True)
             preview.write_bytes(message.as_bytes())
