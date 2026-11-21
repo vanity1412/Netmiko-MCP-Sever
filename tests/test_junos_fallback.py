@@ -412,6 +412,25 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
         self.assertEqual(self.server.commands.count(PREP[0]), 1)
         self.assertEqual(self.server.commands.count('show cli'), 1)
         for cmd in PREP[1:]: self.assertNotIn(cmd, self.server.commands)
+
+    def test_batch_reopens_after_failed_resync_on_ssh_localhost(self):
+        self.server.cancel_input = False
+        self.server.responses[PREP[0]] = lambda channel: channel.sendall(b'partial width reply\r\n')
+        self.server.responses['show lldp neighbors'] = 'LLDP peer'
+        self.server.responses['show isis adjacency'] = 'IS-IS peer'
+        c = self.collector('juniper_junos')
+        c.defaults['junos_minimal_recovery'] = True
+        commands = ['show version', 'show lldp neighbors', 'show isis adjacency']
+        result = c.execute_many('local', commands, read_timeout=4)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertIn('partial width reply', result['previous_attempt']['output'])
+        self.assertEqual(self.server.auth_attempts, 2)
+        self.assertEqual(self.server.commands, [PREP[0], 'show cli', *commands])
+        self.assertTrue(all(item['command_echo_verified'] for item in result['results']))
+        reuse = c.execute('local', 'show version', read_timeout=4)
+        self.assertTrue(reuse['session_reused'], reuse)
+        self.assertEqual(self.server.auth_attempts, 2)
     def test_all_three_prep_rejected_still_collects_complete_paged_show_version(self):
         self.server.responses.update(dict(zip(PREP, (
             'set cli screen-width511\n  ^\nsyntax error, expecting <command>.',

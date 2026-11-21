@@ -87,6 +87,34 @@ class ScenarioTests(unittest.TestCase):
         self.assertIn('last-page', output)
         self.assertEqual(conn.writes.count(' '), 1)
 
+    def test_pager_checks_cancellation_and_deadline_after_reading_marker(self):
+        for reason in ('cancelled', 'read_timeout'):
+            with self.subTest(reason=reason):
+                payload = 'first page\n--More--'
+                conn = TimelineChannel(self.clock, [(0, payload, True)])
+                received = False
+                read = conn.read_channel
+
+                def read_pager():
+                    nonlocal received
+                    data = read()
+                    if data:
+                        received = True
+                        if reason == 'read_timeout':
+                            self.clock.sleep(1)
+                    return data
+
+                def checkpoint():
+                    if received and reason == 'cancelled':
+                        raise concurrent.futures.CancelledError('fixture cancelled')
+
+                conn.read_channel = read_pager
+                output, failure = backend.read_cli_output(conn, 'show running-config', 1,
+                                                          r'(?m)^router#$', checkpoint=checkpoint)
+                self.assertEqual(output, payload)
+                self.assertEqual(failure['error_category'], reason)
+                self.assertEqual(conn.writes, ['show running-config\n'])
+
     def test_closed_channel_detected_without_waiting_full_read_timeout(self):
         conn = TimelineChannel(self.clock, [(0, 'partial\n'), (.04, None)])
         started = self.clock.now()

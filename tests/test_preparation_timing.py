@@ -1,4 +1,5 @@
 """Preparation/timing boundaries with deterministic CLI transcripts, no SSH."""
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+import scan
 from test_ssh_scenarios import TimelineChannel, VirtualClock
 from test_junos_fallback import JunosChannel, ACKS, CAPS
 
@@ -135,6 +137,167 @@ class PreparationTimingTests(unittest.TestCase):
         self.assertIn(ACKS[width], details['output'])
         self.assertIn('late continuation', details['output'])
         self.assertEqual(conn.submitted, [width])
+
+    def test_opt_in_batch_recovers_in_fresh_junos_session_and_keeps_both_transcripts(self):
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        width = SETUP_COMMANDS[0]
+        commands = ['show version', 'show lldp neighbors', 'show isis adjacency']
+        for diagnostic in (width + '\nnoc@router>\n', 'error: permission denied\n'):
+            for valid_probe in (True, False):
+                with self.subTest(diagnostic=diagnostic, valid_probe=valid_probe):
+                    first = PreparationChannel(self.clock, {width: [(0, diagnostic)]})
+                    second = PreparationChannel(self.clock, {
+                        'show cli': CAPS if valid_probe else 'invalid capability evidence',
+                        'show version': [(0, 'Junos: 23.4R2\nlong value\n wrapped row\n---(more)---')],
+                    })
+                    second.page = [(0, '\nsecond page\nnoc@router>')]
+                    attempts = []
+                    c = self.collector(first)
+                    c.profiles['fixture'] = {'junos_minimal_recovery': True, 'port': 2222,
+                                             'ssh_mode': 'strict', 'username': 'fixture',
+                                             'password': 'fixture-only'}
+
+                    def connect(**params):
+                        conn = (first, second)[len(attempts)]
+                        attempts.append(params)
+                        try:
+                            JuniperBase.session_preparation(conn)
+                        except Exception:
+                            conn.disconnect()
+                            raise
+                        return conn
+
+                    with patch.object(c, '_connect', connect):
+                        if valid_probe:
+                            result = c.execute_many('local', commands, profile='fixture', save_output=True)
+                            self.assertTrue(result['ok'], result)
+                            self.assertEqual(second.submitted, ['show cli', *commands])
+                            self.assertTrue(all(item['command_echo_verified'] for item in result['results']))
+                            saved = Path(c.output_dir, result['results'][0]['output_id'] + '.txt')
+                            self.assertIn('long value\n wrapped row', saved.read_text(encoding='utf-8'))
+                            self.assertIn('second page', saved.read_text(encoding='utf-8'))
+                            self.assertIn(' ', second.writes)
+                        else:
+                            with self.assertRaises(b.CollectionError) as caught:
+                                c.execute_many('local', commands, profile='fixture')
+                            result = c.failure_result(caught.exception, 'local')
+                            self.assertEqual(result['error_reason'], 'junos_minimal_probe_unverified')
+                            self.assertIn('invalid capability evidence', result['output'])
+                            self.assertIs(result['command_sent'], False)
+                            self.assertEqual(second.submitted, ['show cli'])
+                            self.assertTrue(second.remote_conn.closed)
+                    self.assertEqual(first.submitted, [width])
+                    self.assertTrue(first.remote_conn.closed)
+                    self.assertEqual(result['recovery_attempts'], 1)
+                    self.assertEqual(result['previous_attempt']['output'], diagnostic)
+                    self.assertEqual(len(attempts), 2)
+                    for key in ('host', 'port', 'device_type', 'ssh_strict', 'alt_key_file', 'username', 'password'):
+                        self.assertEqual(attempts[0][key], attempts[1][key])
+
+    def test_opt_in_batch_does_not_reconnect_after_sending_business_command(self):
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        conn = PreparationChannel(self.clock, {
+            SETUP_COMMANDS[0]: [(0, SETUP_COMMANDS[0] + '\nnoc@router>\n'),
+                                (4.6, ACKS[SETUP_COMMANDS[0]] + '\nnoc@router>')],
+            'show version': [(0, 'partial version\n')],
+        })
+        c = self.collector(conn)
+        c.defaults['junos_minimal_recovery'] = True
+
+        def connect(**kwargs):
+            JuniperBase.session_preparation(conn)
+            return conn
+
+        with patch.object(c, '_connect', side_effect=connect) as open_session:
+            with self.assertRaises(b.BatchError) as caught:
+                c.execute_many('local', ['show version', 'show lldp neighbors'], read_timeout=1)
+        open_session.assert_called_once()
+        self.assertEqual(conn.submitted, [*SETUP_COMMANDS, 'show version'])
+        result, skipped = caught.exception.results
+        self.assertIn('partial version', result['output'])
+        self.assertIs(result['command_sent'], True)
+        self.assertEqual(skipped['status'], 'SKIPPED')
+
+    def batch_collector(self, *channels):
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        c = self.collector(channels[0])
+        pending = iter(channels)
+        def connect(**kwargs):
+            channel = next(pending)
+            if isinstance(channel, Exception):
+                raise channel
+            try:
+                JuniperBase.session_preparation(channel)
+            except Exception:
+                channel.disconnect()
+                raise
+            return channel
+        c._connect = connect
+        return c
+
+    def test_opt_out_profile_does_not_reuse_minimal_session(self):
+        width = SETUP_COMMANDS[0]
+        first = PreparationChannel(self.clock, {width: [(0, 'partial width\n')]})
+        minimal = PreparationChannel(self.clock, {})
+        normal = PreparationChannel(self.clock, {})
+        c = self.batch_collector(first, minimal, normal)
+        c.profiles.update({'enabled': {'junos_minimal_recovery': True},
+                           'disabled': {'junos_minimal_recovery': False}})
+        enabled = c.execute_many('local', ['show version'], profile='enabled')
+        self.assertEqual(enabled['recovery_attempts'], 1)
+        disabled = c.execute_many('local', ['show version'], profile='disabled')
+        self.assertTrue(disabled['ok'])
+        self.assertFalse(disabled['results'][0]['session_reused'])
+        self.assertEqual(normal.submitted, [*SETUP_COMMANDS, 'show version'])
+        reused = c.execute('local', 'show version', profile='enabled')
+        self.assertTrue(reused['session_reused'])
+        self.assertTrue(reused['command_echo_verified'])
+        self.assertEqual(minimal.submitted, ['show cli', 'show version', 'show version'])
+
+    def scan_batch(self, collector, name):
+        collector.defaults['junos_minimal_recovery'] = True
+        target = {'target': 'local', 'device_type': 'juniper_junos',
+                  'commands': ['show version', 'show lldp neighbors']}
+        directory = Path(self.tmp.name, name)
+        scan.run_scan(collector, [target], directory, workers=2, slow_workers=1,
+                      fast_timeout=35, slow_timeout=50, device_timeout=85)
+        record, = (directory / 'results').glob('*.json')
+        return json.loads(record.read_text(encoding='utf-8'))
+
+    def test_scan_shares_retry_budget_with_junos_recovery(self):
+        width = SETUP_COMMANDS[0]
+        for first_connect_times_out in (False, True):
+            with self.subTest(first_connect_times_out=first_connect_times_out):
+                failed_prep = PreparationChannel(self.clock, {width: [(0, 'partial width\n')]})
+                if first_connect_times_out:
+                    channels = (TimeoutError('TCP fixture timeout'), failed_prep)
+                    expected_attempts = 2
+                else:
+                    failed_minimal = PreparationChannel(self.clock, {'show cli': [(0, 'partial probe\n')]})
+                    channels = (failed_prep, failed_minimal)
+                    expected_attempts = 1
+                c = self.batch_collector(*channels)
+                with patch.object(c, '_connect', wraps=c._connect) as connect:
+                    record = self.scan_batch(c, f'retry-{first_connect_times_out}')
+                self.assertEqual(connect.call_count, 2)
+                self.assertEqual(record['status'], 'failed')
+                self.assertEqual(len(record['attempts']), expected_attempts)
+                self.assertEqual(failed_prep.submitted, [width])
+
+    def test_scan_keeps_first_preparation_transcript_when_recovered_batch_stops(self):
+        width = SETUP_COMMANDS[0]
+        first = PreparationChannel(self.clock, {width: [(0, 'first preparation output\n')]})
+        second = PreparationChannel(self.clock, {'show version': 'error: permission denied'})
+        c = self.batch_collector(first, second)
+        record = self.scan_batch(c, 'keep-recovery')
+        attempt, = record['attempts']
+        result = attempt['result']
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertEqual(result['previous_attempt']['output'], 'first preparation output\n')
+        self.assertEqual([item['status'] for item in result['results']], ['CLI_ERROR', 'SKIPPED'])
 
     def test_junos_cli_setup_error_with_valid_prompt_keeps_existing_preparation_contract(self):
         for rejected_command in SETUP_COMMANDS:

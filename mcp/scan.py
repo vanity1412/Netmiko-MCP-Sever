@@ -154,9 +154,10 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
                 restarted_plan = True
             execution_plan = resolved_plan
             outcome = collector.execute_many(task['target'],commands[command_offset:],device_type=params['device_type'],
-                        profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),save_output=True)
+                        profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),
+                        save_output=True,allow_junos_recovery=budget.get('allow_junos_recovery', True))
         except BatchError as exc:
-            outcome = {'ok':False,'results':exc.results}
+            outcome = exc.summary or {'ok':False,'results':exc.results}
         except Exception as exc:
             outcome = collector.failure_result(exc,task['target'])
     outcome = normalize_result(outcome)
@@ -379,6 +380,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                             'replay_from_start':old.get('replay_from_start',False),
                             'device_budget_seconds':cap,'device_elapsed_seconds':elapsed,
                             'next_command_index':old.get('next_command_index',0)}
+                    attempt_budgets[lane]['allow_junos_recovery'] = record['cycle_attempts'] == 1
                     save(record)
                     offset=old.get('next_command_index',0)
                     previous_plan = next((attempt['execution_plan'] for attempt in reversed(record['attempts'])
@@ -403,7 +405,8 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                     record['device_elapsed_seconds'] = prior_elapsed + time.monotonic() - cycle_start
                     remaining = record['device_budget_seconds'] - record['device_elapsed_seconds']
                     attempt['device_budget_exceeded'] = remaining <= 0
-                    retry=(remaining > 0 and record['cycle_attempts'] < 2 and attempt['retryable'] and attempt['error_category'] in
+                    retry=(remaining > 0 and record['cycle_attempts'] < 2 and not attempt.get('result', {}).get('recovery_attempts')
+                           and attempt['retryable'] and attempt['error_category'] in
                            {'connect_timeout','banner_timeout','read_timeout','auth_timeout','connection_lost','handshake_incomplete'} and not cancel.is_set())
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)

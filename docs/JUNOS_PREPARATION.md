@@ -56,6 +56,27 @@ Không sửa authentication, session key/isolation, retry transport, driver sele
 10 tool schema hoặc cấu hình persistent. Ba lệnh prep chỉ đổi tùy chọn CLI của
 phiên. Transcript prep/probe/resync được giữ trong diagnostic hiện có.
 
+## Mở lại phiên khi đồng bộ thất bại
+
+Đặt `"junos_minimal_recovery": true` trong cấu hình thiết bị hoặc profile để
+thử tính năng này trên Junos đã xác định driver `juniper_junos`. Mặc định tắt.
+Collector chỉ mở lại một lần cho batch lệnh đọc `show` hoặc `display` đủ điều
+kiện chạy lại, khi bước đồng bộ của phiên đầu thất bại trước lệnh đầu tiên.
+Lần mở lại dùng cùng tham số kết nối và deadline của yêu cầu.
+Collector giữ pool riêng cho phiên của cấu hình Junos đã bật tùy chọn, để
+profile tắt tùy chọn dùng phiên chuẩn. Trong scanner, lần mở lại dùng lượt
+thử còn lại của chu kỳ. Nếu scanner đã chuyển sang lượt retry, batch không
+mở thêm phiên minimal.
+
+Phiên mới xác minh prompt, bật kiểm tra echo và dùng `show cli` để xác minh
+reader. Collector giữ phân trang và dòng output xuống hàng theo phản hồi thiết
+bị. Nếu echo của chính lệnh nhập bị xuống dòng theo cách reader chưa xác minh
+được, Collector dừng trước khi gửi Enter.
+
+Kết quả ghi lần đầu trong `previous_attempt` và phản hồi kiểm tra phiên mới
+trong `junos_preparation` hoặc trong lỗi chuẩn bị. `continue_on_error` vẫn điều
+khiển việc chạy tiếp sau lỗi CLI khi batch đã bắt đầu.
+
 ## Kiểm thử và benchmark
 
 Kết quả của mốc 434: 434/434 PASS trong 536,428 giây; localhost cold execute

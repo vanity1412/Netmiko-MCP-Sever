@@ -235,17 +235,20 @@ def classify_error(exc, stage='unknown'):
 
 
 @contextlib.contextmanager
-def preparation_request_context(checkpoint):
+def preparation_request_context(checkpoint, *, minimal_junos=False):
     """Scope a caller's budget to synchronous Netmiko preparation only.
 
     Worker processes retain their existing parent-enforced budget. A nested
     connection must restore, never leak, the previous thread's callback.
     """
     previous = getattr(_PREPARATION_CONTEXT, 'checkpoint', None)
+    previous_minimal = getattr(_PREPARATION_CONTEXT, 'minimal_junos', False)
     _PREPARATION_CONTEXT.checkpoint = checkpoint
+    _PREPARATION_CONTEXT.minimal_junos = minimal_junos
     try:
         yield
     finally:
+        _PREPARATION_CONTEXT.minimal_junos = previous_minimal
         if previous is None:
             with contextlib.suppress(AttributeError):
                 del _PREPARATION_CONTEXT.checkpoint
@@ -1257,6 +1260,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 pager = pagers[-1]
                 marker_id = received - len(tail) + pager.start()
                 if marker_id not in handled_pagers:
+                    if checkpoint:
+                        checkpoint()
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('Command read timed out')
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
             elif (ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet
@@ -1602,6 +1609,26 @@ def junos_prepare_session(conn):
              ('set cli complete-on-space off', 'complete_on_space', False, 'Disabling complete-on-space'),
              ('set cli screen-length 0', 'screen_length', 0, 'Screen length set to 0')]
     try:
+        if getattr(_PREPARATION_CONTEXT, 'minimal_junos', False):
+            if (dead_session(conn) or not callable(getattr(conn, 'read_channel', None))
+                    or not callable(getattr(conn, 'write_channel', None))):
+                raise preparation_error({'error_category': 'output_verification',
+                    'error_reason': 'junos_minimal_channel_unavailable', 'retryable': False},
+                    '', '[initial prompt]')
+            conn._network_junos_verify_echo = True
+            probe, failure = prep_read('show cli', pattern)
+            if not failure and (not conn._network_command_sent or dead_session(conn)
+                                or not junos_cli_capabilities(probe, prompt)):
+                failure = {'error_category': 'output_verification',
+                           'error_reason': 'junos_minimal_probe_unverified', 'retryable': False}
+            if failure:
+                raise preparation_error(failure, probe, 'show cli')
+            conn._network_junos_preparation.append(
+                {'command': 'show cli', 'output': probe, 'reason': 'minimal_preparation'})
+            conn.base_prompt = prompt[:-1]
+            conn._network_junos_prepared = True
+            return
+
         for command, field, desired, ack in steps:
             caps = conn._network_junos_capabilities
             if adaptive:
@@ -1649,6 +1676,11 @@ def junos_prepare_session(conn):
                     fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
                     error = preparation_error(reset_failure if fatal_reset else (failure or reset_failure), reply, command)
                     error.details['resync_output'] = reset
+                    error._network_junos_resync_failed = (
+                        reset_failure.get('error_reason') == 'junos_resync_failed'
+                        and error.details.get('error_category') in {
+                            'output_verification', 'read_timeout', 'connection_lost',
+                        })
                     raise error
             adaptive = True
             # Probe once on this SSH session, after a verified boundary. If the
@@ -1814,7 +1846,7 @@ class Collector:
     @staticmethod
     def _device_signature(device: dict[str, Any]) -> tuple[Any, ...]:
         # Only the parameters that decide how a connection is built.
-        keys = KNOWN_KEYS | {'profile', 'ssh_mode', 'auto_enable', 'inherit_credentials'}
+        keys = KNOWN_KEYS | {'profile', 'ssh_mode', 'auto_enable', 'inherit_credentials', 'junos_minimal_recovery'}
         return (json.dumps({k: v for k, v in device.items() if k in keys}, sort_keys=True),)
 
     def _build_device_index(self) -> None:
@@ -2301,7 +2333,7 @@ class Collector:
             self._disconnect_entry(evicted)
 
     @measured_phase('connect_prepare')
-    def _open(self, params: dict[str, Any]) -> Any:
+    def _open(self, params: dict[str, Any], *, minimal_junos=False) -> Any:
         remaining = self._checkpoint()
         params = dict(params)
         for field in ('conn_timeout', 'auth_timeout', 'banner_timeout'):
@@ -2310,7 +2342,7 @@ class Collector:
         started = time.monotonic()
         auto_enable = params.pop('_auto_enable', False)
         try:
-            with preparation_request_context(self._checkpoint), connection_measurements() as connection_timings:
+            with preparation_request_context(self._checkpoint, minimal_junos=minimal_junos), connection_measurements() as connection_timings:
                 conn = self._connect(**params)
         except Exception as exc:
             exc._network_timings_ms = dict(connection_timings)
@@ -2364,15 +2396,16 @@ class Collector:
         self.close()
 
     @contextlib.contextmanager
-    def _lease(self, target: str, device_type: str | None = None, profile: str | None = None):
-        with self._lease_inner(target, device_type, profile) as conn:
+    def _lease(self, target: str, device_type: str | None = None, profile: str | None = None,
+               *, recover_junos=False):
+        with self._lease_inner(target, device_type, profile, recover_junos=recover_junos) as conn:
             yield conn
 
     @contextlib.contextmanager
-    def _lease_inner(self, target, device_type=None, profile=None):
+    def _lease_inner(self, target, device_type=None, profile=None, *, recover_junos=False):
         yielded = False
         try:
-            with self._lease_once(target, device_type, profile) as conn:
+            with self._lease_once(target, device_type, profile, recover_junos=recover_junos) as conn:
                 yielded = True
                 yield conn
         except Exception as exc:
@@ -2396,12 +2429,18 @@ class Collector:
                 self._request.force_driver_probe = old_force
 
     @contextlib.contextmanager
-    def _lease_once(self, target: str, device_type: str | None = None, profile: str | None = None):
+    def _lease_once(self, target: str, device_type: str | None = None, profile: str | None = None,
+                    *, recover_junos=False):
         self._checkpoint()
         params = self._get_settings(target, device_type, profile)
+        minimal_enabled = (params['device_type'] == 'juniper_junos'
+                           and self._request.cli_options.get('junos_minimal_recovery') is True)
         self._resolve_platform(params)
         self._request.resolved_driver = params['device_type']
         key = self._session_key(params)
+        if minimal_enabled:
+            # Partition the pool without changing SSH identity or auth cooldown.
+            key += ('junos_minimal_recovery',)
         entry, evicted, _ = self._reserve_pool_entry(key)
         if evicted is not None:
             self._disconnect_entry(evicted)
@@ -2430,7 +2469,8 @@ class Collector:
                     try:
                         if self._auth_failures.get(self._detect_key(params), 0) > time.monotonic():
                             raise PermissionError("Authentication previously failed; credential identity is cooling down")
-                        entry["conn"] = self._open(params)
+                        entry["conn"] = (self._open_junos_batch_session(params, target)
+                                         if recover_junos and minimal_enabled else self._open(params))
                     except Exception as exc:
                         with self._guard:
                             if classify_error(exc, 'connect')['error_category'] in {'authentication', 'auth_method'}:
@@ -2523,7 +2563,8 @@ class Collector:
         details = {**previous, **details}
         recovery = getattr(exc, '_network_previous_attempt', None)
         if recovery is not None:
-            details.update(recovery_attempts=1, previous_attempt=recovery)
+            details.update(recovery_attempts=getattr(exc, '_network_recovery_attempts', 1),
+                           previous_attempt=recovery)
         driver = getattr(exc, '_network_resolved_driver', None) or getattr(self._request, 'resolved_driver', None)
         if driver is not None:
             details.setdefault('driver', driver)
@@ -3017,6 +3058,31 @@ class Collector:
                         result["output"] = json.dumps(result["structured_output"], ensure_ascii=False)
         return result
 
+    def _open_junos_batch_session(self, params, target):
+        try:
+            return self._open(params)
+        except CollectionError as exc:
+            if not getattr(exc, '_network_junos_resync_failed', False):
+                raise
+            previous = self.failure_result(exc, target)
+            with self._guard:
+                self._connection_failures += 1
+        try:
+            self._checkpoint()
+        except Exception as exc:
+            exc._network_previous_attempt = previous
+            exc._network_recovery_attempts = 0
+            raise
+        # Netmiko closed the failed constructor. Reuse the exact resolved
+        # connection parameters while the caller still owns the lease.
+        try:
+            conn = self._open(params, minimal_junos=True)
+        except Exception as exc:
+            exc._network_previous_attempt = previous
+            raise
+        conn._network_previous_preparation = previous
+        return conn
+
     def _disconnect_connection(self, conn: Any) -> None:
         with self._guard:
             entries = [entry for entry in self._sessions.values() if entry.get("conn") is conn]
@@ -3026,7 +3092,8 @@ class Collector:
     @bounded_request
     def execute_many(self, target: str, commands: list[str], device_type: str | None = None, profile: str | None = None,
                      read_timeout: int | None = None, save_output: bool = False, use_timing: bool = False,
-                     expect_string: str | None = None, continue_on_error: bool = False) -> dict[str, Any]:
+                     expect_string: str | None = None, continue_on_error: bool = False,
+                     *, allow_junos_recovery: bool = True) -> dict[str, Any]:
         if not isinstance(continue_on_error, bool):
             raise ValueError("continue_on_error must be boolean")
         if not isinstance(commands, list) or not 1 <= len(commands) <= MAX_COMMANDS:
@@ -3035,6 +3102,7 @@ class Collector:
         commands = self._preflight(target, commands, device_type, profile)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         results = []
+        recovery = {}
 
         def stop(index):
             for skipped_index in range(index + 1, len(commands)):
@@ -3043,9 +3111,16 @@ class Collector:
                     'command_index': skipped_index, 'ok': False, 'skipped': True,
                     'command_sent': False, 'output_complete': False, 'retryable': False,
                     'skipped_reason': 'batch_stopped', 'blocked_by_command_index': index}))
-            raise BatchError(results, batch_summary(target, len(commands), results, continue_on_error))
+            raise BatchError(results, {**batch_summary(target, len(commands), results, continue_on_error), **recovery})
 
-        with self._lease(target, device_type, profile) as conn:
+        recover_junos = allow_junos_recovery and all(
+            is_replay_safe(command) and re.match(r'^(?:show|display)\s', command, re.I)
+            for command in commands)
+        with self._lease(target, device_type, profile, recover_junos=recover_junos) as conn:
+            previous = getattr(conn, '_network_previous_preparation', None)
+            if previous is not None:
+                del conn._network_previous_preparation
+                recovery.update(recovery_attempts=1, previous_attempt=previous)
             for index, cmd in enumerate(commands):
                 start = time.monotonic()
                 conn._network_command_sent = False
@@ -3068,7 +3143,7 @@ class Collector:
                         and not dead_session(conn))
                     if not (continue_on_error and synchronized_cli_error):
                         stop(index)
-        return batch_summary(target, len(commands), results, continue_on_error)
+        return {**batch_summary(target, len(commands), results, continue_on_error), **recovery}
 
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
