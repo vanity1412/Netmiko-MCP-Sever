@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -181,10 +182,124 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(r['status'],'TIMEOUT');self.assertEqual(r['output'],'first partial')
         self.assertEqual(execute.call_count,1)
 
+    def test_pre_send_recovery_keeps_profile_and_host_key_settings(self):
+        self.c.profiles['noc'] = {
+            'username': 'fixture-noc', 'password': 'fixture-only',
+            'port': 2222, 'ssh_mode': 'strict',
+            'alt_key_file': str(Path(self.tmp.name, 'known_hosts')),
+        }
+        connect = self.c._connect
+        attempts = []
+
+        def open_session(**params):
+            attempts.append(params)
+            if len(attempts) == 1:
+                raise TimeoutError('fixture TCP timeout')
+            return connect(**params)
+
+        with patch.object(self.c, '_connect', open_session):
+            result = self.c.execute('192.0.2.1', 'show version',
+                                    device_type='juniper_junos', profile='noc')
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(attempts), 2)
+        expected = {'host': '192.0.2.1', 'port': 2222, 'username': 'fixture-noc',
+                    'device_type': 'juniper_junos', 'ssh_strict': True,
+                    'alt_key_file': self.c.profiles['noc']['alt_key_file']}
+        for attempt in attempts:
+            self.assertEqual({key: attempt[key] for key in expected}, expected)
+
+        self.c.audit('ssh_execute', {'target': '192.0.2.1', 'command': 'show version'},
+                     True, 0, result=result)
+        raw = Path(self.tmp.name, 'collector_audit.jsonl').read_text(encoding='utf-8')
+        audit = json.loads(raw.splitlines()[-1])
+        self.assertEqual(audit['recovery_attempts'], 1)
+        self.assertEqual(audit['previous_error_category'], 'connect_timeout')
+        self.assertEqual(audit['previous_error_stage'], 'tcp')
+        self.assertNotIn('fixture-only', raw)
+
+    def test_pre_send_recovery_shares_single_attempt_with_read_recovery(self):
+        first = b.CollectionError({'error_category': 'banner_timeout',
+                                   'error_stage': 'banner', 'retryable': True})
+        second = {'ok': False, 'error_category': 'connection_lost',
+                  'command_sent': True, 'output_complete': False, 'output': 'partial'}
+        with patch.object(self.c, '_execute_once', side_effect=[first, second]) as execute:
+            result = self.c.execute('192.0.2.1', 'show version')
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertEqual(result['output'], 'partial')
+        self.assertIs(result['previous_attempt']['command_sent'], False)
+
+    def test_pre_send_recovery_retains_first_failure_if_second_connection_fails(self):
+        first = b.CollectionError({'error_category': 'handshake_incomplete',
+                                   'error_stage': 'key_exchange', 'retryable': True})
+        second = NetmikoAuthenticationException('Authentication failed')
+        with patch.object(self.c, '_execute_once', side_effect=[first, second]) as execute:
+            with self.assertRaises(NetmikoAuthenticationException) as caught:
+                self.c.execute('192.0.2.1', 'show version')
+        self.assertEqual(execute.call_count, 2)
+        result = self.c.failure_result(caught.exception, '192.0.2.1', 'show version')
+        self.assertEqual(result['status'], 'AUTH_ERROR')
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertEqual(result['previous_attempt']['error_category'], 'handshake_incomplete')
+
+    def test_pre_send_recovery_excludes_other_failures_and_mutations(self):
+        for category, stage, command in (
+            ('host_key_changed', 'host_key', 'show version'),
+            ('auth_timeout', 'authentication', 'show version'),
+            ('read_timeout', 'preparation', 'show version'),
+            ('banner_timeout', 'banner', 'configure terminal'),
+        ):
+            with self.subTest(category=category, command=command):
+                failure = b.CollectionError({'error_category': category,
+                                             'error_stage': stage, 'retryable': True})
+                with patch.object(self.c, '_execute_once', side_effect=failure) as execute:
+                    with self.assertRaises(b.CollectionError):
+                        self.c.execute('192.0.2.1', command)
+                self.assertEqual(execute.call_count, 1)
+
+    def test_pre_send_recovery_does_not_open_again_after_deadline(self):
+        first = b.CollectionError({'error_category': 'banner_timeout',
+                                   'error_stage': 'banner', 'retryable': True})
+        with patch.object(self.c, '_execute_once', side_effect=first) as execute, \
+             patch.object(self.c, '_checkpoint', side_effect=[120, TimeoutError('Request deadline exceeded')]):
+            result = self.c.execute('192.0.2.1', 'show version')
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(result['error_category'], 'deadline')
+        self.assertEqual(result['error_reason'], 'request_deadline')
+        self.assertEqual(result['previous_error_category'], 'banner_timeout')
+        self.assertIs(result['command_sent'], False)
+
 class RealRecoveryTests(unittest.TestCase):
     setUpClass=classmethod(fixtures.RealSSHTests.setUpClass.__func__)
     setUp=fixtures.RealSSHTests.setUp
     collector=fixtures.RealSSHTests.collector
+    def test_delayed_first_banner_reconnects_before_sending_show(self):
+        accepted = []
+        serve = self.server.serve
+
+        def delay_first_banner(client):
+            accepted.append(client)
+            if len(accepted) == 1:
+                with client:
+                    self.server.stop.wait(2)
+                return
+            serve(client)
+
+        self.server.serve = delay_first_banner
+        self.server.responses['show version'] = 'Fixture OS 1.0'
+        c = self.collector('cisco_ios')
+        with c.request_budget(timeout=15, connection_timeouts={'banner_timeout': .5}):
+            result = c.execute('local', 'show version')
+
+        self.assertEqual(result['status'], 'SUCCESS', result)
+        self.assertIn('Fixture OS 1.0', result['output'])
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertEqual(result['previous_attempt']['error_category'], 'banner_timeout')
+        self.assertIs(result['previous_attempt']['command_sent'], False)
+        self.assertEqual(len(accepted), 2)
+        self.assertEqual(self.server.auth_attempts, 1)
+        self.assertEqual(self.server.commands.count('show version'), 1)
+
     def test_read_recovers_once_and_retains_previous_partial(self):
         calls=[]
         def reply(ch):

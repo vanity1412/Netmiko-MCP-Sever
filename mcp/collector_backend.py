@@ -1998,6 +1998,15 @@ class Collector:
             for field in ('command_sent', 'output_complete', 'retryable', 'ssh_authenticated', 'cli_ready'):
                 if isinstance(details.get(field), bool):
                     record[field] = details[field]
+            attempts = details.get('recovery_attempts')
+            if type(attempts) is int and attempts in (0, 1):
+                record['recovery_attempts'] = attempts
+                previous = details.get('previous_attempt', {})
+                for field in ('error_category', 'error_stage'):
+                    key = 'previous_' + field
+                    value = previous.get(field, details.get(key))
+                    if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', value):
+                        record[key] = value
             prep = details.get('preparation_command')
             if isinstance(prep, str) and re.fullmatch(
                     r'(?:set cli (?:screen-(?:width|length) [0-9]{1,6}|complete-on-space off)'
@@ -2505,6 +2514,9 @@ class Collector:
         details = classify_error(exc, getattr(self._request, 'stage', 'unknown'))
         previous = getattr(exc, '_network_command_result', {})
         details = {**previous, **details}
+        recovery = getattr(exc, '_network_previous_attempt', None)
+        if recovery is not None:
+            details.update(recovery_attempts=1, previous_attempt=recovery)
         driver = getattr(exc, '_network_resolved_driver', None) or getattr(self._request, 'resolved_driver', None)
         if driver is not None:
             details.setdefault('driver', driver)
@@ -2928,21 +2940,43 @@ class Collector:
         options = dict(target=target,command=command,device_type=device_type,profile=profile,
                        read_timeout=read_timeout,expect_string=expect_string,use_timing=use_timing,
                        save_output=save_output,use_textfsm=use_textfsm)
-        result = self._execute_once(**options)
+        connection_failed = False
+        try:
+            result = self._execute_once(**options)
+        except Exception as exc:
+            failure = classify_error(exc)
+            if (failure.get('retryable') is not True
+                    or failure.get('error_stage') not in {'connect', 'autodetect', 'tcp', 'banner', 'key_exchange'}
+                    or failure.get('error_category') not in {
+                        'connect_timeout', 'banner_timeout', 'handshake_incomplete', 'connection_lost',
+                    }
+                    or not is_replay_safe(command)):
+                raise
+            result = self.failure_result(exc, target, command)
+            if result['command_sent'] is not False:
+                raise
+            connection_failed = True
         category = result.get('error_category')
-        transient = category == 'connection_lost' or (
+        transient = connection_failed or category == 'connection_lost' or (
             category == 'read_timeout' and result.get('retryable') is True)
         if transient and is_replay_safe(command) and not result.get('awaiting_input'):
             previous = result
             try:
                 self._checkpoint()
             except Exception as exc:
-                result.update(classify_error(exc, 'command'), recovery_attempts=0,
-                              recovery_skipped='request budget or cancellation', previous_error_category=category)
+                failure = classify_error(exc, 'command')
+                result.update(failure, error_reason=ERROR_REASON_BY_CATEGORY.get(failure['error_category']),
+                              recovery_attempts=0, recovery_skipped='request budget or cancellation',
+                              previous_error_category=category, previous_error_stage=previous.get('error_stage'))
                 return normalize_result(result)
             try:
                 result = self._execute_once(**options)
             except Exception as exc:
+                if connection_failed:
+                    # Preserve the Collector exception contract; the MCP
+                    # dispatcher still receives both attempts via failure_result.
+                    exc._network_previous_attempt = previous
+                    raise
                 result = self.failure_result(exc, target, command)
             result.update(recovery_attempts=1,previous_attempt=previous)
         return normalize_result(result)
