@@ -540,6 +540,25 @@ def command_prompt_pattern(conn, command, exact):
     return exact
 
 
+def cli_replay_context(conn, driver):
+    """Return a verified, unchanged login context for an automatic replay."""
+    prompt = getattr(conn, '_network_prompt_text', '')
+    if (not prompt or prompt != getattr(conn, '_network_login_prompt', None)
+            or getattr(conn, '_network_cli_context_changed', False)):
+        return None
+    if driver == 'juniper_junos':
+        operational = prompt.endswith('>')
+    elif driver == 'huawei':
+        operational = prompt.startswith('<') and prompt.endswith('>')
+    elif driver.startswith('cisco_'):
+        operational = prompt.endswith(('#', '>')) and '(' not in prompt
+    elif driver == 'linux':
+        operational = prompt.endswith(('#', '$'))
+    else:
+        operational = False
+    return (driver, prompt) if operational else None
+
+
 # Used only on recognized CLI diagnostic lines, never as a command filter.
 PERMISSION_DENIAL_RE = re.compile(
     r'\b(?:permission denied|access[ -]denied|command authorization failed|'
@@ -1381,8 +1400,18 @@ def preparation_error(failure, output, command):
     error = CollectionError({**failure, 'error': failure.get('error', 'PreparationOutputVerificationError'),
                             'error_stage': 'preparation',
                             'output': output, 'preparation_command': command})
-    if command.startswith('set cli '):
+    if command.startswith('set cli ') or command == 'show cli':
         error._network_no_driver_refresh = True
+    return error
+
+
+def junos_resync_error(failure, reset_failure, output, command, reset_output, *, attempted=True):
+    fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
+    error = preparation_error(reset_failure if fatal_reset else (failure or reset_failure), output, command)
+    error.details['resync_output'] = reset_output
+    error._network_junos_resync_failed = (
+        attempted and reset_failure.get('error_reason') == 'junos_resync_failed'
+        and error.details.get('error_category') in {'output_verification', 'read_timeout', 'connection_lost'})
     return error
 
 
@@ -1673,15 +1702,7 @@ def junos_prepare_session(conn):
                 reset, reset_failure = reset_session(prompt)
                 record['resync_output'] = reset
                 if reset_failure:
-                    fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
-                    error = preparation_error(reset_failure if fatal_reset else (failure or reset_failure), reply, command)
-                    error.details['resync_output'] = reset
-                    error._network_junos_resync_failed = (
-                        reset_failure.get('error_reason') == 'junos_resync_failed'
-                        and error.details.get('error_category') in {
-                            'output_verification', 'read_timeout', 'connection_lost',
-                        })
-                    raise error
+                    raise junos_resync_error(failure, reset_failure, reply, command, reset)
             adaptive = True
             # Probe once on this SSH session, after a verified boundary. If the
             # probe cannot establish settings, the business echo guard stays on.
@@ -1695,7 +1716,9 @@ def junos_prepare_session(conn):
                 # autocomplete-off assumption from the preparation response.
                 caps.clear()
                 if probe_failure or not ending_matches(pattern, probe) or any(pending_interaction(line) for line in probe.splitlines()) or dead_session(conn):
-                    if resynced or (probe_failure or {}).get('error_category') in {'cancelled', 'deadline', 'storage_error'}:
+                    can_resync = not resynced and (probe_failure or {}).get('error_category') not in {
+                        'cancelled', 'deadline', 'storage_error'}
+                    if not can_resync:
                         reset, reset_failure = '', probe_failure or {'error_category': 'output_verification',
                             'error_reason': 'junos_resync_failed', 'retryable': False}
                     else:
@@ -1703,10 +1726,9 @@ def junos_prepare_session(conn):
                         reset, reset_failure = reset_session(prompt)
                     probe_record['resync_output'] = reset
                     if reset_failure:
-                        fatal_reset = reset_failure.get('error_category') in {'cancelled', 'deadline', 'storage_error'}
-                        error = preparation_error(reset_failure if fatal_reset else (probe_failure or reset_failure), reply, command)
+                        error = junos_resync_error(probe_failure, reset_failure, probe, 'show cli', reset,
+                                                   attempted=can_resync)
                         error.details['junos_preparation'] = conn._network_junos_preparation
-                        error.details['resync_output'] = reset
                         raise error
                 else:
                     caps.update(junos_cli_capabilities(probe, prompt))
@@ -2046,11 +2068,13 @@ class Collector:
                     value = previous.get(field, details.get(key))
                     if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', value):
                         record[key] = value
-            prep = details.get('preparation_command')
-            if isinstance(prep, str) and re.fullmatch(
-                    r'(?:set cli (?:screen-(?:width|length) [0-9]{1,6}|complete-on-space off)'
-                    r'|terminal width [0-9]{1,6}|\[initial prompt\])', prep):
-                record['preparation_command'] = prep
+            for source, key in ((details, 'preparation_command'),
+                                (details.get('previous_attempt', {}), 'previous_preparation_command')):
+                prep = source.get('preparation_command')
+                if isinstance(prep, str) and re.fullmatch(
+                        r'(?:set cli (?:screen-(?:width|length) [0-9]{1,6}|complete-on-space off)'
+                        r'|terminal width [0-9]{1,6}|show cli|\[initial prompt\])', prep):
+                    record[key] = prep
             if type(result.get('failed_command_index')) is int:
                 record['failed_command_index'] = result['failed_command_index']
             batch_id = batch_id or result.get('batch_id')
@@ -2325,6 +2349,7 @@ class Collector:
             time.sleep(min(.02, max(0, deadline-time.monotonic())))
 
     def _adopt_probe(self, params, proxy):
+        proxy._network_login_prompt = getattr(proxy, '_network_prompt_text', None)
         proxy._network_fresh_probe = True
         _, evicted, accepted = self._reserve_pool_entry(self._session_key(params), proxy)
         if not accepted:
@@ -2360,6 +2385,7 @@ class Collector:
                 raise ValueError('CLI prompt could not be verified after connection')
             if prompt:
                 conn._network_prompt_text = prompt
+                conn._network_login_prompt = prompt
                 conn._network_prompt_regex = r"(?m)^" + re.escape(prompt) + r"[ \t]*\r?$"
                 conn.base_prompt = prompt[:-1]
             conn._network_connect_prepare_ms = int((time.monotonic()-started)*1000)
@@ -2599,6 +2625,10 @@ class Collector:
             details['target'] = target
         if command is not None:
             details['command'] = self.redact_output(command)
+        if hasattr(exc, '_network_interact_steps'):
+            details['steps'] = exc._network_interact_steps
+            if hasattr(exc, '_network_failed_step_index'):
+                details['failed_step_index'] = exc._network_failed_step_index
         return normalize_result(details)
 
     def _checkpoint(self) -> float:
@@ -2938,10 +2968,10 @@ class Collector:
     @measured_phase('command')
     def _send(self, conn: Any, command: str, timeout: int, expect_string: str | None = None,
               use_timing: bool = False, *, allow_reply: bool = False) -> tuple[Any, str | None]:
-        timeout = min(timeout, self._checkpoint())
         self._request.stage = 'command'
         self._request.command_sent = False
         conn._network_command_sent = False
+        timeout = min(timeout, self._checkpoint())
         if getattr(conn, '_network_awaiting_input', False) and not allow_reply:
             error = CollectionError({'error': 'SessionAwaitingInput', 'error_category': 'awaiting_input',
                                      'error_stage': 'command', 'awaiting_input': True, 'retryable': False,
@@ -2958,6 +2988,9 @@ class Collector:
         quiet = float(options.get('timing_quiet_seconds' if use_timing else 'prompt_quiet_seconds', self.timing_quiet if use_timing else self.prompt_quiet))
         if not 0 <= quiet <= 2:
             raise ValueError('Prompt quiet time must be between 0 and 2 seconds')
+        if not is_replay_safe(command) or getattr(conn, '_network_awaiting_input', False):
+            # A command or reply may change context without changing the prompt.
+            conn._network_cli_context_changed = True
         if hasattr(conn, 'collect_in_worker'):
             output, failure = conn.collect_in_worker(command, timeout, pattern, quiet, self._checkpoint)
             conn._network_read_failure = failure
@@ -3004,10 +3037,14 @@ class Collector:
             if result['command_sent'] is not False:
                 raise
             connection_failed = True
+        replay_context = result.pop('_replay_context', None)
         category = result.get('error_category')
         transient = connection_failed or category == 'connection_lost' or (
             category == 'read_timeout' and result.get('retryable') is True)
         if transient and is_replay_safe(command) and not result.get('awaiting_input'):
+            if not connection_failed and replay_context is None:
+                result.update(retryable=False, recovery_attempts=0, recovery_skipped='cli_context_unverified')
+                return normalize_result(result)
             previous = result
             try:
                 self._checkpoint()
@@ -3018,28 +3055,43 @@ class Collector:
                               previous_error_category=category, previous_error_stage=previous.get('error_stage'))
                 return normalize_result(result)
             try:
-                result = self._execute_once(**options)
+                result = self._execute_once(**options, expected_replay_context=replay_context)
             except Exception as exc:
                 if connection_failed:
                     # Preserve the Collector exception contract; the MCP
                     # dispatcher still receives both attempts via failure_result.
                     exc._network_previous_attempt = previous
                     raise
+                if getattr(exc, '_network_replay_context_changed', False):
+                    previous.update(retryable=False, recovery_attempts=1, recovery_skipped='cli_context_changed')
+                    return normalize_result(previous)
                 result = self.failure_result(exc, target, command)
+            result.pop('_replay_context', None)
             result.update(recovery_attempts=1,previous_attempt=previous)
         return normalize_result(result)
 
     @bounded_request
     def _execute_once(self, target: str, command: str, device_type: str | None = None, profile: str | None = None,
                 read_timeout: int | None = None, expect_string: str | None = None, use_timing: bool = False,
-                save_output: bool = False, use_textfsm: bool = False) -> dict[str, Any]:
+                save_output: bool = False, use_textfsm: bool = False,
+                *, expected_replay_context=None) -> dict[str, Any]:
         command = safe_command(command)
         command = self._preflight(target, [command], device_type, profile)[0]
         read_timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         started = time.monotonic()
         with self._lease(target, device_type, profile) as conn:
+            replay_context = cli_replay_context(conn, getattr(self._request, 'resolved_driver', '') or '')
+            if expected_replay_context is not None and replay_context != expected_replay_context:
+                error = CollectionError({'error': 'CLIReplayContextChanged', 'error_category': 'output_verification',
+                                         'error_stage': 'command', 'retryable': False})
+                error._network_replay_context_changed = True
+                error._network_command_sent = False
+                error._network_keep_session = True
+                raise error
             out, pattern = self._send(conn, command, read_timeout, expect_string, use_timing)
             result = self._command_result(conn, target, command, out, time.monotonic() - started, bool(save_output), pattern)
+            if not result['ok']:
+                result['_replay_context'] = replay_context
             if (not result["output_complete"] and not result.get("awaiting_input")) or getattr(conn, '_network_read_failure', None):
                 self._disconnect_connection(conn)
             if use_textfsm and result["ok"]:
@@ -3157,11 +3209,29 @@ class Collector:
         started = time.monotonic()
         chunks = []
         results = []
+
+        def stopped_steps(index):
+            skipped = [normalize_result({'step_index': step_index, 'skipped': True,
+                       'skipped_reason': 'interaction_stopped', 'blocked_by_step_index': index})
+                       for step_index in range(index + 1, len(steps))]
+            return results + skipped
+
         with self._lease(target, device_type, profile) as conn:
             for step_index, step in enumerate(steps):
-                out, pattern = self._send(conn, step, timeout, use_timing=True, allow_reply=True)
-                checked = self._command_result(conn, target, step, out, time.monotonic()-started, save_output, pattern)
+                try:
+                    out, pattern = self._send(conn, step, timeout, use_timing=True, allow_reply=True)
+                    checked = self._command_result(conn, target, step, out, time.monotonic()-started, save_output, pattern)
+                except Exception as exc:
+                    exc._network_error_stage = getattr(exc, '_network_error_stage', 'command')
+                    exc._network_command_sent = bool(getattr(conn, '_network_command_sent', False))
+                    failed = self.failure_result(exc, target)
+                    failed.update(step_index=step_index, replay_safe=is_replay_safe(step))
+                    results.append(normalize_result(failed))
+                    exc._network_interact_steps = stopped_steps(step_index)
+                    exc._network_failed_step_index = step_index
+                    raise
                 chunks.append(out)
+                checked['step_index'] = step_index
                 results.append(checked)
                 if not checked['ok']:
                     if checked.get('awaiting_input'):
@@ -3170,9 +3240,15 @@ class Collector:
                         return normalize_result({**checked, 'steps': results})
                     if not checked['output_complete'] or getattr(conn, '_network_read_failure', None):
                         self._disconnect_connection(conn)
-                    return normalize_result({**checked, 'steps': results})
-            result = self._result(target, "[interactive: %d steps]" % len(steps), "\n".join(chunks), time.monotonic()-started,
-                                  save_output, getattr(conn, "_network_prompt_regex", None), interactive=True)
+                    return normalize_result({**checked, 'steps': stopped_steps(step_index),
+                                             'failed_step_index': step_index})
+            try:
+                result = self._result(target, "[interactive: %d steps]" % len(steps), "\n".join(chunks), time.monotonic()-started,
+                                      save_output, getattr(conn, "_network_prompt_regex", None), interactive=True)
+            except Exception as exc:
+                exc._network_interact_steps = results
+                exc._network_command_sent = any(step.get('command_sent') for step in results)
+                raise
             # Each step already applied its command-specific CLI checks (including
             # BGP notification counters). A synthetic aggregate is not a command.
             if result['output_complete'] and all(step['ok'] or step.get('awaiting_input') for step in results) and results[-1]['ok']:

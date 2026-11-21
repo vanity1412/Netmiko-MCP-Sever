@@ -174,7 +174,10 @@ class Regression(unittest.TestCase):
     def test_interact_stops_on_failure(self):
         for bad in ['show system bad', 'show system partial']:
             r = self.c.interact('MOCK', ['show version', bad, 'show interfaces'])
-            self.assertFalse(r['ok']); self.assertEqual(len(r['steps']), 2)
+            self.assertFalse(r['ok'])
+            self.assertEqual(len(r['steps']), 3)
+            self.assertEqual(r['steps'][2]['status'], 'SKIPPED')
+            self.assertFalse(r['steps'][2]['command_sent'])
             self.assertNotIn('show interfaces', self.connections[-1].commands)
 
     def test_interact_waits_without_implicit_reply(self):

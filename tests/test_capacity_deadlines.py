@@ -62,6 +62,26 @@ class ReaderCompletionTests(unittest.TestCase):
         self.assertEqual(output, 'router#')
         self.assertIsNone(failure)
 
+    def test_retry_checks_new_prompt_before_resending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = VirtualClock()
+            first = TimelineChannel(clock, [(0, 'original partial\n'), (.1, None)])
+            second = TimelineChannel(clock, [], prompt='other#')
+            sessions = iter((first, second))
+            c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0}},
+                            connect_factory=lambda **kw: next(sessions))
+            try:
+                with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
+                    result = c.execute('192.0.2.1', 'show version', read_timeout=1)
+                self.assertEqual(result['status'], 'CONNECT_ERROR')
+                self.assertEqual(result['recovery_skipped'], 'cli_context_changed')
+                self.assertIn('original partial', result['output'])
+                self.assertEqual(first.writes, ['show version\n'])
+                self.assertEqual(second.writes, [])
+                self.assertFalse(second.remote_conn.closed)
+            finally:
+                c.shutdown()
+
     def test_log_prompt_followed_by_channel_eof_can_complete(self):
         for command in ('show logging','show log messages','display logbuffer'):
             with self.subTest(command=command):

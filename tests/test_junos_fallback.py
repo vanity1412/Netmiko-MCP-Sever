@@ -124,8 +124,11 @@ class JunosFallbackTests(unittest.TestCase):
                   (.05, '\nlate response\n' + JunosChannel.prompt)]
         with self.assertRaises(b.CollectionError) as caught:
             b.junos_prepare_session(JunosChannel(self.clock, {PREP[0]: events}, echo=lambda cmd: 'show clisomething'))
-        self.assertEqual(caught.exception.details['error_reason'], 'junos_echo_mismatch')
-        self.assertIn('late response', caught.exception.details['output'])
+        details = caught.exception.details
+        self.assertEqual(details['error_reason'], 'junos_echo_mismatch')
+        self.assertEqual(details['preparation_command'], 'show cli')
+        self.assertIn('show clisomething', details['output'])
+        self.assertIn('late response', details['junos_preparation'][0]['output'])
     def test_spaces_quotes_and_unicode_preserved_before_enter(self):
         command = 'show interfaces | match "a  b đường"  '
         conn = self.prepare({PREP[1]: 'error: permission denied'})

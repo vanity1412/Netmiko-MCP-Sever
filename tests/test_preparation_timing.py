@@ -138,6 +138,55 @@ class PreparationTimingTests(unittest.TestCase):
         self.assertIn('late continuation', details['output'])
         self.assertEqual(conn.submitted, [width])
 
+    def test_read_in_junos_configuration_mode_is_not_replayed(self):
+        conn = PreparationChannel(self.clock, {
+            'configure': [(0, 'Entering configuration mode\nnoc@router#')],
+            'show interfaces': [(0, 'candidate interface fragment\n')],
+        })
+        c = self.collector(conn)
+        with patch.object(c, '_connect', wraps=c._connect) as opened:
+            self.assertTrue(c.execute('local', 'configure')['ok'])
+            result = c.execute('local', 'show interfaces', read_timeout=1)
+        self.assertEqual(result['status'], 'TIMEOUT')
+        self.assertEqual(result['recovery_skipped'], 'cli_context_unverified')
+        self.assertIn('candidate interface fragment', result['output'])
+        self.assertEqual(conn.submitted, ['configure', 'show interfaces'])
+        opened.assert_called_once()
+
+    def test_probe_resync_failure_reports_show_cli_and_reopens_only_when_enabled(self):
+        width = SETUP_COMMANDS[0]
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                first = PreparationChannel(self.clock, {width: 'error: permission denied'})
+                first.echo = lambda command: command + ' wrong'
+                second = PreparationChannel(self.clock, {})
+                c = self.batch_collector(first, second)
+                c.defaults['junos_minimal_recovery'] = enabled
+                request = {'id': 1, 'method': 'tools/call', 'params': {
+                    'name': 'ssh_execute_many',
+                    'arguments': {'target': 'local', 'commands': ['show version']}}}
+                response = b.handle_rpc(request, c)
+                payload = json.loads(response['result']['content'][0]['text'])
+                self.assertEqual(payload['ok'], enabled)
+                audit = json.loads(c._audit_path.read_text(encoding='utf-8').splitlines()[-1])
+                if enabled:
+                    self.assertEqual(payload['recovery_attempts'], 1)
+                    self.assertEqual(second.submitted, ['show cli', 'show version'])
+                    failure = payload['previous_attempt']
+                    self.assertEqual(audit['previous_preparation_command'], 'show cli')
+                else:
+                    self.assertEqual(second.submitted, [])
+                    self.assertEqual(audit['preparation_command'], 'show cli')
+                    failure = payload
+                self.assertEqual(failure['preparation_command'], 'show cli')
+                self.assertEqual(failure['error_reason'], 'junos_echo_mismatch')
+                self.assertIn('show cli wrong', failure['output'])
+                self.assertEqual(failure['junos_preparation'][0]['command'], width)
+                self.assertIn('permission denied', failure['junos_preparation'][0]['output'])
+                self.assertIn('resync_output', failure)
+                self.assertIs(failure['command_sent'], False)
+                self.assertEqual(first.submitted, [width])
+
     def test_opt_in_batch_recovers_in_fresh_junos_session_and_keeps_both_transcripts(self):
         from netmiko.juniper.juniper import JuniperBase
         b.install_tolerant_preparation()
@@ -386,7 +435,7 @@ class PreparationTimingTests(unittest.TestCase):
                 c = self.collector(conn)
                 if interactive:
                     aggregate = c.interact('local', ['request system reboot', 'B'], read_timeout=1)
-                    self.assertEqual(len(aggregate['steps']), 1)
+                    self.assertEqual(aggregate['steps'][1]['status'], 'SKIPPED')
                     result = aggregate['steps'][0]
                     self.assertNotEqual(aggregate['status'], 'SUCCESS')
                 else:

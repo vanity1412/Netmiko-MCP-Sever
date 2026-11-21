@@ -168,14 +168,16 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(r['execution_state'],'UNCERTAIN')
     def test_failed_reconnect_preserves_first_partial_response(self):
         first={'ok':False,'error_category':'connection_lost','output_complete':False,
-               'output':'first partial','command_sent':True,'replay_safe':True}
+               'output':'first partial','command_sent':True,'replay_safe':True,
+               '_replay_context': ('juniper_junos', 'noc@router>')}
         with patch.object(self.c,'_execute_once',side_effect=[first,NetmikoAuthenticationException('Authentication failed')]):
             r=self.c.execute('192.0.2.1','show version')
         self.assertEqual(r['status'],'AUTH_ERROR')
         self.assertEqual(r['previous_attempt']['output'],'first partial')
     def test_budget_before_reconnect_retains_partial_and_does_not_replay(self):
         first={'ok':False,'error_category':'connection_lost','output_complete':False,
-               'output':'first partial','command_sent':True,'replay_safe':True}
+               'output':'first partial','command_sent':True,'replay_safe':True,
+               '_replay_context': ('juniper_junos', 'noc@router>')}
         with patch.object(self.c,'_execute_once',return_value=first) as execute, \
              patch.object(self.c,'_checkpoint',side_effect=[120,TimeoutError('Request deadline exceeded')]):
             r=self.c.execute('192.0.2.1','show version')

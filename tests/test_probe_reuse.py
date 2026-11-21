@@ -122,6 +122,17 @@ class ReuseOnly(unittest.TestCase):
         self.assertEqual(result['error_category'],'read_timeout')
         self.assertFalse(result['output_complete'])
         self.assertIn('partial-hostname',result['output'])
+
+    def test_worker_read_is_not_replayed_after_same_prompt_context_change(self):
+        self.server.responses['cd /tmp'] = 'working directory changed'
+        c = self.collector('autodetect')
+        self.assertTrue(c.execute('local', 'cd /tmp')['ok'])
+        result = c.execute('local', 'hostname', read_timeout=1)
+        self.assertEqual(result['status'], 'TIMEOUT')
+        self.assertEqual(result['recovery_skipped'], 'cli_context_unverified')
+        self.assertIn('partial-hostname', result['output'])
+        self.assertEqual(self.server.auth_attempts, 1)
+        self.assertEqual(self.server.commands.count('hostname'), 1)
     def test_disk_cache_hit_opens_only_collection_session(self):
         c=self.collector('autodetect');c.execute('local','uname -s');c.shutdown()
         other=self.collector('autodetect');other.execute('local','uname -s')
