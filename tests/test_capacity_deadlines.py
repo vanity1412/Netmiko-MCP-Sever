@@ -42,6 +42,15 @@ class ReaderCompletionTests(unittest.TestCase):
                 self.assertEqual(conn.writes,['show logging\n'])
                 self.assertTrue(conn.remote_conn.closed)
             finally:c.shutdown()
+    def test_prompt_inside_file_output_cannot_certify_completion(self):
+        clock = VirtualClock()
+        conn = TimelineChannel(clock, [(0, 'first record\nrouter#'), (.7, '\nlast record\nrouter#')])
+        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+            output, failure = b.read_cli_output(conn, 'more flash:diag.txt', 2, r'(?m)^router#$')
+        self.assertEqual(output, 'first record\nrouter#')
+        self.assertEqual(failure['error_reason'], 'file_prompt_ambiguity')
+        self.assertFalse(failure['retryable'])
+
     def test_late_log_rows_retained_but_not_certified(self):
         clock=VirtualClock();conn=TimelineChannel(clock,[(0,'historical data\nrouter#'),(.2,'\nLATE DATA\nrouter#')])
         with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):

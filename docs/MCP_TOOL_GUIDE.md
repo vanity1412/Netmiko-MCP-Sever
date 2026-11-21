@@ -67,7 +67,8 @@ chung có khai báo trường đó.
 ssh_interact.steps là mảng 1–1000 chuỗi, không phải object command/response.
 Chuỗi rỗng hoặc newline là Enter tường minh. Không có expect_string trong input
 schema của interact. Chỉ gửi câu trả lời đã biết/được phép cho đúng target/profile,
-mode và phiên đang chờ; không đoán yes/exit hoặc tự đổi profile giữa cuộc hỏi đáp.
+mode và phiên đang chờ. Khi phiên đang chờ, gửi phản hồi qua ssh_interact.
+ssh_execute, ssh_execute_many và các tác vụ ssh_parallel trả lỗi nếu phiên đang chờ.
 Ví dụ Enter dưới chỉ minh họa cấu trúc, không phải chỉ thị thực thi:
 
 ```json
@@ -126,7 +127,7 @@ thu thập đủ, query/parse đúng ngữ nghĩa và phạm vi đầy đủ: xe
 
 ssh_close có target tùy chọn, không có profile/port selector. Target được resolve
 về host rồi đóng mọi session cùng host, kể cả profile/port khác. Omit hoặc chuỗi
-rỗng đóng toàn pool; null không hợp lệ theo schema dù Python/runtime nhận None.
+rỗng đóng toàn pool. MCP trả lỗi tham số nếu target được truyền với giá trị null hoặc kiểu khác chuỗi.
 Chỉ gọi nếu các phiên bị ảnh hưởng thuộc phạm vi được phép;
 không dùng để dọn phiên chung theo thói quen.
 

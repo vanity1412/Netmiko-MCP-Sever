@@ -1,5 +1,6 @@
 """Agent-controlled CLI and durable resume. No production connections."""
 import collections
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -113,6 +114,48 @@ class ResumeTests(unittest.TestCase):
         latest=self.records()[0]['attempts'][-1]
         self.assertEqual(latest['result_status'],'SUCCESS')
         self.assertIsNone(latest['error_category'])
+    def test_resume_exports_preceding_output_without_reissuing_command(self):
+        preceding = b'late CLI output\r\n' * 1000
+        send = self.c._send
+
+        def send_with_preceding(conn, *args, **kwargs):
+            output, pattern = send(conn, *args, **kwargs)
+            conn._network_preceding_output = preceding.decode()
+            return output, pattern
+
+        copy = scan.shutil.copyfile
+
+        def fail_preceding(source, destination):
+            if destination.name.endswith('-preceding.txt'):
+                raise OSError('simulated failure saving preceding evidence')
+            return copy(source, destination)
+
+        tasks = [{'target': 'good', 'commands': ['show version']}]
+        with patch.object(self.c, '_send', side_effect=send_with_preceding), \
+                patch.object(scan.shutil, 'copyfile', side_effect=fail_preceding):
+            self.assertEqual(self.run_job(tasks)['unknown'], 1)
+        attempt = self.records()[0]['attempts'][0]
+        self.assertTrue(attempt['export_pending'])
+        result = attempt['result']['results'][0]
+        scratch = [self.c.output_dir / (result[key] + '.txt')
+                   for key in ('output_id', 'preceding_output_id')]
+        self.assertTrue(all(path.is_file() for path in scratch))
+        before = dict(self.calls)
+
+        self.assertEqual(self.run_job(tasks, retry_statuses={'unknown'})['success'], 1)
+        self.assertEqual(dict(self.calls), before)
+        proofs = self.records()[0]['attempts'][0]['evidence']
+        self.assertEqual(len(proofs), 2)
+        previous = next(proof for proof in proofs if proof.get('association') == 'unattributed')
+        archived = self.job / previous['file']
+        self.assertEqual(archived.read_bytes(), preceding.replace(b'\r\n', b'\n'))
+        self.assertEqual(previous['sha256'], hashlib.sha256(archived.read_bytes()).hexdigest())
+        self.assertFalse(any(path.exists() for path in scratch))
+        self.assertEqual(self.run_job(tasks)['success'], 1)
+        archived.write_bytes(b'corrupt')
+        with self.assertRaisesRegex(ValueError, 'Archived evidence changed'):
+            self.run_job(tasks)
+
     def test_corrupt_evidence_is_rejected_even_for_selected_retry(self):
         tasks=[{'target':'good','commands':['show version']}];self.run_job(tasks)
         evidence=next((self.job/'bang-chung').glob('*.txt'));evidence.write_text('corrupt')
@@ -165,7 +208,20 @@ class RealConfigurationTests(unittest.TestCase):
         result=c.execute('local','write memory')
         self.assertFalse(result['ok']);self.assertTrue(result['awaiting_input'])
         self.assertNotIn('yes',self.server.commands)
-        self.assertTrue(c.execute('local','yes')['ok'])
+        request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+            'name': 'ssh_execute', 'arguments': {'target': 'local', 'command': 'show clock'}}}
+        reply = b.handle_rpc(request, c)['result']
+        blocked = json.loads(reply['content'][0]['text'])
+        self.assertTrue(reply['isError'])
+        self.assertEqual(blocked['error'], 'SessionAwaitingInput')
+        self.assertFalse(blocked['command_sent'])
+        batch = c.parallel([{'target': 'local', 'commands': ['show clock', 'show version']}])
+        results = batch['results'][0]['results']
+        self.assertEqual(results[0]['error'], 'SessionAwaitingInput')
+        self.assertFalse(results[0]['command_sent'])
+        self.assertEqual(results[1]['status'], 'SKIPPED')
+        self.assertNotIn('show clock', self.server.commands)
+        self.assertTrue(c.interact('local', ['yes'])['ok'])
         self.assertEqual(self.server.auth_attempts,1)
     def test_interact_supplies_only_explicit_responses(self):
         self.configure_responses();c=self.collector('cisco_ios')

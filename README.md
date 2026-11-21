@@ -137,7 +137,7 @@ Kết quả có prompt không chứng minh cấu hình đúng ý định: valida
 
 Thiết bị hỏi yes/no, confirm, password hoặc destination/source filename trả ok=false, awaiting_input=true và giữ session. Không tự gửi yes/Enter, không gửi driver cleanup vào câu hỏi. Lỗi CLI có prompt đầy đủ khác với phiên còn đang chờ input.
 
-Dùng ssh_interact với các bước rõ ràng, ví dụ ["write memory", "yes"]. Chuỗi rỗng là Enter, chỉ được gửi khi agent cung cấp. Hoặc gọi ssh_execute để xem câu hỏi rồi gửi phản hồi ở lời gọi tiếp theo, cùng identity. expect_string có thể chỉ định prompt tương tác khác; match custom expect chưa phải hoàn tất lệnh. Execute_many mặc định dừng ở lỗi, và luôn dừng ở câu hỏi để agent kiểm tra; không coi lệnh tiếp theo là câu trả lời ngầm.
+Dùng ssh_interact với các bước rõ ràng, ví dụ ["write memory", "yes"]. Chuỗi rỗng là Enter, chỉ được gửi khi agent cung cấp. Nếu ssh_execute trả awaiting_input, dùng ssh_interact để gửi phản hồi được phép trên cùng phiên. Các tool chạy lệnh thông thường dừng khi phiên đang chờ phản hồi. expect_string có thể chỉ định prompt tương tác khác; match custom expect chưa phải hoàn tất lệnh. Execute_many mặc định dừng ở lỗi, và luôn dừng ở câu hỏi để agent kiểm tra; không coi lệnh tiếp theo là câu trả lời ngầm.
 
 ## Retry và resume
 

@@ -94,16 +94,23 @@ def prepare_tasks(collector, tasks, command_map=None):
 def _proofs(collector, outcome, directory, task_id, attempt):
     proofs = []
     for index, result in enumerate(outcome.get('results', [])):
-        oid = result.get('output_id')
-        if not oid: continue
-        destination = directory/'bang-chung'/f'{task_id}-{attempt}-{index}.txt'
-        with collector._output_lease(oid) as source:
-            shutil.copyfile(source, destination)
-        digest = hashlib.sha256()
-        with destination.open('rb') as handle:
-            for block in iter(lambda:handle.read(1024*1024), b''): digest.update(block)
-        proofs.append({'file':str(destination.relative_to(directory)).replace('\\','/'),
-                       'sha256':digest.hexdigest()})
+        for field in ('output_id', 'preceding_output_id'):
+            oid = result.get(field)
+            if not oid:
+                continue
+            preceding = field == 'preceding_output_id'
+            suffix = '-preceding' if preceding else ''
+            destination = directory / 'bang-chung' / f'{task_id}-{attempt}-{index}{suffix}.txt'
+            with collector._output_lease(oid) as source:
+                shutil.copyfile(source, destination)
+            digest = hashlib.sha256()
+            with destination.open('rb') as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(block)
+            proof = {'file': destination.relative_to(directory).as_posix(), 'sha256': digest.hexdigest()}
+            if preceding:
+                proof['association'] = 'unattributed'
+            proofs.append(proof)
     return proofs
 
 
@@ -213,6 +220,16 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
     records_dir = directory/'results';records_dir.mkdir(exist_ok=True)
     (directory/'bang-chung').mkdir(exist_ok=True)
     states = {}; lanes = {'fast':collections.deque(), 'slow':collections.deque()}
+
+    def retire_owned_raw(attempt):
+        # Retire scratch only after the checkpoint references the archived files.
+        if attempt.get('export_pending') or c.output_dir.resolve() != directory / 'raw-output':
+            return
+        for result in attempt.get('result', {}).get('results', []):
+            for field in ('output_id', 'preceding_output_id'):
+                if oid := result.get(field):
+                    c.retire_output(oid)
+
     for task in tasks:
         path = records_dir/(task['task_id']+'.json')
         if path.exists():
@@ -248,6 +265,7 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                         record.update(status='unknown',message='Evidence export still pending: '+type(exc).__name__)
                         atomic_json(path,record)
                         continue
+                    retire_owned_raw(latest)
                     if record['status'] == 'success':
                         continue
                 planned = task.get('commands')
@@ -287,15 +305,6 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
     device_clocks = {}
     def save(record):
         atomic_json(records_dir/(record['task_id']+'.json'),record);states[record['task_id']]=record
-    def retire_owned_raw(attempt):
-        # Only the CLI's private scratch directory, never shared MCP outputs.
-        # Results and permanent evidence have already been committed above.
-        if attempt.get('export_pending') or c.output_dir.resolve() != directory/'raw-output':
-            return
-        for result in attempt.get('result', {}).get('results', []):
-            oid = result.get('output_id')
-            if oid:
-                c.retire_output(oid)
     def summary():
         counts=collections.Counter(r['status'] for r in states.values())
         return {'total':len(tasks),'duplicates_removed':duplicates,
@@ -399,8 +408,10 @@ def main():
     root=Path(__file__).resolve().parents[1]
     config.setdefault('defaults', {}).setdefault('autodetect_cache_file', str(root/'runtime/data/netmiko/autodetect.sqlite3'))
     raw_directory = args.output.resolve()/'raw-output' if args.execute else root/'runtime/data/netmiko/outputs'
-    config.setdefault('defaults',{}).update(alt_host_keys=True,alt_key_file=str(root/'mcp/ssh/known_hosts'),
-                                           output_dir=str(raw_directory), output_storage_mode='exclusive')
+    defaults = config.setdefault('defaults', {})
+    defaults.setdefault('alt_host_keys', True)
+    defaults.setdefault('alt_key_file', str(root / 'mcp/ssh/known_hosts'))
+    defaults.update(output_dir=str(raw_directory), output_storage_mode='exclusive')
     collector=Collector(config)
     try:
         tasks=[{'target':alias} for alias in collector.devices] if args.all else json.loads(args.plan.read_text(encoding='utf-8-sig'))

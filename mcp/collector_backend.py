@@ -1261,10 +1261,14 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
     if handled_pagers:
         raw = strip_pager_spans(raw, conn._network_pager_spans)
     output = clean_terminal(raw)
-    if failure is None and prompt_only_completion and re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I):
-        failure = {'error_category': 'output_verification', 'retryable': False,
-                   'message': 'Log payload may contain the device prompt; quiet time alone cannot verify completion',
-                   'error_stage': 'command', 'error_reason': 'log_prompt_ambiguity'}
+    if failure is None and prompt_only_completion:
+        log_output = re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I)
+        file_output = re.match(r'^\s*(?:more|file\s+show)\s+', command, re.I)
+        if log_output or file_output:
+            failure = {'error_category': 'output_verification', 'retryable': False,
+                       'message': 'Output may contain the device prompt; quiet time alone cannot verify completion',
+                       'error_stage': 'command',
+                       'error_reason': 'log_prompt_ambiguity' if log_output else 'file_prompt_ambiguity'}
     if failure is None and candidate is not None and candidate != hashlib.sha256(output.rstrip().encode('utf-8')).digest():
         failure = {'error_category': 'output_verification', 'retryable': False,
                    'message': 'Data continued after a prompt candidate; completion is uncertain',
@@ -1781,7 +1785,8 @@ class Collector:
     @staticmethod
     def _device_signature(device: dict[str, Any]) -> tuple[Any, ...]:
         # Only the parameters that decide how a connection is built.
-        return (json.dumps({k: v for k, v in device.items() if k in KNOWN_KEYS or k == "profile"}, sort_keys=True),)
+        keys = KNOWN_KEYS | {'profile', 'ssh_mode', 'auto_enable', 'inherit_credentials'}
+        return (json.dumps({k: v for k, v in device.items() if k in keys}, sort_keys=True),)
 
     def _build_device_index(self) -> None:
         """Index inventory by case-insensitive alias and by host/IP.
@@ -1792,6 +1797,7 @@ class Collector:
         is left out of implicit resolution, and is reported as a warning.
         """
         self._alias_index: dict[str, str] = {}
+        self._alias_conflicts: set[str] = set()
         self._host_index: dict[str, str] = {}
         self._host_conflicts: dict[str, list[str]] = {}
         alias_groups: dict[str, list[str]] = {}
@@ -1812,6 +1818,8 @@ class Collector:
         for folded, aliases in alias_groups.items():
             if len(aliases) == 1:
                 self._alias_index[folded] = aliases[0]
+            else:
+                self._alias_conflicts.add(folded)
         self._index_warnings: list[str] = [str(w) for w in (self.config.get("inventory_warnings") or [])]
         self._shared_hosts: list[str] = []
         self._ambiguous_hosts: list[str] = []
@@ -1850,6 +1858,8 @@ class Collector:
                 raise ValueError("Invalid device entry in inventory")
             return target, device, "alias"
         key = target.casefold()
+        if key in self._alias_conflicts:
+            raise ValueError("Inventory alias is ambiguous; use the exact case of an inventory alias")
         alias = self._alias_index.get(key)
         if alias is not None and isinstance(self.devices.get(alias), dict):
             return alias, self.devices[alias], "alias_casefold"
@@ -2799,17 +2809,23 @@ class Collector:
 
     @measured_phase('command')
     def _send(self, conn: Any, command: str, timeout: int, expect_string: str | None = None,
-              use_timing: bool = False) -> tuple[Any, str | None]:
+              use_timing: bool = False, *, allow_reply: bool = False) -> tuple[Any, str | None]:
         timeout = min(timeout, self._checkpoint())
         self._request.stage = 'command'
         self._request.command_sent = False
+        conn._network_command_sent = False
+        if getattr(conn, '_network_awaiting_input', False) and not allow_reply:
+            error = CollectionError({'error': 'SessionAwaitingInput', 'error_category': 'awaiting_input',
+                                     'error_stage': 'command', 'awaiting_input': True, 'retryable': False,
+                                     'message': 'Session awaits an explicit reply via ssh_interact'})
+            error._network_keep_session = True
+            raise error
         pattern = expect_string or getattr(conn, "_network_prompt_regex", None)
         if pattern:
             if len(pattern) > 1000:
                 raise ValueError("expect_string too long")
             re.compile(pattern)
         conn._network_read_failure = None
-        conn._network_command_sent = False
         options = getattr(self._request, 'cli_options', {})
         quiet = float(options.get('timing_quiet_seconds' if use_timing else 'prompt_quiet_seconds', self.timing_quiet if use_timing else self.prompt_quiet))
         if not 0 <= quiet <= 2:
@@ -2947,8 +2963,7 @@ class Collector:
                  read_timeout: int | None = None, save_output: bool = False) -> dict[str, Any]:
         if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_COMMANDS:
             raise ValueError("steps must be an array containing 1 to 1000 strings")
-        # No blind confirmations, passwords, shell escapes or arbitrary replies.
-        # Each step is an independently reviewed read-only command.
+        # Every command or reply must be provided as an explicit step.
         steps = [interaction_step(step) for step in steps]
         self._get_settings(target, device_type, profile)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
@@ -2957,7 +2972,7 @@ class Collector:
         results = []
         with self._lease(target, device_type, profile) as conn:
             for step_index, step in enumerate(steps):
-                out, pattern = self._send(conn, step, timeout, use_timing=True)
+                out, pattern = self._send(conn, step, timeout, use_timing=True, allow_reply=True)
                 checked = self._command_result(conn, target, step, out, time.monotonic()-started, save_output, pattern)
                 chunks.append(out)
                 results.append(checked)
@@ -3332,9 +3347,11 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
             tool = TOOLS.get(name)
             if tool is None:
                 return rpc_error(rid, -32602, "Unknown tool")
-            args = params.get("arguments") or {}
+            args = params.get("arguments", {})
             if not isinstance(args, dict):
                 return rpc_error(rid, -32602, "Tool arguments must be an object")
+            if name == "ssh_close" and "target" in args and not isinstance(args["target"], str):
+                return rpc_error(rid, -32602, "ssh_close target must be a string")
             unknown = set(args) - set(tool["schema"])
             if unknown:
                 return rpc_error(rid, -32602, "Unexpected tool arguments: " + ", ".join(sorted(unknown)))

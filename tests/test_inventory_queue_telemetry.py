@@ -23,6 +23,21 @@ class InventoryQueueTests(unittest.TestCase):
         self.addCleanup(c.shutdown)
         return c
 
+    def test_casefold_collision_does_not_fall_back_to_dynamic_target(self):
+        c = self.collector(devices={
+            'Edge': {'host': '192.0.2.1'},
+            'EDGE': {'host': '192.0.2.2'},
+            'other': {'host': '192.0.2.3'},
+        })
+        self.assertEqual(c.inventory(query='edge')['total'], 2)
+        with patch.object(c, '_connect') as connect:
+            with self.assertRaisesRegex(ValueError, 'Inventory alias is ambiguous'):
+                c.execute('edge', 'show version')
+            connect.assert_not_called()
+        self.assertEqual(c._get_settings('Edge', None, None)['host'], '192.0.2.1')
+        self.assertEqual(c._get_settings('EDGE', None, None)['host'], '192.0.2.2')
+        self.assertEqual(c._get_settings('OTHER', None, None)['host'], '192.0.2.3')
+
     def test_inventory_port_matches_resolver_without_credentials(self):
         c = self.collector(defaults={'port': 2200}, profiles={
             'default': {'port': 2201}, 'noc': {'port': 2202, 'password': 'fixture-secret'}},

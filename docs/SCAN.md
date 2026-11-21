@@ -100,7 +100,7 @@ Scanner giữ continue_on_error=false. Nếu lệnh lỗi, các lệnh chưa g�
 
 - scan-manifest.json: hash của kế hoạch/identity, không lưu credential.
 - results/<task_id>.json: trạng thái, các lần thử, lỗi có category/stage, duration và đường dẫn chứng cứ. elapsed_ms của attempt đo từ bắt đầu thu thập tới trước export evidence (gồm chờ slot/detection/connect/CLI); không phải RTT hoặc thời gian riêng auth. Thời gian toàn job đo riêng khi benchmark, gồm cả ghi checkpoint/evidence.
-- bang-chung/: output CLI đã chuẩn hóa ANSI/pager, có SHA256. Mặc định không che username/password/hash/secret/token; chỉ sanitize nếu chủ động bật redaction_enabled=true.
+- bang-chung/: output CLI đã chuẩn hóa ANSI/pager, có SHA256. Scanner lưu riêng dữ liệu đến trước lệnh từ `preceding_output_id` và ghi `association: unattributed` trong checkpoint. Mặc định không che username/password/hash/secret/token; chỉ sanitize nếu chủ động bật redaction_enabled=true.
 - scan-summary.json: tổng đích/loại trùng/thành công/lỗi/một phần/chưa rõ/chưa chạy.
 - raw-output/: scratch riêng của CLI, được dọn theo từng output sau khi kết quả/bằng chứng đã lưu. Không dọn output của MCP hay job khác. Dùng các đường dẫn bang-chung trong kết quả, không phụ thuộc output_id của scratch.
 

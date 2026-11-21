@@ -11,11 +11,12 @@ class ReadOnlyConnection:
         params['device_type'] = device_type
         root = Path(__file__).resolve().parents[1]
         self.target = params.pop('host')
-        defaults = {k:v for k,v in params.items() if k in KNOWN_KEYS}
-        defaults.update(ssh_strict=False, alt_host_keys=False,
-                        alt_key_file=str(root/'mcp/ssh/known_hosts'),
-                        session_sweep_seconds=0,
-                        output_dir=str(root/'runtime/data/netmiko/outputs'))
+        keys = KNOWN_KEYS | {'ssh_mode', 'host_key_store_mode'}
+        defaults = {k: v for k, v in params.items() if k in keys}
+        defaults.setdefault('ssh_strict', False)
+        defaults.setdefault('alt_host_keys', False)
+        defaults.setdefault('alt_key_file', str(root / 'mcp/ssh/known_hosts'))
+        defaults.update(session_sweep_seconds=0, output_dir=str(root / 'runtime/data/netmiko/outputs'))
         self.collector = Collector({'defaults':defaults})
     def __enter__(self): return self
     def __exit__(self, *args): self.disconnect()

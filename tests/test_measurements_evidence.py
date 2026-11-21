@@ -89,6 +89,21 @@ class MeasurementsEvidenceTests(unittest.TestCase):
         self.assertEqual(report['sample_count'], 128)
         self.assertGreaterEqual(report['p95_ms'], report['p50_ms'])
 
+    def test_mcp_close_rejects_invalid_target_without_closing_sessions(self):
+        c = self.collector()
+        for target in ('192.0.2.1', '192.0.2.2'):
+            c.execute(target, 'show custom data')
+        for arguments in (None, [], {'target': None}, {'target': False}, {'target': 0}):
+            with self.subTest(arguments=arguments):
+                response = b.handle_rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                         'params': {'name': 'ssh_close', 'arguments': arguments}}, c)
+                self.assertEqual(response['error']['code'], -32602)
+                self.assertEqual(len(c.status()['sessions']), 2)
+        response = b.handle_rpc({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                                 'params': {'name': 'ssh_close', 'arguments': {}}}, c)
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(c.status()['sessions'], [])
+
     def test_close_releases_idle_registry_and_next_call_reconnects(self):
         c = self.collector()
         c.execute('192.0.2.1', 'show custom data')

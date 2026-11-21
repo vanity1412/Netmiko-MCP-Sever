@@ -62,8 +62,8 @@ def validate(config, directory, *, execute=False, timeout=2, probe_workers=64, s
         raise ValueError('Choose a new output directory for a fresh validation')
     config = dict(config, defaults=dict(config.get('defaults', {})))
     config['defaults'].setdefault('autodetect_cache_file', str(Path(__file__).resolve().parents[1]/'runtime/data/netmiko/autodetect.sqlite3'))
+    config['defaults'].setdefault('alt_key_file', str(directory / 'known_hosts'))
     config['defaults'].update(output_dir=str(directory / 'ssh-job' / 'raw-output'),
-                              alt_key_file=str(directory / 'known_hosts'),
                               session_sweep_seconds=0, max_workers=ssh_workers, output_storage_mode='exclusive')
     collector = Collector(config)
     started = time.monotonic()
