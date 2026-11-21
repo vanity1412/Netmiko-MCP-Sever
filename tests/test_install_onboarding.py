@@ -84,5 +84,25 @@ class OnboardingTests(unittest.TestCase):
         self.assertFalse(report['ssh_tested'])
         self.assertNotIn('Traceback', result.stdout + result.stderr)
 
+    def test_install_check_resolves_explicit_credentials_relative_to_config(self):
+        config_dir = self.root / 'site config'
+        config_dir.mkdir()
+        config = config_dir / 'devices.json'
+        config.write_text(json.dumps({'devices': {'fixture': {'host': '192.0.2.1', 'profile': 'site'}}}),
+                          encoding='utf-8')
+        credentials = config_dir / 'fixture profile.json'
+        credentials.write_text(json.dumps({'profiles': {'site': {
+            'username': 'local-fixture', 'password': 'fixture-only'}}}), encoding='utf-8')
+        env = {key: value for key, value in os.environ.items() if not key.startswith('NETWORK_')}
+        env['NETWORK_MCP_DATA_DIR'] = str(self.root / 'runtime')
+        result = subprocess.run([sys.executable, str(ROOT / 'mcp/check_install.py'), '--config', str(config),
+                                 '--credentials-file', credentials.name], cwd=self.root, env=env,
+                                capture_output=True, text=True, encoding='utf-8', timeout=35)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['tools'], 10)
+        self.assertFalse(report['ssh_tested'])
+        self.assertNotIn('fixture-only', result.stdout + result.stderr)
+
 
 if __name__ == '__main__': unittest.main()

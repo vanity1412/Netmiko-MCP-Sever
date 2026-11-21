@@ -14,10 +14,11 @@ def main():
     args = parser.parse_args()
     command = [sys.executable, '-u', str(Path(__file__).with_name('bootstrap.py')),
                '--config', str(Path(args.config).resolve())]
-    for option in ('inventory_csv', 'credentials_file'):
-        value = getattr(args, option)
-        if value:
-            command += ['--' + option.replace('_', '-'), str(Path(value).resolve())]
+    if args.inventory_csv:
+        command += ['--inventory-csv', str(Path(args.inventory_csv).resolve())]
+    if args.credentials_file:
+        # The shared loader resolves this path relative to the config.
+        command += ['--credentials-file', args.credentials_file]
     try:
         validation = subprocess.run(command + ['--check'], capture_output=True,
             text=True, encoding='utf-8', timeout=30)

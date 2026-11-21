@@ -30,6 +30,24 @@ def prepare_environment(required=False):
     return True
 
 
+def load_deployment_config(backend, config_path, *, inventory_csv=None, credentials_file=None, output_dir=None):
+    """Resolve the same deployment inputs for stdio and the Python client."""
+    config = backend.load_config(str(ROOT / Path(config_path).expanduser()),
+                                 credentials_file=os.fspath(credentials_file) if credentials_file is not None else None)
+    if inventory_csv:
+        config = backend.load_inventory_csv(config, str(ROOT / Path(inventory_csv).expanduser()))
+    defaults = config.setdefault('defaults', {})
+    defaults.setdefault('alt_key_file', str(ROOT / 'mcp' / 'ssh' / 'known_hosts'))
+    defaults.setdefault('alt_host_keys', True)
+    defaults.setdefault('autodetect_cache_file', str(ROOT / 'runtime/data/netmiko/autodetect.sqlite3'))
+    if output_dir:
+        defaults['output_dir'] = str(ROOT / Path(output_dir).expanduser())
+    elif not defaults.get('output_dir'):
+        data_dir = Path(os.environ.get('NETWORK_MCP_DATA_DIR') or ROOT / 'runtime/data/netmiko')
+        defaults['output_dir'] = str(data_dir / 'outputs')
+    return config
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
@@ -42,21 +60,8 @@ def main():
     spec = importlib.util.spec_from_file_location('goosenet_collector', BACKEND)
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = ROOT / config_path
-    config = backend.load_config(str(config_path), credentials_file=args.credentials_file)
-    if args.inventory_csv:
-        inventory_path = Path(args.inventory_csv)
-        if not inventory_path.is_absolute():
-            inventory_path = ROOT / inventory_path
-        config = backend.load_inventory_csv(config, str(inventory_path))
-    config.setdefault('defaults', {}).setdefault('alt_key_file', str(ROOT / 'mcp' / 'ssh' / 'known_hosts'))
-    config['defaults'].setdefault('alt_host_keys', True)
-    config['defaults'].setdefault('autodetect_cache_file', str(ROOT / 'runtime/data/netmiko/autodetect.sqlite3'))
-    if args.output_dir:
-        output_path = Path(args.output_dir)
-        config['defaults']['output_dir'] = str(output_path if output_path.is_absolute() else ROOT / output_path)
+    config = load_deployment_config(backend, args.config, inventory_csv=args.inventory_csv,
+                                    credentials_file=args.credentials_file, output_dir=args.output_dir)
     profiles = config.setdefault('profiles', {})
     if args.check:
         collector = backend.Collector(config)

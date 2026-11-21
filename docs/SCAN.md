@@ -70,6 +70,11 @@ Dùng `--plan mcp/scan-plan.example.json` thay `--all` cho danh sách cụ thể
 
 `lane: slow` đưa thiết bị đã biết chậm vào lượt chậm ngay từ đầu, tránh phải thử đăng nhập hai lần. `profile` chọn một profile đã có trong devices.json hoặc credentials.json, không chứa username/password trong plan. Có thể chọn profile qua cột CSV `profile`; bỏ trống dùng `default`. Profile khai báo credential riêng hoạt động khi không có credential toàn cục. Environment và cặp đầu tiên trong input/ssh.txt vẫn là nguồn fallback; không tự thử lần lượt các cặp credential.
 
+Scanner giữ hai task riêng nếu chúng khác chính sách `junos_minimal_recovery`
+và Junos là driver đã chọn hoặc có thể được autodetect. ID của task dùng policy
+mặc định vẫn giữ nguyên. Job cũ đã bật tùy chọn có thể bị từ chối resume vì
+identity đã đổi. Giữ thư mục cũ làm bằng chứng và dùng thư mục mới cho job mới.
+
 Ví dụ mapping (thay giá trị mẫu và đặt biến môi trường tương ứng):
 
 ```json

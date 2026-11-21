@@ -86,6 +86,9 @@ def prepare_tasks(collector, tasks, command_map=None):
             item['commands'] = commands(command_map.get(params['device_type']))
         public = {k:v for k,v in item.items() if k not in {'target','profile','device_type'}}
         token = [collector._session_key(params), public, command_map if 'commands' not in item else None]
+        if (params['device_type'] in {'juniper_junos', 'autodetect', 'generic_termserver'}
+                and collector._request.cli_options.get('junos_minimal_recovery') is True):
+            token.append({'junos_minimal_recovery': True})
         task_id = hashlib.sha256(json.dumps(token,sort_keys=True).encode()).hexdigest()
         prepared.setdefault(task_id, dict(item, task_id=task_id))
     return list(prepared.values()), command_map

@@ -116,6 +116,26 @@ Scanner CLI → scan.py → Collector → kết quả từng task + bằng chứ
 
 bootstrap.py nạp environment, cấu hình JSON và inventory CSV tùy chọn. Khi thiếu cặp NETWORK_SSH_USER/PASSWORD, fallback input/ssh.txt; hiện chỉ chọn cặp đầu tiên, không tự thử tất cả cặp. Credential mẫu dùng tham chiếu environment trong credentials.example.json, không có credential thật.
 
+Khi cần gọi từ Python, dùng `CLIConnection.from_config(...)` với cùng file
+config, inventory và credential như bootstrap. Truyền alias hoặc IP vào
+`target` và dùng `profile` khi cần ghi đè profile inventory.
+
+```python
+from readonly_client import CLIConnection
+
+with CLIConnection.from_config(
+    "mcp/devices.json", inventory_csv="input/device.csv", target="LAB-A"
+) as client:
+    result = client.execute_many(
+        ["show version", "show interfaces"], continue_on_error=True, save_output=True
+    )
+```
+
+`execute` và `execute_many` trả kết quả có cấu trúc như MCP. Dùng
+`read_output_bytes` để đọc output đã lưu qua `output_id`. API cũ
+`send_command` vẫn trả văn bản khi thành công. Khi lỗi, lấy kết quả đầy đủ
+từ thuộc tính `result` của ngoại lệ `CLIExecutionError` (một `RuntimeError`).
+
 ## Trách nhiệm và điểm cần tìm trong source
 
 | File / hàm | Vai trò |
@@ -132,7 +152,7 @@ bootstrap.py nạp environment, cấu hình JSON và inventory CSV tùy chọn. 
 | Collector._result | Kiểm tra echo, prompt cuối, dấu CLI error và pager/confirmation |
 | classify_error | Phân loại lỗi SSH/TCP/auth/host key, quyết định retryable |
 | TOOLS, make_tool_list, run_stdio | 10 tool MCP, schema và dispatcher JSON-RPC |
-| readonly_client.py / send_command | Wrapper Python, hiện lỗi CLI chỉ ném RuntimeError theo tên lỗi |
+| readonly_client.py / from_config, execute, execute_many | Gọi Collector từ Python với cấu hình triển khai và kết quả có cấu trúc |
 | scan.py / prepare_tasks, _attempt, run_scan | Kiểm tra plan, fast/slow lanes, retry có chọn lọc, export/checkpoint |
 
 ## 10 tool đang có

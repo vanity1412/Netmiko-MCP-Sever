@@ -1,19 +1,103 @@
 """Assert host-key policy at the final Netmiko ConnectHandler boundary."""
+import json
 from pathlib import Path
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+import bootstrap
 import readonly_client
 import scan
 import validate_fleet
 from test_ssh_reliability import FakeConnection
+from test_ssh_scenarios import TimelineChannel, VirtualClock
 
 
 class SSHSettingsContractTests(unittest.TestCase):
+    def test_python_from_config_matches_mcp_and_scanner_for_alias_and_override_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / 'devices.json'
+            inventory = root / 'inventory.csv'
+            credentials = root / 'fixture auth.json'
+            store = root / 'keys'
+            config_path.write_text(json.dumps({'defaults': {'session_sweep_seconds': 0},
+                'profiles': {'override': {'ssh_mode': 'strict', 'alt_key_file': str(store),
+                    'junos_minimal_recovery': True, 'prompt_quiet_seconds': .7}}}), encoding='utf-8')
+            inventory.write_text('name,ip,netmiko_device_type,profile,port\n'
+                                 'EDGE,192.0.2.12,juniper_junos,inventory,2222\n', encoding='utf-8')
+            credentials.write_text(json.dumps({'profiles': {
+                'inventory': {'username': 'inventory-user', 'password': 'fixture-default'},
+                'override': {'username': 'selected-user', 'password': 'fixture-selected'},
+            }}), encoding='utf-8')
+            options = {'inventory_csv': inventory, 'credentials_file': Path(credentials.name),
+                       'output_dir': root / 'out'}
+            with patch.dict('os.environ', {'NETWORK_SSH_USER': 'env-fixture', 'NETWORK_SSH_PASSWORD': 'env-only'}), \
+                    patch('netmiko.ConnectHandler', side_effect=lambda **kwargs: FakeConnection(['fixture version\nrouter#'])) as connect:
+                config = bootstrap.load_deployment_config(b, config_path, **options)
+                mcp = b.Collector(config)
+                self.addCleanup(mcp.shutdown)
+                request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'ssh_execute',
+                    'arguments': {'target': 'edge', 'profile': 'override', 'command': 'show version'}}}
+                rpc = json.loads(b.handle_rpc(request, mcp)['result']['content'][0]['text'])
+                self.assertTrue(rpc['ok'])
+                desired = connect.call_args.kwargs
+                with readonly_client.CLIConnection.from_config(config_path, target='edge',
+                        profile='override', **options) as client:
+                    result = client.execute_many(['show version'], save_output=True)
+                    self.assertTrue(result['ok'])
+                    self.assertIn('fixture version',
+                                  client.read_output_bytes(result['results'][0]['output_id'])['text'])
+                    fallback = connect.call_args.kwargs
+                    self.assertEqual(client.collector.prompt_quiet, mcp.prompt_quiet)
+                    self.assertEqual(client.collector._request.cli_options['prompt_quiet_seconds'], .7)
+                    self.assertIs(client.collector._request.cli_options['junos_minimal_recovery'], True)
+                checks = ('host', 'port', 'device_type', 'username', 'password', 'ssh_strict', 'alt_key_file')
+                self.assertEqual({key: fallback[key] for key in checks}, {key: desired[key] for key in checks})
+                self.assertEqual((fallback['host'], fallback['port'], fallback['username'], fallback['ssh_strict']),
+                                 ('192.0.2.12', 2222, 'selected-user', True))
+                prepared, _ = scan.prepare_tasks(mcp, [{'target': 'edge', 'profile': 'override'}])
+                item = prepared[0]
+                scanned = mcp._get_settings(item['target'], item.get('device_type'), item['profile'])
+                self.assertEqual({key: scanned[key] for key in checks}, {key: desired[key] for key in checks})
+                self.assertEqual(connect.call_count, 2)
+                mcp.shutdown()
+
+    def test_python_fallback_error_keeps_current_and_previous_output(self):
+        clock = VirtualClock()
+        first = TimelineChannel(clock, [(0, 'first partial\n')])
+        second = TimelineChannel(clock, [(0, 'second partial\n')])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)), \
+                patch('netmiko.ConnectHandler', side_effect=[first, second]) as connect:
+            with readonly_client.CLIConnection(host='192.0.2.1', device_type='cisco_ios', output_dir=directory) as client:
+                with self.assertRaises(RuntimeError) as caught:
+                    client.send_command('show version', read_timeout=1, save_output=True)
+                result = caught.exception.result
+                self.assertEqual(result['status'], 'TIMEOUT')
+                self.assertEqual(result['recovery_attempts'], 1)
+                for attempt, text in ((result, 'second partial'), (result['previous_attempt'], 'first partial')):
+                    self.assertIn(text, client.read_output_bytes(attempt['output_id'])['text'])
+                with self.assertRaisesRegex(ValueError, 'unsupported_option'):
+                    client.execute('show clock', unsupported_option=True)
+            self.assertEqual(connect.call_count, 2)
+
+    def test_python_fallback_batch_keeps_partial_output_and_skipped_suffix(self):
+        conn = FakeConnection(['fixture version\nrouter#', 'partial interfaces'])
+        with tempfile.TemporaryDirectory() as directory, patch('netmiko.ConnectHandler', return_value=conn):
+            with readonly_client.CLIConnection(host='192.0.2.1', device_type='cisco_ios', output_dir=directory) as client:
+                commands = ['show version', 'show interfaces', 'show clock']
+                result = client.execute_many(commands, continue_on_error=True, save_output=True)
+                self.assertEqual([item['status'] for item in result['results']], ['SUCCESS', 'PARTIAL', 'SKIPPED'])
+                partial = result['results'][1]
+                self.assertIn('partial interfaces', client.read_output_bytes(partial['output_id'])['text'])
+                self.assertEqual([command for command, _ in conn.sent], commands[:2])
+
     def test_python_fallback_preserves_strict_store_at_connect_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

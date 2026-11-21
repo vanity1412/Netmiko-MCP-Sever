@@ -35,6 +35,20 @@ class Performance(unittest.TestCase):
  def test_duplicate_equivalent_profile_representation_is_deduped(self):
   tasks,_=scan.prepare_tasks(self.c,[self.task(),self.task(profile='default')])
   self.assertEqual(len(tasks),1)
+ def test_scanner_task_identity_includes_effective_junos_recovery_policy(self):
+  legacy,_=scan.prepare_tasks(self.c,[self.task()])
+  self.c.profiles.update(enabled={'junos_minimal_recovery':True},
+                         disabled={'junos_minimal_recovery':False},
+                         equivalent={'junos_minimal_recovery':True})
+  candidates=[self.task(profile=name) for name in ('enabled','disabled','equivalent')]
+  forward,_=scan.prepare_tasks(self.c,candidates)
+  backward,_=scan.prepare_tasks(self.c,list(reversed(candidates)))
+  self.assertEqual(len(forward),2)
+  self.assertEqual({item['task_id'] for item in forward},{item['task_id'] for item in backward})
+  ids={item['profile']:item['task_id'] for item in forward}
+  self.assertEqual(ids['disabled'],legacy[0]['task_id'])
+  self.assertNotEqual(ids['enabled'],ids['disabled'])
+  self.assertFalse(self.connections)
  def test_unknown_driver_plan_accepts_configuration_map(self):
   tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}],{'juniper_junos':['configure']})
   self.assertEqual(len(tasks),1);self.assertFalse(self.connections)
