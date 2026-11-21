@@ -104,7 +104,7 @@ Scanner giữ continue_on_error=false. Nếu lệnh lỗi, các lệnh chưa g�
 - scan-summary.json: tổng đích/loại trùng/thành công/lỗi/một phần/chưa rõ/chưa chạy.
 - raw-output/: scratch riêng của CLI, được dọn theo từng output sau khi kết quả/bằng chứng đã lưu. Không dọn output của MCP hay job khác. Dùng các đường dẫn bang-chung trong kết quả, không phụ thuộc output_id của scratch.
 
-Chạy lại cùng lệnh/output để resume. Job bỏ qua success/failed/partial đã lưu; retry_pending tiếp tục lane chậm. Kế hoạch/identity đổi, JSON lỗi hoặc evidence thiếu/sai checksum thì từ chối resume. Trạng thái running sau gián đoạn chuyển unknown, không tự xác thực lại. Đối soát trước khi tạo job mới cho những đích này.
+Chạy lại cùng lệnh/output để resume. Chỉ dùng lại prefix khi driver đã xác định và danh sách lệnh thực tế khớp checkpoint. Nếu autodetect đổi driver hoặc danh sách lệnh thay đổi, scanner chạy lại từ đầu khi cả hai danh sách chỉ gồm lệnh đọc có thể chạy lại. Nếu có lệnh có thể thay đổi thiết bị, scanner giữ trạng thái unknown để đối soát. Job bỏ qua success/failed/partial đã lưu; retry_pending tiếp tục lane chậm. Kế hoạch/identity đổi, JSON lỗi hoặc evidence thiếu/sai checksum thì từ chối resume. Trạng thái running sau gián đoạn chuyển unknown, không tự xác thực lại. Đối soát trước khi tạo job mới cho những đích này.
 
 scan.lock chặn hai process dùng cùng thư mục; crash có thể để lại lock. Chỉ gỡ lock thủ công sau khi xác minh process cũ đã dừng và đối soát checkpoint, không xóa outbox hay hồ sơ để ép chạy lại. Đĩa đầy/không ghi được không được báo success. Với thao tác replace checkpoint bị khóa file tạm thời trên Windows, chỉ retry thao tác file, không lặp SSH.
 
@@ -123,7 +123,7 @@ python -u mcp/validate_fleet.py --output output/FLEET-NEW --execute --ssh-limit 
 python -m unittest discover -s tests -v
 ```
 
-Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity reachable, phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. TCP mở không đồng nghĩa SSH thành công. Không có banner vẫn được thử SSH trong mẫu để ghi nhận lỗi handshake thực tế. Log transport nằm trong ssh-transport.log.
+Validator kiểm tra TCP và banner trên từng endpoint host/port duy nhất trong toàn inventory (mặc định 64 probe, timeout 2s), rồi chọn tối đa 128 identity từ các endpoint đã trả banner SSH hoàn chỉnh. Mẫu được phân bổ theo driver. Bỏ --execute chỉ chạy census, không xác thực SSH. Mẫu SSH lấy version và bảng interface bằng lệnh đọc; retry dùng scanner hiện có. Thống kê TCP vẫn gồm các endpoint mở TCP nhưng thiếu banner SSH. Các endpoint này không vào mẫu SSH. Log transport nằm trong ssh-transport.log.
 
 Tests có fault injection, replay 2.000 cách chia chunk, 500 và 2.500 thiết bị ảo qua scanner/persistence/resume và SSH localhost với driver thật. Stress cố tình tạo auth reject/timeout, EOF, CLI error và partial output; kiểm tra kết quả đúng oracle, không lấy tỷ lệ success của fixture làm tỷ lệ production. Dữ liệu --More--/[confirm] ở giữa config/log phải được giữ nguyên. Lỗi ghi output là storage_error và không gây retry SSH. EOF được phát hiện sớm; channel chưa hoàn chỉnh không được tái sử dụng.
 

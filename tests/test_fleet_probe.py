@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str((Path(__file__).resolve().parents[1] / 'mcp')))
 from collector_backend import readonly_command
@@ -51,6 +52,27 @@ class FleetProbeTests(unittest.TestCase):
         self.assertTrue(result['tcp_connected'])
         self.assertFalse(result['ssh_banner'])
         self.assertEqual(result['error_category'], 'banner_not_verified')
+
+    def test_unterminated_ssh_identification_is_not_verified(self):
+        with tcp_server([(0, b'SSH-2.0-fixture')]) as port:
+            result = probe_endpoint('127.0.0.1', port, .5)
+        self.assertTrue(result['tcp_connected'])
+        self.assertFalse(result['ssh_banner'])
+
+    def test_pilot_selects_only_verified_ssh_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                tcp_server([(0, b'HTTP/1.1 200 OK\r\n\r\n')]) as http, \
+                tcp_server([(0, b'SSH-2.0-fixture'), (.02, b'\r\n')]) as ssh, \
+                patch('validate_fleet.run_scan', return_value={'ok': True}) as run:
+            devices = {
+                'http': {'host': '127.0.0.1', 'port': http, 'device_type': 'linux'},
+                'ssh': {'host': '127.0.0.1', 'port': ssh, 'device_type': 'linux'},
+            }
+            result = validate({'devices': devices}, tmp, execute=True, timeout=.5, ssh_workers=2)
+            self.assertEqual(result['tcp_connected'], 2)
+            self.assertEqual(result['ssh_banners'], 1)
+            self.assertEqual(result['ssh_selected'], 1)
+            self.assertEqual(run.call_args.args[1], [{'target': 'ssh', 'read_timeout': 45}])
 
     def test_silent_listener_is_banner_timeout_not_success(self):
         with tcp_server([(.3, b'')]) as port:

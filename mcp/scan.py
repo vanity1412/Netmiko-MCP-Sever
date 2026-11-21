@@ -19,7 +19,7 @@ import time
 import uuid
 from result_status import normalize_result
 from output_storage import file_lock
-from collector_backend import Collector, BatchError, safe_command, readonly_command, bounded_int, is_replay_safe, MAX_COMMANDS
+from collector_backend import Collector, BatchError, CollectionError, safe_command, readonly_command, bounded_int, is_replay_safe, MAX_COMMANDS
 
 DEFAULT_COMMANDS = {'juniper_junos':['show version'], 'cisco_ios':['show version'],
                     'cisco_xr':['show version'], 'cisco_nxos':['show version'],
@@ -114,20 +114,45 @@ def _proofs(collector, outcome, directory, task_id, attempt):
     return proofs
 
 
-def _attempt(collector, task, lane, directory, number, command_map, cancel, budgets, command_offset=0):
+def _attempt(collector, task, lane, directory, number, command_map, cancel, budgets,
+             command_offset=0, previous_plan=None):
     started = stamp(); clock = time.monotonic()
     budget = budgets[lane]
     outcome = None
+    execution_plan = previous_plan
+    restarted_plan = False
     with collector.request_budget(timeout=budget['deadline'],cancel=cancel,
                                   connection_timeouts=budget['connection'],
                                   autodetect_timeout=min(budget['deadline'],120)):
         try:
             collector._request.stage = 'validation'
             params = collector._get_settings(task['target'],task.get('device_type'),task.get('profile'))
+            autodetect = params['device_type'] in {'autodetect', 'generic_termserver'}
             collector._resolve_platform(params)
-            commands = task.get('commands') or command_map.get(params['device_type'])
+            driver = params['device_type']
+            commands = task.get('commands') or command_map.get(driver)
             if not commands:
                 raise ValueError('No commands configured for the detected platform')
+            resolved_plan = {
+                'driver': driver,
+                'commands_sha256': hashlib.sha256(json.dumps(commands, ensure_ascii=False).encode('utf-8')).hexdigest(),
+                'read_only': all(is_replay_safe(command) for command in commands),
+            }
+            # Older fixed-driver plans already bind the prefix to the same
+            # commands. Older autodetect checkpoints lack that guarantee.
+            legacy_prefix = command_offset > 0 and previous_plan is None and autodetect
+            if (previous_plan is not None and previous_plan != resolved_plan) or legacy_prefix:
+                previous_reads = previous_plan['read_only'] if previous_plan else all(
+                    is_replay_safe(command)
+                    for group in ([task['commands']] if 'commands' in task else command_map.values())
+                    for command in group)
+                if not (previous_reads and resolved_plan['read_only']):
+                    raise CollectionError({'error': 'ScanExecutionPlanChanged',
+                        'error_category': 'scan_execution_plan_changed', 'error_stage': 'validation',
+                        'retryable': False, 'message': 'Resolved driver or commands changed for a plan that may modify the device'})
+                command_offset = 0
+                restarted_plan = True
+            execution_plan = resolved_plan
             outcome = collector.execute_many(task['target'],commands[command_offset:],device_type=params['device_type'],
                         profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),save_output=True)
         except BatchError as exc:
@@ -146,13 +171,21 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
     command_sent = any(r.get('command_sent', True) for r in checked)
     retry_safe = all(not r.get('command_sent', True) or is_replay_safe(r.get('command','')) for r in checked)
     failure = next((r for r in reversed(checked) if not r.get('ok') and not r.get('skipped')), outcome)
-    status = 'success' if outcome.get('ok') else ('partial' if any(r.get('ok') for r in checked) else 'failed')
+    plan_conflict = failure.get('error_category') == 'scan_execution_plan_changed'
+    status = 'unknown' if plan_conflict else (
+        'success' if outcome.get('ok') else ('partial' if any(r.get('ok') for r in checked) else 'failed'))
     result = {'attempt':number,'lane':lane,'status':status,'started_at':started,'finished_at':stamp(),
               'elapsed_ms':round((time.monotonic()-clock)*1000,2),
               'error_category':failure.get('error_category',failure.get('error','cli_error')) if status!='success' else None,
               'retryable':bool(failure.get('retryable')) and retry_safe,
               'command_sent':command_sent,'safe_to_retry':retry_safe,'next_command_index':next_command,
               'command_offset':command_offset,'result_status':outcome['status'],'result':collector.redact_structured(outcome)}
+    if execution_plan is not None:
+        result['execution_plan'] = execution_plan
+    if restarted_plan:
+        result['restarted_execution_plan'] = True
+    if plan_conflict:
+        result['needs_reconciliation'] = True
     # Persistence failure is a job failure, never a false success.
     try:
         result['evidence'] = _proofs(collector,outcome,directory,task['task_id'],number)
@@ -348,7 +381,10 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                             'next_command_index':old.get('next_command_index',0)}
                     save(record)
                     offset=old.get('next_command_index',0)
-                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,command_map,cancel,attempt_budgets,offset)
+                    previous_plan = next((attempt['execution_plan'] for attempt in reversed(record['attempts'])
+                                          if attempt.get('execution_plan')), None)
+                    future=pools[lane].submit(_attempt,c,task,lane,directory,len(record['attempts'])+1,
+                                              command_map,cancel,attempt_budgets,offset,previous_plan)
                     pending[future]=(task,lane);active[lane]+=1
             if not pending:break
             try:
@@ -361,6 +397,8 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                 try:
                     attempt=future.result();attempt['queue_wait_ms']=record['queue_wait_ms'];record['attempts'].append(attempt)
                     record['next_command_index']=attempt['next_command_index']
+                    if attempt.get('needs_reconciliation'):
+                        record['needs_reconciliation'] = True
                     cycle_start, prior_elapsed = device_clocks[task['task_id']]
                     record['device_elapsed_seconds'] = prior_elapsed + time.monotonic() - cycle_start
                     remaining = record['device_budget_seconds'] - record['device_elapsed_seconds']

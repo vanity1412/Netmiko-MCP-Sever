@@ -154,7 +154,9 @@ class JunosFallbackTests(unittest.TestCase):
         self.assertNotIn('show version', conn.submitted)
         conn = self.prepare({PREP[2]: 'error: permission denied', 'show version': [(0, 'partial')]})
         result = self.collector(conn).execute('mx', 'show version', read_timeout=1)
-        self.assertFalse(result['output_complete']); self.assertIn('partial', result['output'])
+        self.assertFalse(result['output_complete'])
+        self.assertEqual(result['recovery_attempts'], 1)
+        self.assertIn('partial', result['previous_attempt']['output'])
     def test_pager_after_screen_length_denial_and_incomplete_pager(self):
         conn = self.prepare({PREP[2]: 'error: permission denied', 'show version': [(0, 'page1\n---(more)---')]})
         conn.page = [(0, '\npage2\n' + conn.prompt)]

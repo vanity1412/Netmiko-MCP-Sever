@@ -17,6 +17,51 @@ import test_execution_resume as resume
 from test_collector import Fake
 
 class ReaderCompletionTests(unittest.TestCase):
+    def test_version_waits_for_delayed_payload_after_stale_prompt(self):
+        for command in ('show version', 'display version'):
+            for delay in (.15, .7):
+                with self.subTest(command=command, delay=delay):
+                    clock = VirtualClock()
+                    conn = TimelineChannel(clock, [(0, 'router#'), (delay, '\nVersion payload\nrouter#')])
+                    with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+                        output, failure = b.read_cli_output(conn, command, 2, r'(?m)^router#$')
+                    self.assertIsNone(failure)
+                    self.assertIn('Version payload', output)
+                    self.assertEqual(conn.writes, [command + '\n'])
+
+    def test_version_timeout_retries_once_and_preserves_first_output(self):
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered), tempfile.TemporaryDirectory() as directory:
+                clock = VirtualClock()
+                first = TimelineChannel(clock, [(0, 'show version\nrouter#')])
+                second_data = 'Version payload\nrouter#' if recovered else 'router#'
+                second = TimelineChannel(clock, [(0, second_data)])
+                connections = iter((first, second))
+                c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0}},
+                                connect_factory=lambda **kw: next(connections))
+                try:
+                    with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
+                        result = c.execute('192.0.2.1', 'show version', read_timeout=1, save_output=True)
+                    self.assertEqual(result['status'], 'SUCCESS' if recovered else 'TIMEOUT')
+                    self.assertEqual(result['recovery_attempts'], 1)
+                    previous = result['previous_attempt']
+                    self.assertFalse(previous['output_complete'])
+                    self.assertEqual(previous['error_category'], 'read_timeout')
+                    self.assertEqual(c.read_output_bytes(previous['output_id'])['text'], 'show version\nrouter#')
+                    self.assertTrue(first.remote_conn.closed)
+                    self.assertEqual(first.writes, ['show version\n'])
+                    self.assertEqual(second.writes, ['show version\n'])
+                finally:
+                    c.shutdown()
+
+    def test_empty_filtered_version_can_complete(self):
+        clock = VirtualClock()
+        conn = TimelineChannel(clock, [(0, 'router#')])
+        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+            output, failure = b.read_cli_output(conn, 'show version | include NOMATCH', 1, r'(?m)^router#$')
+        self.assertEqual(output, 'router#')
+        self.assertIsNone(failure)
+
     def test_log_prompt_followed_by_channel_eof_can_complete(self):
         for command in ('show logging','show log messages','display logbuffer'):
             with self.subTest(command=command):

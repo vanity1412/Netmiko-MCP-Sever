@@ -8,12 +8,15 @@ import json
 import logging
 from pathlib import Path
 import random
+import re
 import socket
 import time
 
 from bootstrap import prepare_environment
 from collector_backend import Collector, load_config, load_inventory_csv
 from scan import atomic_json, run_scan
+
+SSH_IDENTIFICATION = re.compile(rb'(?m)^SSH-(?:2\.0|1\.99)-[!-~]+(?: [ -~]*)?\r?\n')
 
 COMMANDS = {
     'juniper_junos': ['show version', 'show interfaces terse'],
@@ -42,7 +45,7 @@ def probe_endpoint(host, port, timeout):
                 if not data:
                     break
                 banner += data
-                if any(line.startswith((b'SSH-2.0-', b'SSH-1.99-')) for line in banner.splitlines()):
+                if SSH_IDENTIFICATION.search(banner):
                     result['ssh_banner'] = True
                     break
             if not result['ssh_banner']:
@@ -90,10 +93,10 @@ def validate(config, directory, *, execute=False, timeout=2, probe_workers=64, s
                                       'tcp_connected': sum(r['tcp_connected'] for r in results)}), flush=True)
         atomic_json(directory / 'invalid-inventory.json', invalid)
         atomic_json(directory / 'tcp-results.json', results)
-        reachable = {(r['host'], r['port']) for r in results if r['tcp_connected']}
+        ssh_endpoints = {(r['host'], r['port']) for r in results if r['ssh_banner']}
         groups = collections.defaultdict(list)
         for alias, params in identities.values():
-            if (params['host'], params['port']) in reachable:
+            if (params['host'], params['port']) in ssh_endpoints:
                 groups[params['device_type']].append(alias)
         rng = random.Random(20261109)
         for aliases in groups.values(): rng.shuffle(aliases)
@@ -106,7 +109,7 @@ def validate(config, directory, *, execute=False, timeout=2, probe_workers=64, s
         atomic_json(directory / 'ssh-plan.json', tasks)
         summary = {'inventory_aliases': len(collector.devices), 'unique_identities': len(identities),
                    'invalid_inventory': len(invalid), 'unique_endpoints': len(endpoints),
-                   'tcp_connected': len(reachable), 'ssh_banners': sum(r['ssh_banner'] for r in results),
+                   'tcp_connected': sum(r['tcp_connected'] for r in results), 'ssh_banners': len(ssh_endpoints),
                    'preflight_errors': dict(collections.Counter(r['error_category'] for r in results if 'error_category' in r)),
                    'ssh_selected': len(tasks), 'ssh_executed': bool(execute and tasks)}
         atomic_json(directory / 'fleet-summary.json', summary)
@@ -133,7 +136,7 @@ def main():
     parser.add_argument('--credentials-file', help='Shared credential JSON; relative to config directory')
     parser.add_argument('--inventory-csv', default='input/device.csv')
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--execute', action='store_true', help='SSH into reachable sample; otherwise TCP/banner only')
+    parser.add_argument('--execute', action='store_true', help='SSH into sample with verified SSH banners; otherwise TCP/banner only')
     parser.add_argument('--tcp-timeout', type=float, default=2)
     parser.add_argument('--probe-workers', type=int, default=64)
     parser.add_argument('--ssh-workers', type=int, default=8)

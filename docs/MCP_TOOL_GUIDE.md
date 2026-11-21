@@ -52,6 +52,8 @@ không phải thành công hoặc output rỗng. Batch không có use_textfsm tr
 {"name":"ssh_execute_many","arguments":{"target":"LAB-A","commands":["show version","show interfaces"],"continue_on_error":false,"save_output":true}}
 ```
 
+Audit log ghi thêm driver đã xác định, trạng thái và pha lỗi khi có. Các dòng `ssh_parallel.task` dùng chung `batch_id` với dòng tổng và có `task_index` tính từ 0.
+
 ssh_parallel.tasks có 1–100 object. Mỗi task cần target và đúng một trong command
 hoặc commands. Backend kiểm tra XOR này dù schema chỉ bắt buộc target. Task batch
 hỗ trợ continue_on_error; không áp tùy chọn đó cho task command đơn. Results giữ

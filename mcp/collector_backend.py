@@ -282,6 +282,8 @@ def bounded_request(method):
     @functools.wraps(method)
     def call(self, *args, **kwargs):
         with self.request_budget():
+            previous_driver = getattr(self._request, 'resolved_driver', None)
+            self._request.resolved_driver = None
             try:
                 result = method(self, *args, **kwargs)
                 if isinstance(result, dict):
@@ -293,7 +295,11 @@ def bounded_request(method):
                     exc._network_error_stage = getattr(self._request, 'stage', 'unknown')
                 if exc._network_error_stage == 'command' and not hasattr(exc, '_network_command_sent'):
                     exc._network_command_sent = getattr(self._request, 'command_sent', None)
+                if self._request.resolved_driver is not None:
+                    exc._network_resolved_driver = self._request.resolved_driver
                 raise
+            finally:
+                self._request.resolved_driver = previous_driver
     return call
 
 
@@ -1180,6 +1186,9 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         echo_body = r'[ \t]+'.join(re.escape(part) for part in normalized_command.split())
         echo_re = re.compile(r'^(?:\S+[>#%$\]]\s*)?' + echo_body + r'[ \t]*$') if echo_body else None
         repaint_command = bool(re.fullmatch(r'set cli screen-width \d+', normalized_command))
+        # Exact version queries must have a response body. Filtered commands may
+        # legitimately produce no matches and keep their existing prompt rules.
+        requires_payload = normalized_command.casefold() in {'show version', 'display version'}
         while True:
             now = time.monotonic()
             if checkpoint and now >= next_checkpoint:
@@ -1203,13 +1212,14 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 cleaned = clean_terminal(tail)
             # Echo is optional. Reset a provisional prompt only when the old
             # transcript contains no response body and a complete echo follows.
-            # Repeated echoes are accepted only for the known Junos width repaint.
+            # A version query still waiting for its required body can discard a
+            # preamble-only candidate on any new data, including without echo.
             if data and echo_re:
                 echo_seen = max(echo_seen, sum(bool(echo_re.fullmatch(line.strip()))
                                                for line in cleaned.splitlines()))
                 if (candidate is not None and candidate_preamble_only
-                        and echo_seen > candidate_echo_count
-                        and (candidate_echo_count == 0 or repaint_command)):
+                        and (requires_payload or (echo_seen > candidate_echo_count
+                             and (candidate_echo_count == 0 or repaint_command)))):
                     candidate = None
                     candidate_echo_count = 0
             if ending_matches(pattern, cleaned) and not container_open():
@@ -1237,13 +1247,14 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
             elif (ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet
-                  and not container_open()):
+                  and not container_open() and not (requires_payload and candidate_preamble_only)):
                 prompt_only_completion = True
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
                 if channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False)):
-                    if ending_matches(pattern, cleaned) and not container_open():
+                    if (ending_matches(pattern, cleaned) and not container_open()
+                            and not (requires_payload and candidate_preamble_only)):
                         break
                     raise EOFError('SSH channel closed before ending prompt')
             time.sleep(min(.01, max(0, deadline - time.monotonic())))
@@ -1324,7 +1335,11 @@ def detection_worker(params: dict[str, Any], connection_sink=None) -> dict[str, 
             platform = platform_from_version('\n'.join(output.splitlines()[(echo_line+1 if echo_line is not None else 0):-1]))
             if platform:
                 if connection_sink:
-                    connection_sink(conn, platform)
+                    try:
+                        connection_sink(conn, platform)
+                    except CollectionError as exc:
+                        exc.details.setdefault('driver', platform)
+                        raise
                     retained = True
                 return {"device_type": platform, "probe_command": command}
         return {"error": "AutodetectUnknown", "message": "No supported version signature in bounded probes"}
@@ -1923,7 +1938,8 @@ class Collector:
         return self.redact_output(value) if isinstance(value, str) else value
 
     def audit(self, name: str, args: dict[str, Any], ok: bool, elapsed: float,
-              error: str | None = None) -> None:
+              error: str | None = None, result: dict[str, Any] | None = None,
+              *, batch_id: str | None = None, task_index: int | None = None) -> None:
         """Write operational metadata only; never serialize profiles or credentials."""
         if not self.audit_enabled:
             return
@@ -1946,9 +1962,47 @@ class Collector:
             record["interactive_step_count"] = len(steps)
         if tasks is not None:
             record["task_count"] = len(tasks)
-            record["task_targets"] = [str(x.get("target"))[:255] for x in tasks[:100] if isinstance(x, dict)]
-            record["task_command_counts"] = [1 if x.get("command") else len(x.get("commands") or []) for x in tasks[:100] if isinstance(x, dict)]
-            record["task_commands"] = [[self._audit_command(c) for c in ([x["command"]] if x.get("command") else x.get("commands", []))] for x in tasks[:100] if isinstance(x, dict)]
+            record["task_targets"] = []
+            record["task_command_counts"] = []
+            record["task_commands"] = []
+            for task in tasks[:100]:
+                if not isinstance(task, dict):
+                    continue
+                task_commands = task.get("commands")
+                if isinstance(task.get("command"), str) and task["command"]:
+                    task_commands = [task["command"]]
+                if not isinstance(task_commands, list):
+                    task_commands = []
+                record["task_targets"].append(str(task.get("target"))[:255])
+                record["task_command_counts"].append(len(task_commands))
+                record["task_commands"].append([self._audit_command(c) for c in task_commands])
+        if result is not None:
+            # For a command batch, include diagnostics from the first real
+            # failure alongside the aggregate status. Skip unsent placeholders.
+            commands_result = result.get("results", []) if name != 'ssh_parallel' else []
+            detail = next((item for item in commands_result if not item.get('ok') and not item.get('skipped')),
+                          commands_result[0] if commands_result else {})
+            details = {**detail, **result}
+            for field in ('driver', 'status', 'error_category', 'error_stage', 'error_reason',
+                          'execution_state', 'data_state'):
+                value = details.get(field)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', value):
+                    record[field] = value
+            for field in ('command_sent', 'output_complete', 'retryable', 'ssh_authenticated', 'cli_ready'):
+                if isinstance(details.get(field), bool):
+                    record[field] = details[field]
+            prep = details.get('preparation_command')
+            if isinstance(prep, str) and re.fullmatch(
+                    r'(?:set cli (?:screen-(?:width|length) [0-9]{1,6}|complete-on-space off)'
+                    r'|terminal width [0-9]{1,6}|\[initial prompt\])', prep):
+                record['preparation_command'] = prep
+            if type(result.get('failed_command_index')) is int:
+                record['failed_command_index'] = result['failed_command_index']
+            batch_id = batch_id or result.get('batch_id')
+        if isinstance(batch_id, str) and re.fullmatch(r'[0-9a-f]{32}', batch_id):
+            record['batch_id'] = batch_id
+        if task_index is not None:
+            record['task_index'] = task_index
         if error:
             record["error"] = self.scrub_error(str(error))
         try:
@@ -2323,6 +2377,7 @@ class Collector:
         self._checkpoint()
         params = self._get_settings(target, device_type, profile)
         self._resolve_platform(params)
+        self._request.resolved_driver = params['device_type']
         key = self._session_key(params)
         entry, evicted, _ = self._reserve_pool_entry(key)
         if evicted is not None:
@@ -2443,6 +2498,9 @@ class Collector:
         details = classify_error(exc, getattr(self._request, 'stage', 'unknown'))
         previous = getattr(exc, '_network_command_result', {})
         details = {**previous, **details}
+        driver = getattr(exc, '_network_resolved_driver', None) or getattr(self._request, 'resolved_driver', None)
+        if driver is not None:
+            details.setdefault('driver', driver)
         details['timings_ms'] = dict(getattr(exc, '_network_request_timings_ms', getattr(self._request, 'timings_ms', {})))
         if getattr(exc, '_network_timings_ms', None):
             details['connection_timings_ms'] = dict(exc._network_timings_ms)
@@ -2777,6 +2835,9 @@ class Collector:
                 result['transport_ok'] = False
         result['command_sent'] = bool(getattr(conn, '_network_command_sent', True))
         result['replay_safe'] = is_replay_safe(command)
+        driver = getattr(self._request, 'resolved_driver', None)
+        if driver is not None:
+            result['driver'] = driver
         awaiting = ((pending_interaction(clean_terminal(output)) and not output_container_open(command, output)) or (pattern and pattern != getattr(conn, '_network_prompt_regex', None) and ending_matches(pattern, clean_terminal(output)) and not result['output_complete'])) and not failure
         conn._network_awaiting_input = bool(awaiting)
         if awaiting:
@@ -2861,13 +2922,16 @@ class Collector:
                        read_timeout=read_timeout,expect_string=expect_string,use_timing=use_timing,
                        save_output=save_output,use_textfsm=use_textfsm)
         result = self._execute_once(**options)
-        if result.get('error_category') == 'connection_lost' and is_replay_safe(command) and not result.get('awaiting_input'):
+        category = result.get('error_category')
+        transient = category == 'connection_lost' or (
+            category == 'read_timeout' and result.get('retryable') is True)
+        if transient and is_replay_safe(command) and not result.get('awaiting_input'):
             previous = result
             try:
                 self._checkpoint()
             except Exception as exc:
                 result.update(classify_error(exc, 'command'), recovery_attempts=0,
-                              recovery_skipped='request budget or cancellation', previous_error_category='connection_lost')
+                              recovery_skipped='request budget or cancellation', previous_error_category=category)
                 return normalize_result(result)
             try:
                 result = self._execute_once(**options)
@@ -3045,9 +3109,11 @@ class Collector:
         submitted = [self._parallel_queue.submit(self._task_pool, run_task, item) for item in tasks]
         results = [future.result() for future in submitted]
         successes = sum(x.get("ok", False) is True for x in results)
-        for item, result in zip(tasks, results):
-            self.audit("ssh_parallel.task", item, bool(result.get("ok")), result.get("elapsed_ms", 0) / 1000, result.get("error"))
-        return normalize_result({"total": len(results), "successes": successes, "failures": len(results)-successes,
+        batch_id = uuid.uuid4().hex
+        for index, (item, result) in enumerate(zip(tasks, results)):
+            self.audit("ssh_parallel.task", item, bool(result.get("ok")), result.get("elapsed_ms", 0) / 1000,
+                       result.get("error"), result, batch_id=batch_id, task_index=index)
+        return normalize_result({"batch_id": batch_id, "total": len(results), "successes": successes, "failures": len(results)-successes,
                 "ok": successes == len(results), "partial_failure": 0 < successes < len(results), "results": results,
                 "worker_telemetry": {"tasks_requested": len(tasks), "worker_limit": self.max_workers,
                                      "effective_worker_limit": min(len(tasks), self.max_workers)}})
@@ -3361,20 +3427,19 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
             started = time.monotonic()
             audit_error = None
             try:
-                output = getattr(collector, tool["method"])(**args)
-                result = {"content": [{"type": "text", "text": json.dumps(output, ensure_ascii=False)}], "isError": output.get("ok") is False}
-                if result["isError"]:
-                    audit_error = str(output.get("error") or "One or more commands/tasks failed verification")
+                payload = getattr(collector, tool["method"])(**args)
+                if payload.get("ok") is False:
+                    audit_error = str(payload.get("error") or "One or more commands/tasks failed verification")
             except BatchError as exc:
                 audit_error = type(exc).__name__ + ": " + str(exc)
                 payload = getattr(exc, 'summary', None) or normalize_result({"ok": False, "results": exc.results})
-                result = {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}], "isError": True}
             except Exception as exc:
                 # Tool errors belong in tool result (not broken JSON-RPC). Never dump locals or tracebacks.
-                msg = collector.scrub_error(str(exc))
-                audit_error = type(exc).__name__ + ": " + msg
-                result = {"content": [{"type": "text", "text": json.dumps(collector.failure_result(exc, args.get("target"), args.get("command")), ensure_ascii=False)}], "isError": True}
-            collector.audit(name, args, not result["isError"], time.monotonic() - started, audit_error)
+                audit_error = type(exc).__name__
+                payload = collector.failure_result(exc, args.get("target"), args.get("command"))
+            is_error = payload.get("ok") is False
+            collector.audit(name, args, not is_error, time.monotonic() - started, audit_error, payload)
+            result = {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}], "isError": is_error}
             return rpc_response(rid, result)
         return rpc_error(rid, -32601, "Method not found")
     except Exception:

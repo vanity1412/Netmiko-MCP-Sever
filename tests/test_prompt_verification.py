@@ -72,8 +72,8 @@ class PromptVerificationTests(unittest.TestCase):
         self.assertIn('Screen width set to 511', output)
 
     def test_genuine_continuation_after_prompt_still_fails(self):
-        output, failure = run(['show version\nCORE1#', 'extra line after prompt\nCORE1#'],
-                              'show version', 'CORE1#')
+        output, failure = run(['show clock\nCORE1#', 'extra line after prompt\nCORE1#'],
+                              'show clock', 'CORE1#')
         self.assertIsNotNone(failure)
         self.assertEqual(failure['error_category'], 'output_verification')
         self.assertEqual(failure['error_reason'], 'prompt_candidate_continuation')

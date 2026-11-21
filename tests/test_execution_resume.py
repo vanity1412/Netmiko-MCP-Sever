@@ -81,6 +81,61 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(self.calls['192.0.2.2','show interfaces'],2)
         self.assertEqual(sum(len(r['attempts']) for r in self.records()),3)
         self.assertEqual(self.run_job(tasks)['success'],2)
+    def test_autodetect_resume_restarts_new_read_plan_and_keeps_old_evidence(self):
+        self.c.devices['bad']['device_type'] = 'autodetect'
+        self.c._build_device_index()
+        detected = 'cisco_ios'
+        resolve_platform = self.c._resolve_platform
+
+        def resolve(params):
+            if params['device_type'] == 'autodetect':
+                params['device_type'] = detected
+            else:
+                resolve_platform(params)
+
+        tasks = [{'target': 'bad'}]
+        command_map = {'cisco_ios': ['show version', 'show interfaces'],
+                       'huawei': ['display version', 'display interface brief']}
+        with patch.object(self.c, '_resolve_platform', side_effect=resolve):
+            self.assertEqual(self.run_job(tasks, command_map=command_map)['partial'], 1)
+            detected = 'huawei'
+            self.fail = False
+            self.assertEqual(self.run_job(tasks, command_map=command_map, retry_statuses={'partial'})['success'], 1)
+        self.assertEqual(self.calls['192.0.2.2', 'display version'], 1)
+        self.assertEqual(self.calls['192.0.2.2', 'display interface brief'], 1)
+        old, new = self.records()[0]['attempts']
+        self.assertEqual(old['execution_plan']['driver'], 'cisco_ios')
+        self.assertEqual(new['execution_plan']['driver'], 'huawei')
+        self.assertEqual(new['command_offset'], 0)
+        self.assertTrue(new['restarted_execution_plan'])
+        self.assertTrue(all((self.job / proof['file']).exists() for proof in old['evidence']))
+
+    def test_autodetect_resume_blocks_changed_plan_with_possible_mutation(self):
+        self.c.devices['bad']['device_type'] = 'autodetect'
+        self.c._build_device_index()
+        detected = 'cisco_ios'
+        resolve_platform = self.c._resolve_platform
+
+        def resolve(params):
+            if params['device_type'] == 'autodetect':
+                params['device_type'] = detected
+            else:
+                resolve_platform(params)
+
+        tasks = [{'target': 'bad'}]
+        command_map = {'cisco_ios': ['configure terminal', 'show interfaces'],
+                       'huawei': ['display version', 'display interface brief']}
+        with patch.object(self.c, '_resolve_platform', side_effect=resolve):
+            self.assertEqual(self.run_job(tasks, command_map=command_map)['partial'], 1)
+            detected = 'huawei'
+            before = dict(self.calls)
+            result = self.run_job(tasks, command_map=command_map, retry_statuses={'partial'},
+                                  replay_uncertain=True)
+        self.assertEqual(result['unknown'], 1)
+        self.assertEqual(dict(self.calls), before)
+        self.assertTrue(self.records()[0]['needs_reconciliation'])
+        self.assertEqual(self.records()[0]['attempts'][-1]['error_category'], 'scan_execution_plan_changed')
+
     def test_configuration_is_allowed_but_not_automatically_replayed(self):
         tasks=[{'target':'bad','commands':['configure terminal','description new-uplink','end']}]
         self.assertEqual(self.run_job(tasks)['partial'],1)
