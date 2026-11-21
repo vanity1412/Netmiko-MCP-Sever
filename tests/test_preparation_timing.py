@@ -55,12 +55,17 @@ class PreparationTimingTests(unittest.TestCase):
                 self.assertEqual(conn.base_prompt, 'noc@router')
 
     def test_junos_width_waits_for_late_ack_after_provisional_prompt(self):
+        for ack_at, prompt_at in ((4.5, 4.6), (4.6, 4.75)):
+            with self.subTest(ack_at=ack_at, prompt_at=prompt_at):
+                self.check_junos_width_ack(ack_at, prompt_at)
+
+    def check_junos_width_ack(self, ack_at, prompt_at):
         from netmiko.juniper.juniper import JuniperBase
         b.install_tolerant_preparation()
         width = SETUP_COMMANDS[0]
         conn = PreparationChannel(self.clock, {
             width: [(0, width + '\nnoc@router>\n'),
-                    (4.5, ACKS[width] + '\n'), (4.6, 'noc@router>')],
+                    (ack_at, ACKS[width] + '\n'), (prompt_at, 'noc@router>')],
             'show version': 'Junos: 23.4R2',
         })
         c = self.collector(conn)
@@ -78,6 +83,58 @@ class PreparationTimingTests(unittest.TestCase):
         self.assertTrue(result['output_complete'])
         self.assertIn('Junos: 23.4R2', result['output'])
         self.assertNotIn(ACKS[width], result['output'])
+
+    def test_junos_width_ack_after_timeout_is_kept_as_resync_evidence(self):
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        width = SETUP_COMMANDS[0]
+        initial = width + '\nnoc@router>\n'
+        late = ACKS[width] + '\nnoc@router>'
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                response = [(0, initial), (5.8, late)]
+                if cancelled:
+                    response.append((5.9, '\n^C\nnoc@router>'))
+                conn = PreparationChannel(self.clock, {width: response})
+                c = self.collector(conn)
+
+                def connect(**kwargs):
+                    JuniperBase.session_preparation(conn)
+                    return conn
+
+                with patch.object(c, '_connect', connect):
+                    if cancelled:
+                        result = c.execute('local', 'show version')
+                        self.assertTrue(result['ok'], result)
+                        record = result['junos_preparation'][0]
+                        self.assertEqual(record['output'], initial)
+                        self.assertIn(late, record['resync_output'])
+                        self.assertNotIn(ACKS[width], result['output'])
+                        self.assertEqual(conn.submitted, [width, 'show cli', 'show version'])
+                    else:
+                        with self.assertRaises(b.CollectionError) as caught:
+                            c.execute('local', 'show version')
+                        result = c.failure_result(caught.exception, 'local', 'show version')
+                        self.assertEqual(result['output'], initial)
+                        self.assertEqual(result['resync_output'], late)
+                        self.assertIs(result['command_sent'], False)
+                        self.assertEqual(result['execution_state'], 'NOT_SENT')
+                        self.assertEqual(conn.submitted, [width])
+                        self.assertEqual(conn.writes, [width + '\n', '\x03'])
+
+    def test_junos_width_settling_rejects_extra_data_and_keeps_it(self):
+        width = SETUP_COMMANDS[0]
+        conn = PreparationChannel(self.clock, {
+            width: [(4.75, ACKS[width] + '\nnoc@router>'),
+                    (5.02, '\nlate continuation\nnoc@router>')],
+        })
+        with self.assertRaises(b.CollectionError) as caught:
+            b.junos_prepare_session(conn)
+        details = caught.exception.details
+        self.assertEqual(details['error_category'], 'read_timeout')
+        self.assertIn(ACKS[width], details['output'])
+        self.assertIn('late continuation', details['output'])
+        self.assertEqual(conn.submitted, [width])
 
     def test_junos_cli_setup_error_with_valid_prompt_keeps_existing_preparation_contract(self):
         for rejected_command in SETUP_COMMANDS:

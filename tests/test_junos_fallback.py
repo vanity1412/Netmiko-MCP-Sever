@@ -193,9 +193,13 @@ class JunosFallbackTests(unittest.TestCase):
                 self.assertEqual(conn.writes[-2:], ['show version', '\n'])
 
     def test_unknown_localized_bare_and_mixed_ack_do_not_confirm_settings(self):
+        from netmiko.juniper.juniper import JuniperBase
         for response in ('', 'không được hỗ trợ', 'Screen width set to 511\nstrange response'):
             with self.subTest(response=response):
-                conn = self.prepare({PREP[0]: response, 'show cli': 'CLI terminal is vt100'})
+                conn = JunosChannel(self.clock, {PREP[0]: response, 'show cli': 'CLI terminal is vt100'})
+                conn.cancel_input = True
+                JuniperBase.session_preparation(conn)
+                self.assertEqual(conn.writes.count('\x03'), 0 if response else 1)
                 self.assertEqual(conn._network_junos_capabilities, {})
                 self.assertTrue(conn._network_junos_verify_echo)
                 self.assertTrue(self.collector(conn).execute('mx', 'show version')['ok'])

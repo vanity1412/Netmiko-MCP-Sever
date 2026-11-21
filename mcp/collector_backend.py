@@ -1187,6 +1187,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         echo_re = re.compile(r'^(?:\S+[>#%$\]]\s*)?' + echo_body + r'[ \t]*$') if echo_body else None
         repaint_command = bool(re.fullmatch(r'set cli screen-width \d+', normalized_command))
         width_preparation = repaint_command and getattr(conn, '_network_junos_preparing', False)
+        width_ack = 'Screen width set to ' + normalized_command.split()[-1] if width_preparation else None
+        candidate_has_width_ack = settling_width = False
         # Exact version queries must have a response body. Filtered commands may
         # legitimately produce no matches and keep their existing prompt rules.
         requires_payload = normalized_command.casefold() in {'show version', 'display version'}
@@ -1195,13 +1197,14 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
             if checkpoint and now >= next_checkpoint:
                 checkpoint()
                 next_checkpoint = now + .05
-            if now >= deadline:
-                # A bare prompt can be an advisory setup response. Give the
-                # ACK the full preparation budget before falling back to it.
-                if (width_preparation and candidate_preamble_only and ending_matches(pattern, cleaned)
-                        and now - last_data >= quiet and not dead_session(conn)):
-                    break
-                raise TimeoutError('Command read timed out')
+            if now >= deadline and not settling_width:
+                if (candidate is None or not candidate_has_width_ack
+                        or not ending_matches(pattern, cleaned) or dead_session(conn)):
+                    raise TimeoutError('Command read timed out')
+                # ACK and prompt arrived within budget. Finish observing this
+                # candidate only, still subject to the caller's deadline.
+                settling_width = True
+                deadline = last_data + quiet
             data = conn.read_channel()
             if data:
                 # Invalidate before writes/callbacks: either may fail after
@@ -1214,6 +1217,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 tail = (tail + data)[-16384:]
                 last_data = time.monotonic()
                 xml_guard.feed(data)
+                if settling_width:
+                    raise TimeoutError('Junos screen-width output continued past the read deadline')
             if data or cleaned is None:
                 cleaned = clean_terminal(tail)
             # Echo is optional. Reset a provisional prompt only when the old
@@ -1235,6 +1240,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     if handled_pagers:
                         candidate_raw = strip_pager_spans(candidate_raw, list(handled_pagers.items()))
                     candidate_text = clean_terminal(candidate_raw)
+                    if width_preparation:
+                        candidate_has_width_ack = any(line.strip() == width_ack for line in candidate_text.splitlines())
                     candidate_preamble_only = all(
                         not line.strip() or ending_matches(device_pattern, line)
                         or (echo_re is not None and echo_re.fullmatch(line.strip()))
