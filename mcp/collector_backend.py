@@ -1186,6 +1186,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         echo_body = r'[ \t]+'.join(re.escape(part) for part in normalized_command.split())
         echo_re = re.compile(r'^(?:\S+[>#%$\]]\s*)?' + echo_body + r'[ \t]*$') if echo_body else None
         repaint_command = bool(re.fullmatch(r'set cli screen-width \d+', normalized_command))
+        width_preparation = repaint_command and getattr(conn, '_network_junos_preparing', False)
         # Exact version queries must have a response body. Filtered commands may
         # legitimately produce no matches and keep their existing prompt rules.
         requires_payload = normalized_command.casefold() in {'show version', 'display version'}
@@ -1195,6 +1196,11 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 checkpoint()
                 next_checkpoint = now + .05
             if now >= deadline:
+                # A bare prompt can be an advisory setup response. Give the
+                # ACK the full preparation budget before falling back to it.
+                if (width_preparation and candidate_preamble_only and ending_matches(pattern, cleaned)
+                        and now - last_data >= quiet and not dead_session(conn)):
+                    break
                 raise TimeoutError('Command read timed out')
             data = conn.read_channel()
             if data:
@@ -1218,7 +1224,7 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                 echo_seen = max(echo_seen, sum(bool(echo_re.fullmatch(line.strip()))
                                                for line in cleaned.splitlines()))
                 if (candidate is not None and candidate_preamble_only
-                        and (requires_payload or (echo_seen > candidate_echo_count
+                        and (requires_payload or width_preparation or (echo_seen > candidate_echo_count
                              and (candidate_echo_count == 0 or repaint_command)))):
                     candidate = None
                     candidate_echo_count = 0
@@ -1247,14 +1253,15 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
                     handled_pagers[marker_id] = received - len(tail) + pager.end()
                     conn.write_channel(' ')
             elif (ending_matches(pattern, cleaned) and time.monotonic() - last_data >= quiet
-                  and not container_open() and not (requires_payload and candidate_preamble_only)):
+                  and not container_open()
+                  and not ((requires_payload or width_preparation) and candidate_preamble_only)):
                 prompt_only_completion = True
                 break
             if not data:
                 channel = getattr(conn, 'remote_conn', None)
                 if channel is not None and (getattr(channel, 'closed', False) or getattr(channel, 'eof_received', False)):
                     if (ending_matches(pattern, cleaned) and not container_open()
-                            and not (requires_payload and candidate_preamble_only)):
+                            and not ((requires_payload or width_preparation) and candidate_preamble_only)):
                         break
                     raise EOFError('SSH channel closed before ending prompt')
             time.sleep(min(.01, max(0, deadline - time.monotonic())))

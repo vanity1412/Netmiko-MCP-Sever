@@ -54,6 +54,31 @@ class PreparationTimingTests(unittest.TestCase):
                 self.assertEqual(conn._network_prompt_text, 'noc@router>')
                 self.assertEqual(conn.base_prompt, 'noc@router')
 
+    def test_junos_width_waits_for_late_ack_after_provisional_prompt(self):
+        from netmiko.juniper.juniper import JuniperBase
+        b.install_tolerant_preparation()
+        width = SETUP_COMMANDS[0]
+        conn = PreparationChannel(self.clock, {
+            width: [(0, width + '\nnoc@router>\n'),
+                    (4.5, ACKS[width] + '\n'), (4.6, 'noc@router>')],
+            'show version': 'Junos: 23.4R2',
+        })
+        c = self.collector(conn)
+
+        def connect(**kwargs):
+            JuniperBase.session_preparation(conn)
+            return conn
+
+        c._connect = connect
+        result = c.execute('local', 'show version')
+        self.assertEqual(conn.submitted, [*SETUP_COMMANDS, 'show version'])
+        self.assertEqual(conn.events, [])
+        self.assertEqual(conn._network_junos_capabilities['screen_width'], 511)
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertTrue(result['output_complete'])
+        self.assertIn('Junos: 23.4R2', result['output'])
+        self.assertNotIn(ACKS[width], result['output'])
+
     def test_junos_cli_setup_error_with_valid_prompt_keeps_existing_preparation_contract(self):
         for rejected_command in SETUP_COMMANDS:
             with self.subTest(command=rejected_command):
