@@ -84,7 +84,7 @@ def prepare_tasks(collector, tasks, command_map=None):
             item['commands'] = commands(item['commands'])
         elif params['device_type'] not in {'autodetect','generic_termserver'}:
             item['commands'] = commands(command_map.get(params['device_type']))
-        if collector.execution_policy == 'read_only':
+        if collector.execution_policy in ('read_only', 'operational'):
             if 'commands' in item:
                 collector.validate_execution_commands(item['commands'], params['device_type'])
             else:
@@ -164,7 +164,7 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
             execution_plan = resolved_plan
             # Keep the detected driver and original target/profile binding for
             # this plan. A second resolution could select a different driver.
-            options = {'_resolved_scan_params': params} if collector.execution_policy == 'read_only' else {}
+            options = {'_resolved_scan_params': params} if collector.execution_policy in ('read_only', 'operational') else {}
             outcome = collector.execute_many(task['target'],commands[command_offset:],device_type=driver,
                         profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),
                         save_output=True,allow_junos_recovery=budget.get('allow_junos_recovery', True), **options)

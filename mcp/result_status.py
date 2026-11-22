@@ -53,7 +53,8 @@ def normalize_result(result):
         status = 'PARSE_ERROR'
     elif category == 'cli_error':
         status = 'CLI_ERROR'
-    elif category == 'policy_denied' and result.get('error_reason') == 'execution_policy_read_only':
+    elif category == 'policy_denied' and result.get('error_reason') in {
+            'execution_policy_read_only', 'execution_policy_operational'}:
         status = 'POLICY_DENIED'
     elif category == 'cancelled':
         status = 'CANCELLED'

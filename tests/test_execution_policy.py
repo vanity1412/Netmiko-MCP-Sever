@@ -140,3 +140,82 @@ class ExecutionPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'execution_policy'):
             self.collector(policy='writable')
         self.connect.assert_not_called()
+
+    def test_operational_denylist_by_driver(self):
+        cases = {
+            'juniper_junos': (['ping 192.0.2.2 count 3', 'request support information',
+                               'clear pppoe lockout', 'show system commit', 'set cli timestamp'],
+                              ['configure private', 'edi', 'commit confirmed', 'load merge x',
+                               'show configuration | sav example', 'request system reboot']),
+            'cisco_ios': (['traceroute 192.0.2.2', 'show running-config | include hostname'],
+                          ['conf t', 'wr mem', 'copy running-config startup-config', 'do configure terminal',
+                           'delete nvram:startup-config', 'show running-config | redirect flash:backup']),
+            'huawei': (['display current-configuration', 'ping -c 3 192.0.2.2'],
+                       ['sys', 'commit', 'save', 'reset saved-configuration']),
+            'linux': (['ip -br address show', 'ip route show'], ['touch example', 'ip address flush']),
+        }
+        for driver, (allowed, blocked) in cases.items():
+            for expected, commands in ((True, allowed), (False, blocked)):
+                for command in commands:
+                    with self.subTest(driver=driver, command=command):
+                        self.assertEqual(b.operational_policy_allows(command, driver), expected)
+        self.assertFalse(b.operational_policy_allows('ping 192.0.2.2', 'unknown_driver'))
+
+    def test_operational_policy_on_mcp_batch_parallel_and_interact(self):
+        collector = self.collector(policy='operational')
+        status = self.call(collector, 'ssh_status')
+        self.assertEqual(status['execution_policy'], 'operational')
+        for tool, arguments in (
+                ('ssh_execute_many', {'target': 'fixture', 'commands': ['ping 192.0.2.2 count 3', 'commit']}),
+                ('ssh_interact', {'target': 'fixture', 'steps': ['show version', '']})):
+            result = self.call(collector, tool, **arguments)
+            self.assertEqual(result['status'], 'POLICY_DENIED')
+            self.assertFalse(result['command_sent'])
+        result = self.call(collector, 'ssh_parallel', tasks=[{'target': 'fixture', 'command': 'configure'}])
+        self.assertEqual(result['results'][0]['status'], 'POLICY_DENIED')
+        self.connect.assert_not_called()
+        result = self.call(collector, 'ssh_execute', target='fixture', command='ping 192.0.2.2 count 3')
+        self.assertTrue(result['ok'], result)
+        self.connect.assert_called_once()
+
+    def test_operational_blocks_config_prompt_and_driver_override(self):
+        conn = fixtures.Fake()
+        conn.find_prompt = lambda: 'MOCK(config)#'
+        self.connect.side_effect = None
+        self.connect.return_value = conn
+        collector = self.collector(policy='operational', driver='cisco_ios')
+        collector.defaults['auto_enable'] = True
+        result = self.call(collector, 'ssh_execute', target='fixture', command='show version', device_type='linux')
+        self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.connect.assert_not_called()
+        result = self.call(collector, 'ssh_execute', target='fixture', command='show version')
+        self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.assertFalse(result['command_sent'])
+        self.connect.assert_called_once()
+        self.assertEqual(conn.commands, [])
+
+    def test_operational_scanner_pins_autodetected_driver(self):
+        collector = self.collector(policy='operational', driver='autodetect')
+        collector._custom_detect = Mock(return_value=Mock(autodetect=Mock(return_value='juniper_junos')))
+        with self.assertRaises(b.CollectionError):
+            scan.prepare_tasks(collector, [{'target': 'fixture', 'commands': ['commit confirmed']}])
+        self.connect.assert_not_called()
+        command = 'ping 192.0.2.2 count 3'
+        result = scan.run_scan(collector, [{'target': 'fixture', 'commands': [command]}],
+                               self.directory / 'scan-operational', workers=2, slow_workers=1)
+        self.assertTrue(result['ok'], result)
+        collector._custom_detect.assert_called_once()
+        entry, = collector._sessions.values()
+        self.assertEqual(entry['conn'].commands, [command])
+
+    def test_mcp_negotiates_only_supported_handshake_versions(self):
+        collector = self.collector()
+        status = self.call(collector, 'ssh_status')
+        versions = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']
+        self.assertEqual(status['mcp_protocol_versions'], versions)
+        for request, expected in [(v, v) for v in versions] + [('2026-07-28', '2025-11-25')]:
+            with self.subTest(request=request):
+                reply = b.handle_rpc({'id': 1, 'method': 'initialize',
+                                      'params': {'protocolVersion': request}}, collector)
+                self.assertEqual(reply['result']['protocolVersion'], expected)
+        self.connect.assert_not_called()

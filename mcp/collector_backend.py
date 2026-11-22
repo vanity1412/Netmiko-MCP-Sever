@@ -38,6 +38,7 @@ from telemetry import (PhaseMetrics, WorkQueueMetrics, measured_phase, time_conn
 import tempfile
 
 VERSION = "1.9.1"
+MCP_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 # Local, backwards-compatible reader patch; public MCP tool schemas are unchanged.
 JUNOS_READER_PATCH = "2026-11-19.1"
 MAX_INLINE = 200_000
@@ -553,9 +554,53 @@ def read_only_policy_allows(command, driver):
         part, re.I) for part in filters)
 
 
-def execution_policy_error(message):
+def operational_policy_allows(command, driver):
+    """Screen known configuration and CLI escape commands on network drivers."""
+    if driver == 'linux':
+        return command == 'ip -br address show' or read_only_policy_allows(command, driver)
+    driver_rules = {
+        'junos': {'edit', 'load', 'rollback', 'set', 'activate', 'deactivate',
+                  'rename', 'replace', 'insert', 'annotate', 'wildcard', 'request system',
+                  'request chassis', 'file copy', 'file delete', 'file rename', 'file archive'},
+        'cisco': {'conf', 'write', 'copy', 'replace', 'archive config',
+                  'terminal shell', 'tclsh', 'guestshell', 'event manager run'},
+        'huawei': {'system-view', 'rollback', 'startup', 'copy', 'move', 'rename',
+                   'configuration replace', 'undo', 'return', 'upgrade'},
+    }
+    family = ('junos' if driver == 'juniper_junos' else 'cisco' if driver.startswith('cisco_')
+              else 'huawei' if driver.startswith('huawei') else None)
+    if family is None and driver not in {'autodetect', 'generic_termserver'}:
+        return False
+    if not command.isprintable() or re.search(r'[;&`<>$\\]', command):
+        return False
+    try:
+        head, *filters = cli_pipeline(command)
+    except PermissionError:
+        return False
+    if any('|' in part for part in (head, *filters)):
+        return False
+
+    def matches_rule(text, rule):
+        words = text.casefold().replace('"', '').replace("'", '').split()
+        blocked = rule.split()
+        return len(words) >= len(blocked) and all(
+            full.startswith(word) for word, full in zip(words, blocked))
+
+    common = {'configure', 'configuration', 'commit', 'save', 'enable', 'shell', 'start',
+              'do', 'run', 'op', 'ssh', 'telnet', 'rlogin', 'python', 'reboot', 'reload',
+              'restart', 'reset', 'halt', 'power-off', 'zeroize', 'delete', 'erase', 'format'}
+    rules = common | (driver_rules[family] if family else set().union(*driver_rules.values()))
+    if family in ('junos', None) and head.casefold().split() == ['set', 'cli', 'timestamp']:
+        allowed_head = True
+    else:
+        allowed_head = not any(matches_rule(head, rule) for rule in rules)
+    blocked_filters = {'save', 'redirect', 'append', 'tee', 'file', 'shell', 'execute', 'nohangup'}
+    return allowed_head and not any(matches_rule(stage, rule) for stage in filters for rule in blocked_filters)
+
+
+def execution_policy_error(message, policy='read_only'):
     return CollectionError({'error': 'ExecutionPolicyDenied', 'error_category': 'policy_denied',
-                            'error_reason': 'execution_policy_read_only', 'error_stage': 'validation',
+                            'error_reason': f'execution_policy_{policy}', 'error_stage': 'validation',
                             'command_sent': False, 'retryable': False, 'message': message})
 
 
@@ -584,17 +629,17 @@ def cli_replay_context(conn, driver):
     if (not prompt or prompt != getattr(conn, '_network_login_prompt', None)
             or getattr(conn, '_network_cli_context_changed', False)):
         return None
+    return (driver, prompt) if is_operational_prompt(prompt, driver) else None
+
+
+def is_operational_prompt(prompt, driver):
     if driver == 'juniper_junos':
-        operational = prompt.endswith('>')
-    elif driver == 'huawei':
-        operational = prompt.startswith('<') and prompt.endswith('>')
-    elif driver.startswith('cisco_'):
-        operational = prompt.endswith(('#', '>')) and '(' not in prompt
-    elif driver == 'linux':
-        operational = prompt.endswith(('#', '$'))
-    else:
-        operational = False
-    return (driver, prompt) if operational else None
+        return prompt.endswith('>')
+    if driver.startswith('huawei'):
+        return prompt.startswith('<') and prompt.endswith('>')
+    if driver.startswith('cisco_'):
+        return prompt.endswith(('#', '>')) and '(' not in prompt
+    return driver == 'linux' and prompt.endswith(('#', '$'))
 
 
 # Used only on recognized CLI diagnostic lines, never as a command filter.
@@ -1825,8 +1870,8 @@ class Collector:
             raise ValueError("defaults, profiles and devices must be JSON objects")
         self.execution_policy_configured = 'execution_policy' in self.defaults
         self.execution_policy = self.defaults.get('execution_policy', 'read_write')
-        if self.execution_policy not in ('read_only', 'read_write'):
-            raise ValueError('execution_policy must be read_only or read_write')
+        if self.execution_policy not in ('read_only', 'operational', 'read_write'):
+            raise ValueError('execution_policy must be read_only, operational or read_write')
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
         self.health_check_interval = bounded_int(self.defaults.get('health_check_interval_seconds'), 30, 0, 3600)
         self.auth_cooldown = bounded_int(self.defaults.get('auth_failure_cooldown_seconds'), 300, 0, 3600)
@@ -2182,10 +2227,10 @@ class Collector:
             settings.update({key:source[key] for key in auth_keys if key in source})
             settings.setdefault('password','')
         settings["host"] = safe_target(device.get("host") or target)
-        if self.execution_policy == 'read_only':
+        if self.execution_policy in ('read_only', 'operational'):
             known_driver = settings.get('device_type') or 'autodetect'
             if device_type and device_type not in (known_driver, 'autodetect', 'generic_termserver'):
-                raise execution_policy_error('Use the configured driver or autodetect in read_only mode')
+                raise execution_policy_error('Use the configured driver or autodetect', self.execution_policy)
             settings['device_type'] = known_driver
         elif device_type:
             known = device.get('device_type')
@@ -2197,7 +2242,7 @@ class Collector:
         settings.setdefault("secret", os.environ.get("NETWORK_SSH_SECRET", ""))
         # Permissive host-key acceptance requested for this collector. Persistence
         # is per client and never turns a writable-disk problem into an SSH failure.
-        if effective.get('auto_enable', False):
+        if self.execution_policy != 'operational' and effective.get('auto_enable', False):
             settings['_auto_enable'] = True
         settings['ssh_strict'] = mode == 'strict'
         settings['alt_host_keys'] = mode == 'strict'
@@ -2331,7 +2376,8 @@ class Collector:
                 from probe_session import ProbeSession, ProbeFailure
                 budget = min(getattr(self._request, 'detection_timeout', None) or self.autodetect_timeout, self._checkpoint())
                 wire_params = dict(params)
-                wire_params['_auto_enable'] = bool(getattr(self._request, 'cli_options', {}).get('auto_enable', False))
+                wire_params['_auto_enable'] = self.execution_policy != 'operational' and bool(
+                    getattr(self._request, 'cli_options', {}).get('auto_enable', False))
                 overrides = getattr(self._request, 'connection_timeouts', None) or {}
                 wire_params['_probe_read_timeout'] = min(30, overrides.get('banner_timeout', 4))
                 try:
@@ -2739,6 +2785,9 @@ class Collector:
         if self.execution_policy == 'read_only' and any(
                 not read_only_policy_allows(command, driver) for command in commands):
             raise execution_policy_error('Command is outside the supported read_only CLI forms')
+        if self.execution_policy == 'operational' and any(
+                not operational_policy_allows(command, driver) for command in commands):
+            raise execution_policy_error('Command denied by operational policy for this driver', 'operational')
         return commands
 
     @contextlib.contextmanager
@@ -3028,10 +3077,13 @@ class Collector:
         self._request.command_sent = False
         conn._network_command_sent = False
         timeout = min(timeout, self._checkpoint())
-        if self.execution_policy == 'read_only':
+        if self.execution_policy in ('read_only', 'operational'):
             driver = getattr(self._request, 'resolved_driver', '') or ''
             try:
                 self.validate_execution_commands([command], driver)
+                if self.execution_policy == 'operational' and not is_operational_prompt(
+                        getattr(conn, '_network_prompt_text', '') or '', driver):
+                    raise execution_policy_error('Operational CLI prompt is not verified', 'operational')
             except CollectionError as exc:
                 exc._network_keep_session = True
                 raise
@@ -3264,8 +3316,8 @@ class Collector:
     @bounded_request
     def interact(self, target: str, steps: list[str], device_type: str | None = None, profile: str | None = None,
                  read_timeout: int | None = None, save_output: bool = False) -> dict[str, Any]:
-        if self.execution_policy == 'read_only':
-            raise execution_policy_error('ssh_interact is disabled in read_only mode; use a read command or batch')
+        if self.execution_policy in ('read_only', 'operational'):
+            raise execution_policy_error('ssh_interact requires read_write; use a command or batch', self.execution_policy)
         if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_COMMANDS:
             raise ValueError("steps must be an array containing 1 to 1000 strings")
         # Every command or reply must be provided as an explicit step.
@@ -3564,7 +3616,8 @@ class Collector:
         with self._guard:
             sessions = [{"host": k[0], "port": k[1], "device_type": k[2], "connected": not dead_session(v.get("conn")),
                          "leased": v.get("borrowers", 0), "awaiting_input": bool(getattr(v.get("conn"), "_network_awaiting_input", False)), "idle_seconds": round(time.monotonic()-v["used"], 2)} for k,v in self._sessions.items()]
-        return {"version": VERSION, "execution_policy": self.execution_policy,
+        return {"version": VERSION, "mcp_protocol_versions": list(MCP_PROTOCOL_VERSIONS),
+                "execution_policy": self.execution_policy,
                 "execution_policy_configured": self.execution_policy_configured,
                 "phase_metrics": self._metrics.snapshot(), "parallel_queue": self._parallel_queue.snapshot(), "driver_cache_refreshes": self._driver_cache_refreshes, "persistent_autodetect_hits": self._persistent_detection_hits, "output_storage_mode": self.output_storage_mode, "sessions": sessions, "connections_opened": self._connections_opened, "session_reuses": self._session_reuses,
                 "connection_failures": self._connection_failures, "session_evictions": self._session_evictions,
@@ -3680,7 +3733,7 @@ def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | No
     try:
         if method == "initialize":
             requested = (req.get("params") or {}).get("protocolVersion", "2025-06-18")
-            protocol = requested if requested in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"} else "2025-06-18"
+            protocol = requested if requested in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[-1]
             return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Network CLI executor. Call ssh_status to check execution policy. Configuration changes require explicit user authorization and an explicitly configured read_write policy. Responses and completion are verified. Use credential profiles."})
         if method == "ping":
             return rpc_response(rid, {})
