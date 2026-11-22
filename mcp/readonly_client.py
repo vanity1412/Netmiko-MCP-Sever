@@ -109,6 +109,6 @@ class ReadOnlyConnection(CLIConnection):
     """Python client restricted to the Collector's read-only policy."""
 
     def _bind(self, config, target, *, profile=None, device_type=None):
-        if config.get('defaults', {}).get('execution_policy', 'read_only') != 'read_only':
-            raise ValueError('ReadOnlyConnection requires read_only; use CLIConnection for another policy')
+        if config.get('defaults', {}).get('execution_policy', 'read_only') not in ('read_only', 'operational'):
+            raise ValueError('ReadOnlyConnection requires the read-only blacklist policy; use CLIConnection for read_write')
         super()._bind(config, target, profile=profile, device_type=device_type)

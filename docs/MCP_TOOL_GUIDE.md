@@ -43,10 +43,11 @@ partial/quiet time thành bằng chứng hoàn tất. Parser lỗi phải giữ 
 {"name":"ssh_execute","arguments":{"target":"LAB-A","command":"show version","save_output":true}}
 ```
 
-ssh_execute_many.commands là mảng 1–1000 chuỗi trên cùng phiên. Mặc định dừng;
-continue_on_error=true chỉ cho lệnh độc lập và CLI error đã đọc đủ, session đồng
-bộ. Không tiếp tục timeout/disconnect/storage/pending; suffix chưa gửi là SKIPPED,
-không phải thành công hoặc output rỗng. Batch không có use_textfsm trong schema.
+`ssh_execute_many.commands` nhận 1–1000 chuỗi trên cùng phiên và mặc định dừng khi lỗi.
+Dùng `continue_on_error=true` cho các lệnh độc lập. Collector bỏ qua lệnh bị blacklist
+phát hiện trước khi mở phiên và tiếp tục sau lỗi CLI nếu đã đọc đủ output và phiên
+còn đồng bộ. Timeout, disconnect, lỗi storage và prompt tương tác vẫn dừng batch.
+Các lệnh còn lại trả `SKIPPED`. Batch không có tham số `use_textfsm`.
 
 ```json
 {"name":"ssh_execute_many","arguments":{"target":"LAB-A","commands":["show version","show interfaces"],"continue_on_error":false,"save_output":true}}

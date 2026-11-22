@@ -66,7 +66,7 @@ def prepare_tasks(collector, tasks, command_map=None):
         for command in values:
             readonly_command(command, dtype)
     prepared = {}
-    allowed = {'target','commands','device_type','profile','read_timeout','lane'}
+    allowed = {'target','commands','device_type','profile','read_timeout','lane','continue_on_error'}
     for raw in tasks:
         if not isinstance(raw, dict) or set(raw)-allowed or 'target' not in raw:
             raise ValueError('Invalid task fields')
@@ -84,7 +84,11 @@ def prepare_tasks(collector, tasks, command_map=None):
             item['commands'] = commands(item['commands'])
         elif params['device_type'] not in {'autodetect','generic_termserver'}:
             item['commands'] = commands(command_map.get(params['device_type']))
-        if collector.execution_policy in ('read_only', 'operational'):
+        if 'continue_on_error' in item and not isinstance(item['continue_on_error'], bool):
+            raise ValueError('continue_on_error must be boolean')
+        # With continue_on_error, blacklisted commands are reported as denied
+        # per command at run time instead of rejecting the whole plan here.
+        if collector.execution_policy == 'read_only' and not item.get('continue_on_error'):
             if 'commands' in item:
                 collector.validate_execution_commands(item['commands'], params['device_type'])
             else:
@@ -167,7 +171,8 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
             options = {'_resolved_scan_params': params} if collector.execution_policy in ('read_only', 'operational') else {}
             outcome = collector.execute_many(task['target'],commands[command_offset:],device_type=driver,
                         profile=task.get('profile'),read_timeout=task.get('read_timeout',budget['read_timeout']),
-                        save_output=True,allow_junos_recovery=budget.get('allow_junos_recovery', True), **options)
+                        save_output=True,allow_junos_recovery=budget.get('allow_junos_recovery', True),
+                        continue_on_error=bool(task.get('continue_on_error', False)), **options)
         except BatchError as exc:
             outcome = exc.summary or {'ok':False,'results':exc.results}
         except Exception as exc:

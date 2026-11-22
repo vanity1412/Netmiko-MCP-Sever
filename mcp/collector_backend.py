@@ -36,6 +36,7 @@ from result_status import normalize_result
 from output_storage import SharedOutputStorage
 from telemetry import (PhaseMetrics, WorkQueueMetrics, measured_phase, time_connection_method,
                        connection_measurements, current_connection_timings)
+from policy import CollectionError, _LINUX_BLOCKED_PROGRAMS, cli_pipeline, cli_replay_context, command_prompt_pattern, execution_policy_error, is_operational_prompt, is_replay_safe, linux_operational_stage_allows, operational_policy_allows, prepare_noc_command, readonly_command, safe_command
 import tempfile
 
 VERSION = "1.9.1"
@@ -170,13 +171,6 @@ def install_tofu():
 
         build._goose_tofu = True
         BaseConnection._build_ssh_client = build
-
-
-class CollectionError(Exception):
-    """Bounded worker failures retain categories without copying library secrets."""
-    def __init__(self, details):
-        self.details = details
-        super().__init__(details.get('error', 'CollectionError'))
 
 
 def classify_error(exc, stage='unknown'):
@@ -474,243 +468,6 @@ def safe_output_id(output_id: str) -> str:
     return output_id
 
 
-def safe_command(cmd: Any) -> str:
-    if not isinstance(cmd, str) or not cmd.strip() or len(cmd) > 8192:
-        raise ValueError("command must be a non-empty string up to 8192 characters")
-    if any(ord(char) < 32 or ord(char) == 127 for char in cmd):
-        raise ValueError("Commands must be single-line and contain no control characters")
-    return cmd
-
-
-def cli_pipeline(command: str) -> list[str]:
-    """Split CLI pipes outside quotes; preserve quoted regular expressions."""
-    parts, start, quote = [], 0, None
-    for index, char in enumerate(command):
-        if char in ('"', "'"):
-            if quote is None:
-                quote = char
-            elif quote == char:
-                quote = None
-        elif char == '|' and quote is None:
-            parts.append(command[start:index].strip())
-            start = index + 1
-    if quote:
-        raise PermissionError("Unclosed CLI quote")
-    parts.append(command[start:].strip())
-    if any(not part for part in parts):
-        raise PermissionError("Empty CLI pipeline")
-    return parts
-
-
-@functools.lru_cache(maxsize=4096)
-def readonly_command(command: str, platform: str = '') -> str:
-    """Legacy import name: validate framing only; never filter command content."""
-    return safe_command(command)
-
-
-def prepare_noc_command(command, platform):
-    return safe_command(command)
-
-
-def is_replay_safe(command):
-    """Retry classification only. Never used to permit or reject execution."""
-    if not isinstance(command, str) or re.search(r'[;&`><\n\r]', command):
-        return False
-    try:
-        parts = cli_pipeline(command)
-    except PermissionError:
-        return False
-    if any(not re.match(r'^(?:include|exclude|begin|section|match|except|find|count|last|no-more|display)\b', part, re.I) for part in parts[1:]):
-        return False
-    return bool(re.match(r'^(?:show|display)\s+', parts[0], re.I) or
-                re.fullmatch(r'(?:uname(?: -[a-z]+)?|uptime|date|whoami|id|hostname|ip (?:-[a-z]+ )?(?:address|addr|link|route|neigh) show(?: .*)?|ss -[a-z]+)', parts[0], re.I))
-
-
-def read_only_policy_allows(command, driver):
-    """Recognize observational CLI forms for the supported device drivers."""
-    if not command.isprintable() or re.search(r'[;&`<>$\\]', command):
-        return False
-    try:
-        head, *filters = cli_pipeline(command)
-    except PermissionError:
-        return False
-    # A quoted pipe is ambiguous across CLI parsers. Reject it rather than
-    # treating a potential additional device-side stage as a filter argument.
-    if any('|' in part for part in (head, *filters)):
-        return False
-    unresolved = driver in {'autodetect', 'generic_termserver'}
-    if (unresolved or driver == 'linux') and not filters and re.fullmatch(
-            r'(?:uname(?: -[asrvmnpo]+)?|uptime|date|whoami|id|hostname|'
-            r'ip (?:-[46] )?(?:address|addr|link|route|neigh) show|ss -[a-z]+)', head):
-        return True
-    verbs = {'show', 'display'} if unresolved else (
-        {'display'} if driver.startswith('huawei') else
-        {'show'} if driver == 'juniper_junos' or driver.startswith('cisco_') else set())
-    words = head.split(maxsplit=1)
-    if len(words) != 2 or words[0].casefold() not in verbs:
-        return False
-    if words[0].casefold() == 'display' and 'diagnostic-information'.startswith(
-            words[1].split()[0].casefold()):
-        # VRP treats this as a bulk collection and can write a device file.
-        return False
-    return all(re.fullmatch(
-        r'(?:(?:include|exclude|begin|section|match|except|find|last) +.+'
-        r'|count|no-more|display (?:set(?: relative)?|xml|json|inheritance(?: no-comments)?|detail|omit))',
-        part, re.I) for part in filters)
-
-
-_LINUX_BLOCKED_PROGRAMS = frozenset('''
-    sudo su doas pkexec rm mv cp dd truncate tee chmod chown chgrp ln touch mkdir rmdir
-    vi vim nano ed install shred mount umount wipefs mkswap swapon swapoff service
-    reboot shutdown poweroff halt init telinit kill killall pkill killproc
-    iptables ip6tables nft ufw tc apt apt-get yum dnf pip pip3 dpkg rpm wget curl
-    bash sh dash ash zsh ksh fish busybox perl ruby node php lua nc ncat netcat
-    env command exec eval source . xargs awk gawk mawk timeout nohup nice ionice
-    setsid screen tmux ssh telnet sftp scp ftp tftp rsync
-'''.split())
-
-
-def linux_operational_stage_allows(stage):
-    words = shlex.split(stage)
-    if not words or not re.fullmatch(r'[A-Za-z0-9_./+-]+', words[0]):
-        return False
-    program = words[0].rsplit('/', 1)[-1]
-    if not program or program in _LINUX_BLOCKED_PROGRAMS or re.fullmatch(r'(?:python|pip|mkfs)[0-9.\w-]*', program):
-        return False
-    args = words[1:]
-    if program == 'ss':
-        return not any(arg == '--kill' or re.match(r'^-[a-zA-Z]*K', arg) for arg in args)
-    if program in {'ping', 'ping6'}:
-        return not any(re.match(r'^-[a-zA-Z]*[fl]', arg) for arg in args)
-    if program == 'systemctl':
-        return not set(args) & {'start', 'stop', 'restart', 'reload', 'enable', 'disable', 'mask',
-                                'unmask', 'reboot', 'poweroff', 'halt', 'isolate', 'kill', 'set-property',
-                                'edit', 'daemon-reload', 'link', 'preset', 'revert', 'try-restart',
-                                'reload-or-restart', 'try-reload-or-restart'}
-    if program in {'ip', 'nmcli'}:
-        positionals = [arg for arg in args if not arg.startswith('-')]
-        changes = {'set', 'add', 'delete', 'replace', 'change', 'append', 'flush', 'up', 'down',
-                   'modify', 'connect', 'disconnect', 'exec', 'reload', 'load', 'edit', 'import',
-                   'restore', 'attach', 'on', 'off', 'toggle'}
-        return not any(arg == '-b' or arg.startswith('-ba') for arg in args) and not any(
-            word and change.startswith(word) for word in positionals[1:] for change in changes)
-    if program == 'ifconfig':
-        return len(args) <= 1
-    if program in {'sed', 'ethtool', 'find', 'crontab'}:
-        for item in args:
-            if program == 'sed' and (item.startswith(('--in-place', '--file')) or re.match(r'^-[a-zA-Z]*[if]', item)):
-                return False
-            if program == 'sed' and not item.startswith('-') and re.search(r'(?:^|[/;])\s*[ewW]\b', item):
-                return False
-            if program == 'ethtool' and (item.startswith(('--set', '--change', '--offload', '--features'))
-                                         or re.match(r'^-[sKGCLAEXWNPH]', item)):
-                return False
-            if program == 'find' and item in {'-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprintf', '-fls'}:
-                return False
-            if program == 'crontab' and item not in {'-l'}:
-                return False
-        if program == 'crontab' and args != ['-l']:
-            return False
-    return True
-
-
-def operational_policy_allows(command, driver):
-    """Screen known state-changing commands in the resolved operational CLI."""
-    driver_rules = {
-        'junos': {'edit', 'load', 'rollback', 'set', 'activate', 'deactivate',
-                  'rename', 'replace', 'insert', 'annotate', 'wildcard', 'request system',
-                  'request chassis', 'file copy', 'file delete', 'file rename', 'file archive',
-                  'file make-directory', 'top', 'copy', 'protect', 'unprotect', 'monitor start',
-                  'request routing-engine login', 'request support information', 'request message'},
-        'cisco': {'conf', 'write', 'copy', 'replace', 'archive', 'config-register',
-                  'interface', 'router', 'ip route', 'no', 'redundancy force-switchover',
-                  'squeeze', 'rmdir', 'mkdir', 'rename', 'install', 'send',
-                  'terminal monitor', 'terminal shell', 'tclsh', 'guestshell',
-                  'event manager run', 'monitor capture'},
-        'huawei': {'system-view', 'rollback', 'startup', 'copy', 'move', 'rename',
-                   'configuration replace', 'undo', 'upgrade', 'interface', 'bgp', 'ospf',
-                   'ip route-static', 'acl', 'mkdir', 'rmdir', 'undelete', 'ftp', 'tftp', 'sftp', 'scp',
-                   'terminal debugging', 'display diagnostic-information'},
-    }
-    family = ('junos' if driver == 'juniper_junos' else 'cisco' if driver.startswith('cisco_')
-              else 'huawei' if driver.startswith('huawei') else None)
-    if family is None and driver not in {'autodetect', 'generic_termserver', 'linux'}:
-        return False
-    if not command.isprintable() or re.search(r'[;&`<>$\\]', command):
-        return False
-    try:
-        head, *filters = cli_pipeline(command)
-    except PermissionError:
-        return False
-    if driver == 'linux':
-        return not re.search(r'[(){}!]', command) and all(
-            linux_operational_stage_allows(stage) for stage in (head, *filters))
-    if any('|' in part for part in (head, *filters)):
-        return False
-    if family is None and read_only_policy_allows(command, 'linux'):
-        return True
-
-    def matches_rule(text, rule):
-        words = text.casefold().replace('"', '').replace("'", '').split()
-        blocked = rule.split()
-        return len(words) >= len(blocked) and all(
-            full.startswith(word) for word, full in zip(words, blocked))
-
-    common = {'configure', 'configuration', 'commit', 'save', 'enable', 'shell', 'start',
-              'do', 'run', 'op', 'ssh', 'telnet', 'rlogin', 'python', 'reboot', 'reload',
-              'restart', 'reset', 'halt', 'power-off', 'zeroize', 'delete', 'erase', 'format',
-              'clear', 'debug', 'debugging', 'monitor traffic', 'test'}
-    rules = common | (driver_rules[family] if family else set().union(*driver_rules.values()))
-    allowed_head = not any(matches_rule(head, rule) for rule in rules)
-    blocked_filters = {'save', 'redirect', 'append', 'tee', 'file', 'shell', 'execute', 'nohangup'}
-    return allowed_head and not any(matches_rule(stage, rule) for stage in filters for rule in blocked_filters)
-
-
-def execution_policy_error(message, policy='read_only'):
-    return CollectionError({'error': 'ExecutionPolicyDenied', 'error_category': 'policy_denied',
-                            'error_reason': f'execution_policy_{policy}', 'error_stage': 'validation',
-                            'command_sent': False, 'retryable': False, 'message': message})
-
-
-def command_prompt_pattern(conn, command, exact):
-    """Accept mode transitions only within this device's prompt family."""
-    old = getattr(conn, '_network_prompt_text', '')
-    root = getattr(conn, '_network_prompt_root', old)
-    if not root or is_replay_safe(command):
-        return exact
-    if root.startswith(('<', '[')) and root.endswith(('>', ']')):
-        host = root[1:-1].lstrip('~*')
-        return r'(?m)^(?:<' + re.escape(host) + r'>|\[[~*]?' + re.escape(host) + r'(?:-[^\]\r\n]+)?\])[ \t]*\r?$'
-    if root[-1:] in '#>$%':
-        stem = re.sub(r'\([^()]*\)$', '', root[:-1])
-        pattern = r'(?m)^' + re.escape(stem) + r'(?:\([^()\r\n]*\))?[#>$%][ \t]*\r?$'
-        rename = re.fullmatch(r'hostname\s+([A-Za-z0-9_.-]+)', command.strip(), re.I)
-        if rename:
-            pattern = r'(?m)^(?:' + re.escape(stem) + '|' + re.escape(rename[1]) + r')(?:\([^()\r\n]*\))?[#>][ \t]*\r?$'
-        return pattern
-    return exact
-
-
-def cli_replay_context(conn, driver):
-    """Return a verified, unchanged login context for an automatic replay."""
-    prompt = getattr(conn, '_network_prompt_text', '')
-    if (not prompt or prompt != getattr(conn, '_network_login_prompt', None)
-            or getattr(conn, '_network_cli_context_changed', False)):
-        return None
-    return (driver, prompt) if is_operational_prompt(prompt, driver) else None
-
-
-def is_operational_prompt(prompt, driver):
-    if driver == 'juniper_junos':
-        return prompt.endswith('>')
-    if driver.startswith('huawei'):
-        return prompt.startswith('<') and prompt.endswith('>')
-    if driver.startswith('cisco_'):
-        return prompt.endswith(('#', '>')) and '(' not in prompt
-    return driver == 'linux' and prompt.endswith(('#', '$'))
-
-
-# Used only on recognized CLI diagnostic lines, never as a command filter.
 PERMISSION_DENIAL_RE = re.compile(
     r'\b(?:permission denied|access[ -]denied|command authorization failed|'
     r'authori[sz]ation (?:failed|denied)|not authori[sz]ed|operation not permitted|'
@@ -1939,7 +1696,10 @@ class Collector:
         self.execution_policy_configured = 'execution_policy' in self.defaults
         self.execution_policy = self.defaults.get('execution_policy', 'read_only')
         if self.execution_policy not in ('read_only', 'operational', 'read_write'):
-            raise ValueError('execution_policy must be read_only, operational or read_write')
+            raise ValueError('execution_policy must be read_only or read_write')
+        # operational is a legacy alias: one blacklist policy, named read_only.
+        if self.execution_policy == 'operational':
+            self.execution_policy = 'read_only'
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
         self.health_check_interval = bounded_int(self.defaults.get('health_check_interval_seconds'), 30, 0, 3600)
         self.auth_cooldown = bounded_int(self.defaults.get('auth_failure_cooldown_seconds'), 300, 0, 3600)
@@ -2850,12 +2610,11 @@ class Collector:
 
     def validate_execution_commands(self, commands, driver):
         commands = [prepare_noc_command(command, driver) for command in commands]
+        # read_only and operational share the same blacklist; the label only
+        # marks the policy name in results and audit.
         if self.execution_policy == 'read_only' and any(
-                not read_only_policy_allows(command, driver) for command in commands):
-            raise execution_policy_error('Command is outside the supported read_only CLI forms')
-        if self.execution_policy == 'operational' and any(
                 not operational_policy_allows(command, driver) for command in commands):
-            raise execution_policy_error('Command denied by operational blacklist for this driver', 'operational')
+            raise execution_policy_error('Command denied by blacklist for this driver', self.execution_policy)
         return commands
 
     @contextlib.contextmanager
@@ -3155,9 +2914,15 @@ class Collector:
             driver = getattr(self._request, 'resolved_driver', '') or ''
             try:
                 self.validate_execution_commands([command], driver)
-                if self.execution_policy == 'operational' and not is_operational_prompt(
-                        getattr(conn, '_network_prompt_text', '') or '', driver):
-                    raise execution_policy_error('Operational CLI prompt is not verified', 'operational')
+                # The cached login prompt goes stale after a mode change; ask the device.
+                if hasattr(conn, 'find_prompt') and not hasattr(conn, 'collect_in_worker'):
+                    live = last_prompt(conn.find_prompt() or '')
+                    if not live:
+                        raise execution_policy_error('Operational CLI prompt is not verified', self.execution_policy)
+                    conn._network_prompt_text = live
+                    conn._network_prompt_regex = r'(?m)^' + re.escape(live) + r'[ \t]*\r?$'
+                if not is_operational_prompt(getattr(conn, '_network_prompt_text', '') or '', driver):
+                    raise execution_policy_error('Operational CLI prompt is not verified', self.execution_policy)
             except CollectionError as exc:
                 exc._network_keep_session = True
                 raise
@@ -3334,10 +3099,34 @@ class Collector:
         if not isinstance(commands, list) or not 1 <= len(commands) <= MAX_COMMANDS:
             raise ValueError("commands must be an array containing 1 to 1000 commands")
         commands = [safe_command(c) for c in commands]
-        commands = self._preflight(target, commands, device_type, profile, resolved_params=_resolved_scan_params)
+        # With continue_on_error, a blacklisted command is reported as denied
+        # and not sent; the other commands still run. Without it, the whole
+        # batch is rejected before any SSH activity (fail-closed).
+        denied = {}
+        if continue_on_error and self.execution_policy == 'read_only':
+            params = _resolved_scan_params or self._get_settings(target, device_type, profile)
+            for index, cmd in enumerate(commands):
+                try:
+                    self.validate_execution_commands([cmd], params['device_type'])
+                except CollectionError as exc:
+                    denied[index] = exc.details
+            allowed = [cmd for index, cmd in enumerate(commands) if index not in denied]
+            if allowed:
+                self._preflight(target, allowed, device_type, profile, resolved_params=_resolved_scan_params)
+        else:
+            self._preflight(target, commands, device_type, profile, resolved_params=_resolved_scan_params)
         timeout = bounded_int(read_timeout, getattr(self._request, 'cli_options', {}).get('read_timeout', self.read_timeout), 1, 600)
         results = []
         recovery = {}
+
+        def denied_result(index):
+            return normalize_result({**denied[index], 'target': target,
+                'command': self.redact_output(commands[index]), 'command_index': index,
+                'ok': False, 'command_sent': False, 'output_complete': False})
+
+        if len(denied) == len(commands):
+            return batch_summary(target, len(commands), [denied_result(i) for i in range(len(commands))],
+                                 continue_on_error)
 
         def stop(index):
             for skipped_index in range(index + 1, len(commands)):
@@ -3348,6 +3137,14 @@ class Collector:
                     'skipped_reason': 'batch_stopped', 'blocked_by_command_index': index}))
             raise BatchError(results, {**batch_summary(target, len(commands), results, continue_on_error), **recovery})
 
+        if continue_on_error and denied and len(denied) == len(commands):
+            # Nothing is left to send: report the denials without opening a session.
+            results = [normalize_result({'target': target, 'command': self.redact_output(cmd),
+                'command_index': index, 'ok': False, 'command_sent': False, 'output_complete': False,
+                'retryable': False, 'error': 'ExecutionPolicyDenied', 'error_category': 'policy_denied',
+                'error_reason': 'execution_policy_read_only', 'error_stage': 'validation',
+                'message': 'Command denied by blacklist; not sent'}) for index, cmd in enumerate(commands)]
+            return {**batch_summary(target, len(commands), results, continue_on_error)}
         recover_junos = allow_junos_recovery and all(
             is_replay_safe(command) and re.match(r'^(?:show|display)\s', command, re.I)
             for command in commands)
@@ -3358,6 +3155,9 @@ class Collector:
                 del conn._network_previous_preparation
                 recovery.update(recovery_attempts=1, previous_attempt=previous)
             for index, cmd in enumerate(commands):
+                if index in denied:
+                    results.append(denied_result(index))
+                    continue
                 start = time.monotonic()
                 conn._network_command_sent = False
                 try:
@@ -3751,7 +3551,7 @@ class BatchError(Exception):
 
 TOOLS: dict[str, dict[str, Any]] = {
     "ssh_execute": {"description": 'Execute one agent-selected CLI command on an alias/hostname/IP within user scope. Use device/VRF evidence for syntax and save_output for large raw. Check completeness/awaiting_input; SUCCESS is CLI collection, not network health.', "schema": {"target": "string", "command": "string", "device_type": "string", "profile": "string", "read_timeout": "integer", "expect_string": "string", "use_timing": "boolean", "save_output": "boolean", "use_textfsm": "boolean"}, "required": ["target", "command"], "method": "execute"},
-    "ssh_execute_many": {"description": 'Execute commands (string array) in order on one session. Stops on failure; unsent suffix is SKIPPED. continue_on_error only continues complete synchronized CLI errors for independent commands. Inspect each result.', "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string", "continue_on_error": "boolean"}, "required": ["target", "commands"], "method": "execute_many"},
+    "ssh_execute_many": {"description": 'Execute commands (string array) in order on one session. Stops on failure; unsent suffix is SKIPPED. For independent commands, continue_on_error skips commands denied at preflight and continues after complete synchronized CLI errors. Inspect each result.', "schema": {"target": "string", "commands": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean", "use_timing": "boolean", "expect_string": "string", "continue_on_error": "boolean"}, "required": ["target", "commands"], "method": "execute_many"},
     "ssh_interact": {"description": 'Requires read_write. Send steps, including authorized configuration/replies, on the same target/profile/mode. Empty string/newline sends Enter; no implicit reply. Inspect each step and current awaiting_input.', "schema": {"target": "string", "steps": "array", "device_type": "string", "profile": "string", "read_timeout": "integer", "save_output": "boolean"}, "required": ["target", "steps"], "method": "interact"},
     "ssh_parallel": {"description": 'Run 1-100 independent tasks; each needs target and exactly one of command or commands. Output/result order retained per task. Inspect each result; task count is not SSH concurrency.', "schema": {"tasks": "array"}, "required": ["tasks"], "method": "parallel"},
     "ssh_read_output": {"description": 'Read saved text by output_id, zero-based line offset and limit. Follow next_offset while more=true; use byte reader if oversized_line prevents progress. A slice is not full configuration.', "schema": {"output_id": "string", "offset": "integer", "limit": "integer"}, "required": ["output_id"], "method": "read_output"},
@@ -3761,169 +3561,6 @@ TOOLS: dict[str, dict[str, Any]] = {
     "ssh_status": {"description": 'Inspect execution_policy, execution_policy_configured, and collector/session state. parallel_queue is process-local; running may await session/SSH slots. Metadata is not network health. No passwords returned.', "schema": {}, "required": [], "method": "status"},
     "ssh_close": {"description": 'Close all sessions for the resolved host, across profiles/ports; missing/empty target closes the entire pool. Use only when all affected sessions are in scope, not after every command.', "schema": {"target": "string"}, "required": [], "method": "close"},
 }
-
-
-def make_tool_list() -> list[dict[str, Any]]:
-    descriptions = []
-    for name, spec in TOOLS.items():
-        fields = {}
-        for key, value in spec["schema"].items():
-            item = {"type": value}
-            if value == "array":
-                if key == "tasks":
-                    task_fields = dict(TOOLS["ssh_execute"]["schema"])
-                    task_fields["continue_on_error"] = "boolean"
-                    item["items"] = {"type": "object", "properties": {name: {"type": kind} for name, kind in task_fields.items()}, "required": ["target"], "additionalProperties": False}
-                    item["items"]["properties"]["commands"] = {"type": "array", "items": {"type": "string"}}
-                else:
-                    item["items"] = {"type": "string"}
-            fields[key] = item
-        descriptions.append({"name": name, "description": spec["description"], "inputSchema": {"type": "object", "properties": fields, "required": spec["required"], "additionalProperties": False}})
-    return descriptions
-
-
-def rpc_error(rid: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
-
-
-def rpc_response(rid: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": rid, "result": result}
-
-
-def handle_rpc(req: dict[str, Any], collector: Collector) -> dict[str, Any] | None:
-    if not isinstance(req, dict):
-        return rpc_error(None, -32600, "Invalid request")
-    method = req.get("method")
-    rid = req.get("id", None)
-    if rid is None:
-        # JSON-RPC notifications must never generate responses.
-        return None
-    try:
-        if method == "initialize":
-            requested = (req.get("params") or {}).get("protocolVersion", "2025-06-18")
-            protocol = requested if requested in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[-1]
-            return rpc_response(rid, {"protocolVersion": protocol, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "goose-network-collector", "version": VERSION}, "instructions": "Network CLI executor. Call ssh_status to check execution policy. Configuration changes require explicit user authorization and an explicitly configured read_write policy. Responses and completion are verified. Use credential profiles."})
-        if method == "ping":
-            return rpc_response(rid, {})
-        if method == "tools/list":
-            return rpc_response(rid, {"tools": make_tool_list()})
-        if method == "tools/call":
-            params = req.get("params") or {}
-            name = params.get("name")
-            tool = TOOLS.get(name)
-            if tool is None:
-                return rpc_error(rid, -32602, "Unknown tool")
-            args = params.get("arguments", {})
-            if not isinstance(args, dict):
-                return rpc_error(rid, -32602, "Tool arguments must be an object")
-            if name == "ssh_close" and "target" in args and not isinstance(args["target"], str):
-                return rpc_error(rid, -32602, "ssh_close target must be a string")
-            unknown = set(args) - set(tool["schema"])
-            if unknown:
-                return rpc_error(rid, -32602, "Unexpected tool arguments: " + ", ".join(sorted(unknown)))
-            missing = set(tool["required"]) - set(args)
-            if missing:
-                return rpc_error(rid, -32602, "Missing arguments: " + ", ".join(sorted(missing)))
-            started = time.monotonic()
-            audit_error = None
-            try:
-                payload = getattr(collector, tool["method"])(**args)
-                if payload.get("ok") is False:
-                    audit_error = str(payload.get("error") or "One or more commands/tasks failed verification")
-            except BatchError as exc:
-                audit_error = type(exc).__name__ + ": " + str(exc)
-                payload = getattr(exc, 'summary', None) or normalize_result({"ok": False, "results": exc.results})
-            except Exception as exc:
-                # Tool errors belong in tool result (not broken JSON-RPC). Never dump locals or tracebacks.
-                audit_error = type(exc).__name__
-                payload = collector.failure_result(exc, args.get("target"), args.get("command"))
-            is_error = payload.get("ok") is False
-            collector.audit(name, args, not is_error, time.monotonic() - started, audit_error, payload)
-            result = {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}], "isError": is_error}
-            return rpc_response(rid, result)
-        return rpc_error(rid, -32601, "Method not found")
-    except Exception:
-        return rpc_error(rid, -32603, "Internal error")
-
-
-def run_stdio(collector: Collector) -> None:
-    """Bounded request workers; cancellation/deadlines are cooperative between IO.
-
-    Never disconnect a transport from the dispatcher: its owner retains the lease
-    until Netmiko returns or its bounded read timeout fires.
-    """
-    configure_stdio()
-    write_lock = threading.Lock()
-    pending_lock = threading.Lock()
-    pending = {}
-    slots = threading.BoundedSemaphore(collector.max_workers * 2)
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=collector.max_workers)
-
-    def emit(response):
-        if response is not None:
-            with write_lock:
-                sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(',', ':')) + '\n')
-                sys.stdout.flush()
-
-    def run(message, event, deadline):
-        collector._request.context = (event, deadline)
-        collector._request.timings_ms = {}
-        collector._request.session_reused = False
-        try:
-            collector._checkpoint()
-            emit(handle_rpc(message, collector))
-        except Exception as exc:
-            emit(rpc_error(message.get('id'), -32000, type(exc).__name__))
-        finally:
-            collector._request.context = None
-            with pending_lock:
-                pending.pop(message.get('id'), None)
-            slots.release()
-
-    try:
-        for line in sys.stdin:
-            if not line.strip():
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                emit(rpc_error(None, -32700, "Invalid JSON"))
-                continue
-            else:
-                if not isinstance(message, dict):
-                    emit(rpc_error(None, -32600, 'Invalid request'))
-                    continue
-                rid = message.get('id')
-                if rid is not None and (not isinstance(rid, (str, int)) or isinstance(rid, bool)):
-                    emit(rpc_error(None, -32600, 'Invalid request id'))
-                    continue
-                if message.get('method') == 'notifications/cancelled':
-                    params = message.get('params') or {}
-                    cancelled = params.get('requestId') if isinstance(params, dict) else None
-                    if isinstance(cancelled, (str, int)):
-                        with pending_lock:
-                            if cancelled in pending:
-                                pending[cancelled].set()
-                    continue
-                # Fast control calls do not queue behind device IO.
-                params = message.get('params') or {}
-                slow = message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') not in {'ssh_status', 'ssh_inventory'}
-                if rid is None or not slow:
-                    emit(handle_rpc(message, collector))
-                    continue
-                with pending_lock:
-                    if rid in pending:
-                        emit(rpc_error(rid, -32600, 'Duplicate in-flight request id'))
-                        continue
-                    if not slots.acquire(blocking=False):
-                        emit(rpc_error(rid, -32000, 'Request capacity reached'))
-                        continue
-                    event = threading.Event()
-                    pending[rid] = event
-                pool.submit(run, message, event, time.monotonic() + collector.request_timeout)
-    finally:
-        pool.shutdown(wait=True)
-        collector.shutdown()
 
 
 def main() -> int:
@@ -3975,6 +3612,7 @@ def main() -> int:
         config = load_config(args.config, args.credentials_file)
         config = load_inventory_csv(config, args.inventory_csv)
         collector = Collector(config)
+        from mcp_rpc import run_stdio
         run_stdio(collector)
         return 0
     except Exception as exc:

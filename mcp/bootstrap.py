@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,7 +77,14 @@ def main():
         finally:
             collector.shutdown()
         return
-    backend.run_stdio(backend.Collector(config))
+    previous = sys.modules.get('collector_backend')
+    sys.modules['collector_backend'] = backend  # mcp_rpc imports collector_backend by name
+    try:
+        from mcp_rpc import run_stdio
+        run_stdio(backend.Collector(config))
+    finally:
+        if previous is None: sys.modules.pop('collector_backend', None)
+        else: sys.modules['collector_backend'] = previous
 
 
 if __name__ == '__main__':

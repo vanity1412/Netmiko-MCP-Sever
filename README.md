@@ -14,9 +14,9 @@ Agent có thể bật `continue_on_error=true` cho các lệnh độc lập:
 {"target":"LAB-A","commands":["show version","show clock","show interfaces"],"continue_on_error":true}
 ```
 
-Chỉ chạy tiếp nếu lỗi thuộc CLI, transport còn khỏe, output đã đầy đủ, không chờ câu trả lời và reader không có lỗi. Timeout, disconnect, dữ liệu chưa hoàn tất, lỗi storage và câu hỏi tương tác vẫn dừng, phần chưa gửi là SKIPPED. Cấu hình có tác động không chắc chắn không được tự replay. Tham số này không phân tích tính độc lập của câu lệnh: agent phải xác định context/phạm vi; mặc định dừng vẫn phù hợp chuỗi cấu hình phụ thuộc.
+Với `continue_on_error=true`, lệnh bị blacklist phát hiện trước khi mở phiên trả `POLICY_DENIED` và các lệnh khác vẫn chạy. Nếu cả batch bị chặn, Collector trả kết quả ngay. Sau khi đã gửi lệnh, Collector chỉ chạy tiếp khi lỗi thuộc CLI, output đã đầy đủ và phiên còn đồng bộ. Timeout, disconnect, output thiếu, lỗi storage hoặc prompt tương tác vẫn dừng batch. Agent xác định tính độc lập của các lệnh và phạm vi tác vụ.
 
-Có SUCCESS và CLI_ERROR thì batch là PARTIAL, không phải SUCCESS; tất cả lỗi CLI thì là CLI_ERROR. SKIPPED không thay thế nguyên nhân lỗi của lệnh đã chạy. Lỗi CLI đã đọc đủ vẫn có thể giữ session để dùng tiếp. `ssh_parallel` cũng chuyển tiếp tùy chọn này cho task có `commands`. Scanner chưa bật tùy chọn này; vẫn dừng theo prefix, checkpoint/resume bỏ qua các entry SKIPPED và giữ lỗi thật. Không thay đổi mặc định không che dữ liệu.
+Batch có lệnh thành công và lệnh lỗi trả `PARTIAL`. Kết quả từng lệnh giữ nguyên trạng thái và nguyên nhân lỗi. `ssh_parallel` và scanner nhận `continue_on_error` trong từng task có `commands`. Scanner mặc định vẫn dừng theo prefix. Dùng `false` cho chuỗi lệnh phụ thuộc.
 
 ## Chế độ thực thi
 
@@ -24,11 +24,11 @@ Có SUCCESS và CLI_ERROR thì batch là PARTIAL, không phải SUCCESS; tất c
 
 | Chế độ | Hành vi |
 |---|---|
-| `read_only` | Collector nhận các dạng lệnh đọc được hỗ trợ theo driver. Ví dụ gồm `show` trên Junos và Cisco, `display` trên Huawei và `ip route show` trên Linux. Pipeline chỉ nhận các bộ lọc đọc được hỗ trợ. Pipe trong dấu nháy, lệnh ngoài phạm vi và `ssh_interact` trả `POLICY_DENIED`. |
-| `operational` | Collector dùng blacklist theo driver Junos, Cisco, Huawei và Linux. Các nhóm cấu hình, lưu cấu hình, `clear`, `debug`, ghi file hoặc đổi trạng thái đã nhận diện trả `POLICY_DENIED`. Các lệnh ngoài nhóm cấm, gồm `ping`, `traceroute` và `ip -br address show`, đi qua theo cú pháp của thiết bị. |
+| `read_only` | Collector yêu cầu prompt vận hành và dùng blacklist theo driver Junos, Cisco, Huawei và Linux. Các nhóm cấu hình, `clear`, `debug`, ghi file hoặc đổi trạng thái đã nhận diện trả `POLICY_DENIED`. Các lệnh ngoài nhóm cấm, gồm `ping`, `traceroute` và `ip -br address show`, đi qua theo cú pháp của thiết bị. |
+| `operational` | Tên tương thích của `read_only`. `ssh_status` báo policy hiệu lực là `read_only`. |
 | `read_write` | Collector nhận lệnh CLI do agent chọn. Agent chỉ thực thi thay đổi khi tác vụ cấp quyền rõ ràng. |
 
-Chọn `"execution_policy": "operational"` với tài khoản SSH `monitor` để dùng blacklist. Khi chẩn đoán, agent nên chọn số gói và thời gian chờ phù hợp. Collector giữ nguyên lệnh và áp timeout hiện có. Blacklist chỉ bao phủ các dạng đã nhận diện. Quyền của tài khoản SSH trên thiết bị vẫn quyết định các thao tác có thể thực hiện. Hai chế độ `read_only` và `operational` từ chối `ssh_interact` và bỏ qua `auto_enable`.
+Chọn `"execution_policy": "read_only"` với tài khoản SSH `monitor` để dùng blacklist. Khi chẩn đoán, agent nên chọn số gói và thời gian chờ phù hợp. Collector giữ nguyên lệnh và áp timeout hiện có. Blacklist chỉ bao phủ các dạng đã nhận diện. Quyền của tài khoản SSH trên thiết bị vẫn quyết định các thao tác có thể thực hiện. Policy này từ chối `ssh_interact` và bỏ qua `auto_enable`.
 
 `ssh_status` trả chế độ hiệu lực qua `execution_policy`. `execution_policy_configured` cho biết cấu hình đã đặt chế độ tường minh hay chưa. Nếu thiếu `defaults.execution_policy`, Collector dùng `read_only`. Sau khi nâng cấp, cấu hình từng dựa vào mặc định cũ phải đặt `"execution_policy": "read_write"` tường minh để gửi lệnh cấu hình, rồi khởi động lại MCP. Thiết bị vẫn thực thi quyền của tài khoản SSH.
 
