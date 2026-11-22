@@ -420,6 +420,8 @@ def load_inventory_csv(config: dict[str, Any], path: str | None) -> dict[str, An
         host = (row.get("ip") or "").strip()
         device_type = (row.get("netmiko_device_type") or "").strip() or "autodetect"
         profile = (row.get("profile") or "").strip() or "default"
+        raw_port = (row.get("port") or "").strip()
+        port = bounded_int(raw_port, 22, 1, 65535) if raw_port else None
         if not name or not host:
             raise ValueError(f"Invalid inventory CSV row {number}")
         if name in devices:
@@ -427,17 +429,18 @@ def load_inventory_csv(config: dict[str, Any], path: str | None) -> dict[str, An
             if not isinstance(existing, dict):
                 warnings.append(f"row {number}: alias '{name}' also defined in config - config entry kept")
                 continue
-            if (existing.get("host"), existing.get("device_type"), existing.get("profile") or "default") == (host, device_type, profile):
+            if (existing.get("host"), existing.get("device_type"), existing.get("profile") or "default", existing.get("port")) == (host, device_type, profile, port):
                 warnings.append(f"row {number}: duplicate alias '{name}' identical to an earlier row - row ignored")
             else:
                 warnings.append(
                     f"row {number}: duplicate alias '{name}' conflicts with an earlier row "
-                    f"(host={existing.get('host')}, device_type={existing.get('device_type')}) - "
+                    f"(host={existing.get('host')}, device_type={existing.get('device_type')}, "
+                    f"port={existing.get('port', 'inherited')}; incoming port={port if port is not None else 'inherited'}) - "
                     "first row kept, row ignored; fix the CSV")
             continue
         devices[name] = {"host": host, "device_type": device_type, "profile": profile}
-        if (row.get("port") or "").strip():
-            devices[name]["port"] = bounded_int(row["port"], 22, 1, 65535)
+        if port is not None:
+            devices[name]["port"] = port
     merged = dict(config)
     merged["devices"] = devices
     if warnings:
@@ -1157,9 +1160,10 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
             container_is_open = xml_guard.definitely_open() or output_container_open(command, current_raw())
             container_revision = received
         return container_is_open
-    # Log/config payloads can contain a literal device prompt. Allow delayed
-    # continuation, and report ambiguity rather than certify such a transcript.
-    quiet = max(quiet, .3)
+    # Log payloads can contain the exact prompt. Wait through the observed
+    # 700 ms continuation case without extending the caller's deadline.
+    log_output = bool(re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I))
+    quiet = max(quiet, .8 if log_output else .3)
     candidate = None
     candidate_echo_count = 0
     candidate_preamble_only = False
@@ -1348,9 +1352,8 @@ def read_cli_output(conn, command, timeout, pattern, checkpoint=None, quiet=.03,
         raw = strip_pager_spans(raw, conn._network_pager_spans)
     output = clean_terminal(raw)
     if failure is None and prompt_only_completion:
-        log_output = re.match(r'^\s*(?:show\s+log(?:ging)?|display\s+logbuffer)\b', command, re.I)
         file_output = re.match(r'^\s*(?:more|file\s+show)\s+', command, re.I)
-        if log_output or file_output:
+        if file_output or (log_output and candidate_preamble_only):
             failure = {'error_category': 'output_verification', 'retryable': False,
                        'message': 'Output may contain the device prompt; quiet time alone cannot verify completion',
                        'error_stage': 'command',
@@ -2187,7 +2190,7 @@ class Collector:
         elif device_type:
             known = device.get('device_type')
             settings['device_type'] = known if (self.prefer_inventory_driver and device_type in {'autodetect', 'generic_termserver'} and known and known not in {'autodetect', 'generic_termserver'}) else device_type
-        settings.setdefault("device_type", "cisco_ios")
+        settings.setdefault("device_type", "autodetect")
         settings.setdefault("port", 22)
         settings.setdefault("username", os.environ.get("NETWORK_SSH_USER", ""))
         settings.setdefault("password", os.environ.get("NETWORK_SSH_PASSWORD", ""))
@@ -3330,16 +3333,28 @@ class Collector:
         # Some MCP clients materialize optional schema fields with empty values.
         # Normalize these before enforcing command XOR commands.
         normalized_tasks = []
-        for task in tasks:
+        cli_tool_by_mode = {"command": "ssh_execute", "commands": "ssh_execute_many"}
+        types = {"string": str, "integer": int, "boolean": bool, "array": list}
+        for index, task in enumerate(tasks):
             if not isinstance(task, dict) or "target" not in task:
                 raise ValueError("Each task needs a target and command or commands")
             task = dict(task)
-            if not task.get("command"):
+            if task.get("command") in (None, ""):
                 task.pop("command", None)
-            if not task.get("commands"):
+            if task.get("commands") in (None, []):
                 task.pop("commands", None)
             if ("command" in task) == ("commands" in task):
-                raise ValueError("Each task needs exactly one of command or commands")
+                raise ValueError(f"tasks[{index}] needs exactly one of command or commands")
+            mode = "command" if "command" in task else "commands"
+            fields = TOOLS[cli_tool_by_mode[mode]]["schema"]
+            unknown = task.keys() - fields.keys()
+            if unknown:
+                raise ValueError(f"tasks[{index}] unsupported for {mode}: {', '.join(sorted(unknown))}")
+            for key, value in task.items():
+                if type(value) is not types[fields[key]]:
+                    raise ValueError(f"tasks[{index}].{key} must be {fields[key]}")
+            if mode == "commands" and any(not isinstance(command, str) for command in task[mode]):
+                raise ValueError(f"tasks[{index}].commands must contain strings")
             normalized_tasks.append(task)
         tasks = normalized_tasks
         context = getattr(self._request, 'context', None)
@@ -3353,8 +3368,8 @@ class Collector:
             self._request.detection_timeout = detection_timeout
             try:
                 if "command" in item:
-                    return self.execute(**{k: v for k,v in item.items() if k in {"target","command","device_type","profile","read_timeout","expect_string","use_timing","save_output","use_textfsm"}})
-                return self.execute_many(**{k: v for k,v in item.items() if k in {"target","commands","device_type","profile","read_timeout","use_timing","save_output","expect_string","continue_on_error"}})
+                    return self.execute(**item)
+                return self.execute_many(**item)
             except BatchError as exc:
                 return {**(getattr(exc, 'summary', None) or {"target": item.get("target"), "ok": False, "results": exc.results}),
                         "error": "Batch interrupted after command failure"}
@@ -3518,7 +3533,7 @@ class Collector:
         limit = bounded_int(limit, 100, 0, 10_000)
         matches = []
         type_counts: dict[str, int] = {}
-        default_type = self.defaults.get("device_type", "cisco_ios")
+        default_type = self.defaults.get("device_type", "autodetect")
         for name, value in self.devices.items():
             if not isinstance(value, dict):
                 continue

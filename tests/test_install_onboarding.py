@@ -40,6 +40,26 @@ class OnboardingTests(unittest.TestCase):
         config = self.inventory('name,ip\nA,192.0.2.1\n')
         self.assertEqual(config['devices']['A']['device_type'], 'autodetect')
 
+    def test_dynamic_target_without_configured_driver_uses_autodetect(self):
+        c = b.Collector({'defaults': {'output_dir': str(self.root/'out'), 'session_sweep_seconds': 0}},
+                        connect_factory=lambda **kw: self.fail('Settings resolution must not SSH'))
+        self.addCleanup(c.shutdown)
+        self.assertEqual(c._get_settings('192.0.2.1', None, None)['device_type'], 'autodetect')
+        self.assertEqual(c._get_settings('192.0.2.1', 'cisco_ios', None)['device_type'], 'cisco_ios')
+        c.defaults['device_type'] = 'linux'
+        self.assertEqual(c._get_settings('192.0.2.1', None, None)['device_type'], 'linux')
+
+    def test_duplicate_alias_with_other_port_is_a_conflict(self):
+        config = self.inventory('name,ip,netmiko_device_type,profile,port\n'
+                                'A,192.0.2.1,linux,default,22\n'
+                                'A,192.0.2.1,linux,default,22\n'
+                                'A,192.0.2.1,linux,default,2222\n')
+        self.assertEqual(config['devices']['A']['port'], 22)
+        identical, conflict = config['inventory_warnings']
+        self.assertIn('identical', identical)
+        self.assertIn('conflicts', conflict)
+        self.assertIn('port=22; incoming port=2222', conflict)
+
     def test_missing_identity_still_fails(self):
         for text in ('name,ip\n,192.0.2.1\n', 'name,ip\nA,\n', 'name\nA\n'):
             with self.subTest(text=text), self.assertRaises(ValueError):

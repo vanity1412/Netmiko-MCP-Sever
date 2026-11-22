@@ -154,6 +154,7 @@ class BootstrapStdioTests(unittest.TestCase):
                         self.assertEqual(log['data_state'], 'PARTIAL')
                         self.assertNotEqual(log['status'], 'SUCCESS')
                         self.assertIn('log header', log['output'])
+                        self.assertIn('remaining log data', log['output'])
                         self.assertEqual(server.commands.count('show logging'), 1)
                 finally:
                     server.close()

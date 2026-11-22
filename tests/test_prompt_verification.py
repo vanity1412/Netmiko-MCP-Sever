@@ -84,9 +84,15 @@ class PromptVerificationTests(unittest.TestCase):
         self.assertIsNone(failure)
         self.assertIn('07:00:00', output)
 
-    def test_log_ambiguity_has_reason(self):
-        output, failure = run(['show log messages\nmessage line\nCORE1#'],
-                              'show log messages', 'CORE1#')
+    def test_complete_log_with_response_and_stable_prompt(self):
+        for command in ('show log messages', 'show logging', 'display logbuffer'):
+            with self.subTest(command=command):
+                output, failure = run([f'{command}\nmessage line\nCORE1#'], command, 'CORE1#')
+                self.assertIsNone(failure)
+                self.assertIn('message line', output)
+
+    def test_log_with_only_echo_and_prompt_stays_unverified(self):
+        _, failure = run(['show log messages\nCORE1#'], 'show log messages', 'CORE1#')
         self.assertEqual(failure['error_reason'], 'log_prompt_ambiguity')
 
     def test_enter_only_interaction_step_still_completes(self):

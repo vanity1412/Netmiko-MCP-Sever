@@ -37,7 +37,8 @@ class ReaderCompletionTests(unittest.TestCase):
                 second_data = 'Version payload\nrouter#' if recovered else 'router#'
                 second = TimelineChannel(clock, [(0, second_data)])
                 connections = iter((first, second))
-                c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0}},
+                c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0,
+                                              'device_type': 'cisco_ios'}},
                                 connect_factory=lambda **kw: next(connections))
                 try:
                     with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
@@ -68,7 +69,8 @@ class ReaderCompletionTests(unittest.TestCase):
             first = TimelineChannel(clock, [(0, 'original partial\n'), (.1, None)])
             second = TimelineChannel(clock, [], prompt='other#')
             sessions = iter((first, second))
-            c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0}},
+            c = b.Collector({'defaults': {'output_dir': directory, 'session_sweep_seconds': 0,
+                                          'device_type': 'cisco_ios'}},
                             connect_factory=lambda **kw: next(sessions))
             try:
                 with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
@@ -103,7 +105,8 @@ class ReaderCompletionTests(unittest.TestCase):
                 self.assertFalse(result['output_complete'])
                 self.assertEqual(result['error_category'],'output_verification')
                 self.assertEqual(result['data_state'],'PARTIAL')
-                self.assertEqual(result['output'],'log header\nrouter#')
+                self.assertEqual(result['error_reason'], 'prompt_candidate_continuation')
+                self.assertIn('remaining log data', result['output'])
                 self.assertEqual(conn.writes,['show logging\n'])
                 self.assertTrue(conn.remote_conn.closed)
             finally:c.shutdown()

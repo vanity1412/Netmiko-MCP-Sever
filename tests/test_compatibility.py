@@ -72,7 +72,7 @@ class Compatibility(unittest.TestCase):
                 conn=SimpleNamespace(closed=False,find_prompt=lambda:'router#',is_alive=lambda:True,
                                      send_command=lambda *a,**kw:output)
                 conn.disconnect=lambda:setattr(conn,'closed',True)
-                c=self.collector();c._connect=lambda **kw:conn
+                c=self.collector(device_type='cisco_ios');c._connect=lambda **kw:conn
                 with patch.object(c,'_save_output',side_effect=OSError('simulated disk error')):
                     with self.assertRaises(b.BatchError):
                         c.execute_many('192.0.2.1',['show version'],save_output=True)

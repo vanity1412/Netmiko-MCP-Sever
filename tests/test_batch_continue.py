@@ -110,6 +110,17 @@ class BatchContinueTests(unittest.TestCase):
         self.assertFalse(r['ok'])
         self.assertEqual([x['status'] for x in r['results'][0]['results']],['CLI_ERROR','SUCCESS'])
 
+    def test_parallel_rejects_bad_task_options_before_opening_any_session(self):
+        valid = {'target': 'fixture', 'command': 'show version'}
+        for bad, field in (({**valid, 'read_timout': 1}, 'read_timout'),
+                           ({**valid, 'continue_on_error': True}, 'continue_on_error'),
+                           ({'target': 'fixture', 'commands': ['show version'], 'use_textfsm': True}, 'use_textfsm'),
+                           ({'target': 'fixture', 'commands': False}, 'commands'),
+                           ({**valid, 'read_timeout': True}, 'read_timeout')):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, rf'tasks\[1\].*{field}'):
+                self.c.parallel([valid, bad])
+        self.assertEqual(self.opens, 0)
+
     def test_skipped_status_is_idempotent(self):
         r=normalize_result({'skipped':True,'ok':False})
         self.assertEqual(r['status'], 'SKIPPED')
