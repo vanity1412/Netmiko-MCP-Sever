@@ -65,7 +65,7 @@ class ScenarioTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def collector(self, conn):
-        c = backend.Collector({'defaults': {'output_dir': self.tmp.name, 'session_sweep_seconds': 0},
+        c = backend.Collector({'defaults': {'execution_policy': 'read_write', 'output_dir': self.tmp.name, 'session_sweep_seconds': 0},
                                'devices': {'test': {'host': '192.0.2.1', 'device_type': 'cisco_ios'}}},
                               connect_factory=lambda **kwargs: conn)
         self.addCleanup(c.shutdown)

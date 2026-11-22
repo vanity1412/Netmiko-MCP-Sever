@@ -45,7 +45,8 @@ class OnboardingTests(unittest.TestCase):
                         connect_factory=lambda **kw: self.fail('Settings resolution must not SSH'))
         self.addCleanup(c.shutdown)
         self.assertEqual(c._get_settings('192.0.2.1', None, None)['device_type'], 'autodetect')
-        self.assertEqual(c._get_settings('192.0.2.1', 'cisco_ios', None)['device_type'], 'cisco_ios')
+        with self.assertRaises(b.CollectionError):
+            c._get_settings('192.0.2.1', 'cisco_ios', None)
         c.defaults['device_type'] = 'linux'
         self.assertEqual(c._get_settings('192.0.2.1', None, None)['device_type'], 'linux')
 

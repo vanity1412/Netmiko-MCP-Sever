@@ -387,7 +387,7 @@ class PreparationTimingTests(unittest.TestCase):
         self.assertNotIn('\x03', conn.writes)
 
     def collector(self, conn):
-        c = b.Collector({'defaults': {'output_dir': self.tmp.name, 'session_sweep_seconds': 0},
+        c = b.Collector({'defaults': {'execution_policy': 'read_write', 'output_dir': self.tmp.name, 'session_sweep_seconds': 0},
             'devices': {'local': {'host': '192.0.2.1', 'device_type': 'juniper_junos'}}},
             connect_factory=lambda **kw: conn)
         self.addCleanup(c.shutdown)

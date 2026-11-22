@@ -17,7 +17,7 @@ class Compatibility(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
     def collector(self, **defaults):
-        c=b.Collector({'defaults':{'output_dir':self.tmp.name,'session_sweep_seconds':0,**defaults}},
+        c=b.Collector({'defaults':{'execution_policy': 'read_write', 'output_dir':self.tmp.name,'session_sweep_seconds':0,**defaults}},
                       connect_factory=lambda **kw:None)
         self.addCleanup(c.shutdown);return c
     def test_password_literal_and_explicit_reference(self):

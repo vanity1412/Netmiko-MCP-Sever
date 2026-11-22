@@ -20,7 +20,7 @@ class OptimizationTests(unittest.TestCase):
         self.addCleanup(c.shutdown)
         return c
     def test_known_inventory_driver_skips_probe_and_can_be_overridden(self):
-        c = self.collector()
+        c = self.collector(execution_policy='read_write')
         self.assertEqual(c._get_settings('test','autodetect',None)['device_type'],'cisco_ios')
         c.prefer_inventory_driver = False
         self.assertEqual(c._get_settings('test','autodetect',None)['device_type'],'autodetect')

@@ -202,7 +202,7 @@ def fault_cycle(root, evidence, serial):
             raise paramiko.AuthenticationException('Authentication failed')
         if index == 7 and attempt == 1: raise TimeoutError('simulated TCP timeout')
         return Connection(index, attempt)
-    collector = b.Collector({'defaults': {'output_dir': str(folder/'raw-output'),
+    collector = b.Collector({'defaults': {'execution_policy': 'read_write', 'output_dir': str(folder/'raw-output'),
         'device_type': 'cisco_ios', 'max_workers': 4, 'max_sessions': 4,
         'output_storage_mode': 'exclusive', 'session_sweep_seconds': 0}}, connect_factory=connect, detect_factory=reject_detection)
     tasks = [{'target': f'192.0.2.{i+1}', 'device_type':'cisco_ios', 'commands': ['set fixture value'] if i == 6 else ['show first', 'show second']} for i in range(8)]
@@ -327,7 +327,7 @@ def run_localhost(root, seconds=120, min_cycles=2, max_cycles=10000):
         workers.append(process)
         return process
     for kind in ('linux', 'autodetect'):
-        collectors.append(b.Collector({'defaults': {'username':'tester','password':'loopback-only',
+        collectors.append(b.Collector({'defaults': {'execution_policy': 'read_write', 'username':'tester','password':'loopback-only',
             'output_dir':str(root/('scratch-'+kind)), 'session_sweep_seconds':0,
             'conn_timeout':3,'auth_timeout':3,'banner_timeout':3,
             'max_workers':2,'max_sessions':4,'alt_key_file':str(root/'known_hosts'),

@@ -28,7 +28,7 @@ class MeasurementsEvidenceTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
 
     def collector(self, **options):
-        c = b.Collector({'defaults': {'output_dir': self.tmp.name,
+        c = b.Collector({'defaults': {'execution_policy': 'read_write', 'output_dir': self.tmp.name,
             'device_type': 'cisco_ios', 'session_sweep_seconds': 0, **options}},
             connect_factory=lambda **kw: Connection())
         self.addCleanup(c.shutdown)

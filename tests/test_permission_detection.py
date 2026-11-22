@@ -23,7 +23,7 @@ class PermissionTests(unittest.TestCase):
                 return ('% Authorization failed.' if command=='show accounts' else 'valid output')+'\nrouter#'
             send_command_timing=send_command
         def connect(**params):self.opens+=1;return Connection()
-        self.c=b.Collector({'defaults':{'output_dir':self.tmp.name,'session_sweep_seconds':0},
+        self.c=b.Collector({'defaults':{'execution_policy': 'read_write', 'output_dir':self.tmp.name,'session_sweep_seconds':0},
             'devices':{'mock':{'host':'192.0.2.1','device_type':'cisco_ios'}}},connect_factory=connect)
         self.addCleanup(self.c.shutdown)
     def result(self,message,driver='cisco_ios',command='show accounts',save=False):
@@ -94,7 +94,7 @@ class LocalPermissionTests(unittest.TestCase):
             c=None
             try:
                 server.responses['cat /etc/shadow']='cat: /etc/shadow: Permission denied'
-                c=b.Collector({'defaults':{'username':'tester','password':'loopback-only',
+                c=b.Collector({'defaults':{'execution_policy':'read_write','username':'tester','password':'loopback-only',
                     'output_dir':folder,'alt_key_file':str(Path(folder)/'known_hosts'),
                     'autodetect_cache_file':str(Path(folder)/'cache.sqlite3'),'session_sweep_seconds':0},
                     'devices':{'local':{'host':'127.0.0.1','port':server.port,'device_type':'linux'}}})

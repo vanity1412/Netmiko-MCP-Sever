@@ -21,7 +21,7 @@ class BatchContinueTests(unittest.TestCase):
         def connect(**kw):
             self.opens += 1
             return self.conn
-        self.c = b.Collector({'defaults': {'device_type': 'juniper_junos',
+        self.c = b.Collector({'defaults': {'execution_policy': 'read_write', 'device_type': 'juniper_junos',
             'output_dir': self.tmp.name, 'session_sweep_seconds': 0}}, connect_factory=connect)
         self.addCleanup(self.c.shutdown)
 

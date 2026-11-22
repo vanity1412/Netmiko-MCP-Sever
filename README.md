@@ -25,12 +25,12 @@ Có SUCCESS và CLI_ERROR thì batch là PARTIAL, không phải SUCCESS; tất c
 | Chế độ | Hành vi |
 |---|---|
 | `read_only` | Collector nhận các dạng lệnh đọc được hỗ trợ theo driver. Ví dụ gồm `show` trên Junos và Cisco, `display` trên Huawei và `ip route show` trên Linux. Pipeline chỉ nhận các bộ lọc đọc được hỗ trợ. Pipe trong dấu nháy, lệnh ngoài phạm vi và `ssh_interact` trả `POLICY_DENIED`. |
-| `operational` | Với Junos, Cisco và Huawei, Collector dùng denylist theo driver. Lệnh chẩn đoán như `ping` và `traceroute` được chuyển nguyên văn trong timeout hiện có. Collector chặn nhóm lệnh cấu hình, lưu cấu hình và thoát sang shell. Linux giữ giới hạn lệnh đọc và hỗ trợ `ip -br address show`. Đích chưa nhận diện được CLI thì dừng. |
+| `operational` | Collector dùng blacklist theo driver Junos, Cisco, Huawei và Linux. Các nhóm cấu hình, lưu cấu hình, `clear`, `debug`, ghi file hoặc đổi trạng thái đã nhận diện trả `POLICY_DENIED`. Các lệnh ngoài nhóm cấm, gồm `ping`, `traceroute` và `ip -br address show`, đi qua theo cú pháp của thiết bị. |
 | `read_write` | Collector nhận lệnh CLI do agent chọn. Agent chỉ thực thi thay đổi khi tác vụ cấp quyền rõ ràng. |
 
-Chọn `"execution_policy": "operational"` với tài khoản SSH `monitor` để dùng denylist. Quyền thực tế vẫn do tài khoản trên thiết bị quyết định. Chế độ này có thể cho phép lệnh vận hành đổi trạng thái, ví dụ `clear pppoe lockout` nếu Junos cấp quyền. Collector yêu cầu prompt operational, từ chối `ssh_interact` và bỏ qua `auto_enable` trong chế độ này.
+Chọn `"execution_policy": "operational"` với tài khoản SSH `monitor` để dùng blacklist. Khi chẩn đoán, agent nên chọn số gói và thời gian chờ phù hợp. Collector giữ nguyên lệnh và áp timeout hiện có. Blacklist chỉ bao phủ các dạng đã nhận diện. Quyền của tài khoản SSH trên thiết bị vẫn quyết định các thao tác có thể thực hiện. Hai chế độ `read_only` và `operational` từ chối `ssh_interact` và bỏ qua `auto_enable`.
 
-`ssh_status` trả chế độ hiệu lực qua `execution_policy`. `execution_policy_configured` cho biết cấu hình đã đặt chế độ tường minh hay chưa. Nếu cấu hình thiếu `defaults.execution_policy`, Collector dùng `read_write` để tương thích với các tích hợp cũ. Quyền của tài khoản SSH được quản lý trên thiết bị.
+`ssh_status` trả chế độ hiệu lực qua `execution_policy`. `execution_policy_configured` cho biết cấu hình đã đặt chế độ tường minh hay chưa. Nếu thiếu `defaults.execution_policy`, Collector dùng `read_only`. Sau khi nâng cấp, cấu hình từng dựa vào mặc định cũ phải đặt `"execution_policy": "read_write"` tường minh để gửi lệnh cấu hình, rồi khởi động lại MCP. Thiết bị vẫn thực thi quyền của tài khoản SSH.
 
 MCP stdio thương lượng qua `initialize` với các phiên bản handshake từ `2024-11-05` tới `2025-11-25`. Khi client yêu cầu phiên bản ngoài danh sách, server đề xuất `2025-11-25`. `ssh_status.mcp_protocol_versions` liệt kê các phiên bản giao thức. `ssh_status.version` là phiên bản ứng dụng Collector.
 
@@ -197,7 +197,7 @@ Soak có giới hạn bằng mock/127.0.0.1, cách đo CPU/RAM parent/worker và
 session/retry/resume/evidence: [STRESS_SOAK.md](docs/STRESS_SOAK.md). CLI chỉ dùng
 fixture, không nhận inventory/credential production; raw và số đo lưu ngoài Git.
 
-Python wrapper: CLIConnection là tên mới, ReadOnlyConnection giữ để tương thích import cũ nhưng không còn lọc lệnh. Xem docs/ARCHITECTURE.md, docs/SCAN.md, AGENTS.md và CHANGELOG.md.
+`ReadOnlyConnection` cưỡng chế `read_only` và từ chối cấu hình chọn quyền rộng hơn. Dùng `CLIConnection.from_config(...)` để áp chế độ của cấu hình triển khai.
 
 ## Trạng thái và độ tin cậy — 1.8.0
 

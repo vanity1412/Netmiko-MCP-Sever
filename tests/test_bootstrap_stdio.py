@@ -77,7 +77,7 @@ class BootstrapStdioTests(unittest.TestCase):
                         time.sleep(.7)
                         channel.sendall(('\nremaining log data\n' + server.prompt).encode('utf-8'))
                     server.responses['show logging'] = delayed_log
-                    config = {'defaults': {'device_type': 'linux', 'port': server.port,
+                    config = {'defaults': {'execution_policy': 'read_write', 'device_type': 'linux', 'port': server.port,
                         'username': 'tester', 'password': 'loopback-only', 'session_sweep_seconds': 0,
                         'conn_timeout': 3, 'auth_timeout': 3, 'banner_timeout': 3,
                         'alt_key_file': str(folder / 'custom_known_hosts'), 'alt_host_keys': True,

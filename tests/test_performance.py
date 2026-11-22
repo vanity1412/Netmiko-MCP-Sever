@@ -50,7 +50,8 @@ class Performance(unittest.TestCase):
   self.assertNotEqual(ids['enabled'],ids['disabled'])
   self.assertFalse(self.connections)
  def test_unknown_driver_plan_accepts_configuration_map(self):
-  tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}],{'juniper_junos':['configure']})
+  with patch.object(self.c,'execution_policy','read_write'):
+   tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}],{'juniper_junos':['configure']})
   self.assertEqual(len(tasks),1);self.assertFalse(self.connections)
  def test_dns_and_banner_eof_are_not_silently_timeout(self):
   import socket,paramiko

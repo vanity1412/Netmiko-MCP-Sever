@@ -21,7 +21,7 @@ class CredentialsTests(unittest.TestCase):
         path=path or self.root/'credentials.json';self.write(path,{'profiles':profiles});return path
     def settings(self,config,profile=None):
         c=b.Collector(config,connect_factory=lambda **kw:None);self.addCleanup(c.shutdown)
-        return c._get_settings('192.0.2.1','cisco_ios',profile)
+        return c._get_settings('192.0.2.1',None,profile)
     def test_sibling_discovery_and_multiple_profiles(self):
         self.private(default={'username':'first','password':'fixture-one'},site={'username':'second','password':'fixture-two'})
         config=b.load_config(str(self.config))

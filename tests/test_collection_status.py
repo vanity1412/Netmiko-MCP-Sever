@@ -86,7 +86,7 @@ class CacheTests(unittest.TestCase):
             if params['device_type']=='cisco_ios' and self.bad_driver:
                 raise ReadTimeout('simulated preparation mismatch')
             return Connection(params['device_type'])
-        self.c=b.Collector({'defaults':{'device_type':'autodetect','output_dir':self.tmp.name,
+        self.c=b.Collector({'defaults':{'execution_policy': 'read_write', 'device_type':'autodetect','output_dir':self.tmp.name,
              'session_sweep_seconds':0,'max_workers':1,
              'autodetect_cache_file':str(Path(self.tmp.name)/'drivers.sqlite3')}},connect_factory=factory)
         self.addCleanup(self.c.shutdown)

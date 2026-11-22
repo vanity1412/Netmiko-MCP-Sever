@@ -44,7 +44,7 @@ class CollectorTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def collector(self, conn=None, factory=None, profiles=None, devices=None):
-        cfg = {'defaults': {'output_dir': self.tmp.name, 'session_sweep_seconds': 0,
+        cfg = {'defaults': {'execution_policy': 'read_write', 'output_dir': self.tmp.name, 'session_sweep_seconds': 0,
                             'alt_key_file': str(Path(self.tmp.name) / 'known_hosts')},
                'devices': devices or {'test': {'host': '192.0.2.1', 'device_type': 'cisco_ios'}},
                'profiles': profiles or {}}
@@ -409,7 +409,7 @@ class RealSSHTests(unittest.TestCase):
         self.hosts = Path(self.tmp.name) / 'known_hosts'
 
     def collector(self, dtype='linux', hosts=None):
-        c = backend.Collector({'defaults': {'username': 'tester', 'password': 'loopback-only',
+        c = backend.Collector({'defaults': {'execution_policy': 'read_write', 'username': 'tester', 'password': 'loopback-only',
             'output_dir': self.tmp.name, 'session_sweep_seconds': 0, 'conn_timeout': 3, 'auth_timeout': 3,
             'banner_timeout': 3, 'autodetect_cache_file': str(Path(self.tmp.name)/'autodetect.sqlite3'), 'alt_key_file': str(hosts or self.hosts)},
             'devices': {'local': {'host': '127.0.0.1', 'port': self.server.port, 'device_type': dtype}}})

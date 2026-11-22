@@ -29,7 +29,7 @@ def validate_options(options, supported):
         raise ValueError('Unsupported Python fallback options: ' + ', '.join(sorted(unknown)))
 
 
-class ReadOnlyConnection:
+class CLIConnection:
     def __init__(self, *, device_type: str, **params):
         # This wrapper does not load inventory: never guess a Cisco driver.
         if not isinstance(device_type, str) or not re.fullmatch(r'[A-Za-z0-9_]+', device_type):
@@ -105,5 +105,10 @@ class ReadOnlyConnection:
                 offset = part['next_byte_offset']
         return result['output']
 
-# Keep both names available for existing callers.
-CLIConnection = ReadOnlyConnection
+class ReadOnlyConnection(CLIConnection):
+    """Python client restricted to the Collector's read-only policy."""
+
+    def _bind(self, config, target, *, profile=None, device_type=None):
+        if config.get('defaults', {}).get('execution_policy', 'read_only') != 'read_only':
+            raise ValueError('ReadOnlyConnection requires read_only; use CLIConnection for another policy')
+        super()._bind(config, target, profile=profile, device_type=device_type)

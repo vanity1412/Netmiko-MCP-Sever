@@ -61,7 +61,7 @@ class ResumeTests(unittest.TestCase):
                 if owner.fail and command=='description new-uplink':
                     raise ReadTimeout('simulated timeout after possible write')
                 return 'response\nedge#'
-        self.c=b.Collector({'defaults':{'max_workers':4,'session_sweep_seconds':0,
+        self.c=b.Collector({'defaults':{'execution_policy': 'read_write', 'max_workers':4,'session_sweep_seconds':0,
              'output_dir':str(self.job/'raw-output'),'output_storage_mode':'exclusive'},
              'devices':{'good':{'host':'192.0.2.1','device_type':'cisco_ios'},
                         'bad':{'host':'192.0.2.2','device_type':'cisco_ios'}}},

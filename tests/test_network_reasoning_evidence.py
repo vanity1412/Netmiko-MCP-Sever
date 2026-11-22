@@ -53,7 +53,8 @@ class NetworkReasoningEvidenceTests(unittest.TestCase):
                 patch.object(socket.socket, 'connect', side_effect=AssertionError('No network')), \
                 patch.object(socket.socket, 'connect_ex', side_effect=AssertionError('No network')), \
                 patch('probe_session.ProbeSession', side_effect=AssertionError('No discovery')):
-            c = b.Collector({'defaults': {'output_dir': folder, 'session_sweep_seconds': 0},
+            c = b.Collector({'defaults': {'execution_policy': 'read_write', 'output_dir': folder,
+                                          'session_sweep_seconds': 0},
                              'devices': devices}, connect_factory=connect)
             try:
                 for source in case['evidence']:

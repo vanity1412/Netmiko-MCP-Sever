@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shlex
 import sys
 import subprocess
 import sqlite3
@@ -548,28 +549,92 @@ def read_only_policy_allows(command, driver):
     words = head.split(maxsplit=1)
     if len(words) != 2 or words[0].casefold() not in verbs:
         return False
+    if words[0].casefold() == 'display' and 'diagnostic-information'.startswith(
+            words[1].split()[0].casefold()):
+        # VRP treats this as a bulk collection and can write a device file.
+        return False
     return all(re.fullmatch(
         r'(?:(?:include|exclude|begin|section|match|except|find|last) +.+'
         r'|count|no-more|display (?:set(?: relative)?|xml|json|inheritance(?: no-comments)?|detail|omit))',
         part, re.I) for part in filters)
 
 
+_LINUX_BLOCKED_PROGRAMS = frozenset('''
+    sudo su doas pkexec rm mv cp dd truncate tee chmod chown chgrp ln touch mkdir rmdir
+    vi vim nano ed install shred mount umount wipefs mkswap swapon swapoff service
+    reboot shutdown poweroff halt init telinit kill killall pkill killproc
+    iptables ip6tables nft ufw tc apt apt-get yum dnf pip pip3 dpkg rpm wget curl
+    bash sh dash ash zsh ksh fish busybox perl ruby node php lua nc ncat netcat
+    env command exec eval source . xargs awk gawk mawk timeout nohup nice ionice
+    setsid screen tmux ssh telnet sftp scp ftp tftp rsync
+'''.split())
+
+
+def linux_operational_stage_allows(stage):
+    words = shlex.split(stage)
+    if not words or not re.fullmatch(r'[A-Za-z0-9_./+-]+', words[0]):
+        return False
+    program = words[0].rsplit('/', 1)[-1]
+    if not program or program in _LINUX_BLOCKED_PROGRAMS or re.fullmatch(r'(?:python|pip|mkfs)[0-9.\w-]*', program):
+        return False
+    args = words[1:]
+    if program == 'ss':
+        return not any(arg == '--kill' or re.match(r'^-[a-zA-Z]*K', arg) for arg in args)
+    if program in {'ping', 'ping6'}:
+        return not any(re.match(r'^-[a-zA-Z]*[fl]', arg) for arg in args)
+    if program == 'systemctl':
+        return not set(args) & {'start', 'stop', 'restart', 'reload', 'enable', 'disable', 'mask',
+                                'unmask', 'reboot', 'poweroff', 'halt', 'isolate', 'kill', 'set-property',
+                                'edit', 'daemon-reload', 'link', 'preset', 'revert', 'try-restart',
+                                'reload-or-restart', 'try-reload-or-restart'}
+    if program in {'ip', 'nmcli'}:
+        positionals = [arg for arg in args if not arg.startswith('-')]
+        changes = {'set', 'add', 'delete', 'replace', 'change', 'append', 'flush', 'up', 'down',
+                   'modify', 'connect', 'disconnect', 'exec', 'reload', 'load', 'edit', 'import',
+                   'restore', 'attach', 'on', 'off', 'toggle'}
+        return not any(arg == '-b' or arg.startswith('-ba') for arg in args) and not any(
+            word and change.startswith(word) for word in positionals[1:] for change in changes)
+    if program == 'ifconfig':
+        return len(args) <= 1
+    if program in {'sed', 'ethtool', 'find', 'crontab'}:
+        for item in args:
+            if program == 'sed' and (item.startswith(('--in-place', '--file')) or re.match(r'^-[a-zA-Z]*[if]', item)):
+                return False
+            if program == 'sed' and not item.startswith('-') and re.search(r'(?:^|[/;])\s*[ewW]\b', item):
+                return False
+            if program == 'ethtool' and (item.startswith(('--set', '--change', '--offload', '--features'))
+                                         or re.match(r'^-[sKGCLAEXWNPH]', item)):
+                return False
+            if program == 'find' and item in {'-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprintf', '-fls'}:
+                return False
+            if program == 'crontab' and item not in {'-l'}:
+                return False
+        if program == 'crontab' and args != ['-l']:
+            return False
+    return True
+
+
 def operational_policy_allows(command, driver):
-    """Screen known configuration and CLI escape commands on network drivers."""
-    if driver == 'linux':
-        return command == 'ip -br address show' or read_only_policy_allows(command, driver)
+    """Screen known state-changing commands in the resolved operational CLI."""
     driver_rules = {
         'junos': {'edit', 'load', 'rollback', 'set', 'activate', 'deactivate',
                   'rename', 'replace', 'insert', 'annotate', 'wildcard', 'request system',
-                  'request chassis', 'file copy', 'file delete', 'file rename', 'file archive'},
-        'cisco': {'conf', 'write', 'copy', 'replace', 'archive config',
-                  'terminal shell', 'tclsh', 'guestshell', 'event manager run'},
+                  'request chassis', 'file copy', 'file delete', 'file rename', 'file archive',
+                  'file make-directory', 'top', 'copy', 'protect', 'unprotect', 'monitor start',
+                  'request routing-engine login', 'request support information', 'request message'},
+        'cisco': {'conf', 'write', 'copy', 'replace', 'archive', 'config-register',
+                  'interface', 'router', 'ip route', 'no', 'redundancy force-switchover',
+                  'squeeze', 'rmdir', 'mkdir', 'rename', 'install', 'send',
+                  'terminal monitor', 'terminal shell', 'tclsh', 'guestshell',
+                  'event manager run', 'monitor capture'},
         'huawei': {'system-view', 'rollback', 'startup', 'copy', 'move', 'rename',
-                   'configuration replace', 'undo', 'return', 'upgrade'},
+                   'configuration replace', 'undo', 'upgrade', 'interface', 'bgp', 'ospf',
+                   'ip route-static', 'acl', 'mkdir', 'rmdir', 'undelete', 'ftp', 'tftp', 'sftp', 'scp',
+                   'terminal debugging', 'display diagnostic-information'},
     }
     family = ('junos' if driver == 'juniper_junos' else 'cisco' if driver.startswith('cisco_')
               else 'huawei' if driver.startswith('huawei') else None)
-    if family is None and driver not in {'autodetect', 'generic_termserver'}:
+    if family is None and driver not in {'autodetect', 'generic_termserver', 'linux'}:
         return False
     if not command.isprintable() or re.search(r'[;&`<>$\\]', command):
         return False
@@ -577,8 +642,13 @@ def operational_policy_allows(command, driver):
         head, *filters = cli_pipeline(command)
     except PermissionError:
         return False
+    if driver == 'linux':
+        return not re.search(r'[(){}!]', command) and all(
+            linux_operational_stage_allows(stage) for stage in (head, *filters))
     if any('|' in part for part in (head, *filters)):
         return False
+    if family is None and read_only_policy_allows(command, 'linux'):
+        return True
 
     def matches_rule(text, rule):
         words = text.casefold().replace('"', '').replace("'", '').split()
@@ -588,12 +658,10 @@ def operational_policy_allows(command, driver):
 
     common = {'configure', 'configuration', 'commit', 'save', 'enable', 'shell', 'start',
               'do', 'run', 'op', 'ssh', 'telnet', 'rlogin', 'python', 'reboot', 'reload',
-              'restart', 'reset', 'halt', 'power-off', 'zeroize', 'delete', 'erase', 'format'}
+              'restart', 'reset', 'halt', 'power-off', 'zeroize', 'delete', 'erase', 'format',
+              'clear', 'debug', 'debugging', 'monitor traffic', 'test'}
     rules = common | (driver_rules[family] if family else set().union(*driver_rules.values()))
-    if family in ('junos', None) and head.casefold().split() == ['set', 'cli', 'timestamp']:
-        allowed_head = True
-    else:
-        allowed_head = not any(matches_rule(head, rule) for rule in rules)
+    allowed_head = not any(matches_rule(head, rule) for rule in rules)
     blocked_filters = {'save', 'redirect', 'append', 'tee', 'file', 'shell', 'execute', 'nohangup'}
     return allowed_head and not any(matches_rule(stage, rule) for stage in filters for rule in blocked_filters)
 
@@ -1869,7 +1937,7 @@ class Collector:
         if not isinstance(self.defaults, dict) or not isinstance(self.devices, dict) or not isinstance(self.profiles, dict):
             raise ValueError("defaults, profiles and devices must be JSON objects")
         self.execution_policy_configured = 'execution_policy' in self.defaults
-        self.execution_policy = self.defaults.get('execution_policy', 'read_write')
+        self.execution_policy = self.defaults.get('execution_policy', 'read_only')
         if self.execution_policy not in ('read_only', 'operational', 'read_write'):
             raise ValueError('execution_policy must be read_only, operational or read_write')
         self.max_workers = bounded_int(self.defaults.get("max_workers"), 8, 1, 32)
@@ -2242,7 +2310,7 @@ class Collector:
         settings.setdefault("secret", os.environ.get("NETWORK_SSH_SECRET", ""))
         # Permissive host-key acceptance requested for this collector. Persistence
         # is per client and never turns a writable-disk problem into an SSH failure.
-        if self.execution_policy != 'operational' and effective.get('auto_enable', False):
+        if self.execution_policy == 'read_write' and effective.get('auto_enable', False):
             settings['_auto_enable'] = True
         settings['ssh_strict'] = mode == 'strict'
         settings['alt_host_keys'] = mode == 'strict'
@@ -2376,7 +2444,7 @@ class Collector:
                 from probe_session import ProbeSession, ProbeFailure
                 budget = min(getattr(self._request, 'detection_timeout', None) or self.autodetect_timeout, self._checkpoint())
                 wire_params = dict(params)
-                wire_params['_auto_enable'] = self.execution_policy != 'operational' and bool(
+                wire_params['_auto_enable'] = self.execution_policy == 'read_write' and bool(
                     getattr(self._request, 'cli_options', {}).get('auto_enable', False))
                 overrides = getattr(self._request, 'connection_timeouts', None) or {}
                 wire_params['_probe_read_timeout'] = min(30, overrides.get('banner_timeout', 4))
@@ -2787,7 +2855,7 @@ class Collector:
             raise execution_policy_error('Command is outside the supported read_only CLI forms')
         if self.execution_policy == 'operational' and any(
                 not operational_policy_allows(command, driver) for command in commands):
-            raise execution_policy_error('Command denied by operational policy for this driver', 'operational')
+            raise execution_policy_error('Command denied by operational blacklist for this driver', 'operational')
         return commands
 
     @contextlib.contextmanager

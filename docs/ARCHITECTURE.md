@@ -110,7 +110,7 @@ Regression và integration SSH localhost nằm trong tests; chạy `python -m un
 
 MCP client → STDIO JSON-RPC → bootstrap.py → Collector trong collector_backend.py → Netmiko → Paramiko → SSH thiết bị.
 
-Python fallback → ReadOnlyConnection trong readonly_client.py → cùng Collector → cùng policy SSH/CLI.
+Python fallback → CLIConnection.from_config trong readonly_client.py → cùng Collector → cùng policy SSH/CLI. ReadOnlyConnection chỉ nhận chế độ read_only.
 
 Scanner CLI → scan.py → Collector → kết quả từng task + bằng chứng + summary. Scanner không phải tool MCP thứ 11.
 
@@ -147,7 +147,7 @@ từ thuộc tính `result` của ngoại lệ `CLIExecutionError` (một `Runti
 | Collector._resolve_platform, detection_worker | Autodetect bằng probe đọc trong process riêng, có ngân sách thời gian |
 | probe_session.py / ProbeSession, main | Worker giữ SSH từ probe qua redispatch và thu thập; parent kiểm soát deadline, truyền partial output qua pipe |
 | Collector._open, lease/session helpers | Mở SSH, xác minh prompt, giới hạn số phiên và reuse |
-| readonly_command, cli_pipeline | Tên compatibility cho kiểm tra framing; từ 1.7.0 không lọc nội dung lệnh |
+| Collector.validate_execution_commands | Kiểm tra định dạng lệnh và áp dụng execution_policy trước khi gửi |
 | Collector._send, read_cli_output | Đọc Netmiko channel, chờ prompt cuối, chuyển trang, giữ partial output và kiểm soát timeout |
 | Collector._result | Kiểm tra echo, prompt cuối, dấu CLI error và pager/confirmation |
 | classify_error | Phân loại lỗi SSH/TCP/auth/host key, quyết định retryable |

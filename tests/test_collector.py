@@ -42,7 +42,7 @@ class Regression(unittest.TestCase):
         def connect(**params):
             self.params.append(params)
             f = Fake(); self.connections.append(f); return f
-        self.c = b.Collector({'defaults': {'device_type': 'juniper_junos', 'ssh_strict': False, 'output_dir': self.temp.name, 'session_sweep_seconds': 0}, 'devices': {'MOCK': {'host': 'mock-host', 'device_type': 'juniper_junos'}}}, connect_factory=connect)
+        self.c = b.Collector({'defaults': {'execution_policy': 'read_write', 'device_type': 'juniper_junos', 'ssh_strict': False, 'output_dir': self.temp.name, 'session_sweep_seconds': 0}, 'devices': {'MOCK': {'host': 'mock-host', 'device_type': 'juniper_junos'}}}, connect_factory=connect)
     def tearDown(self): self.c.shutdown(); self.temp.cleanup()
 
     def test_tools_unchanged(self):
