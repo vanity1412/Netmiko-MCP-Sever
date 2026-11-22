@@ -16,6 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 
 CASES = json.loads((ROOT / 'tests/network_reasoning_cases.json').read_text(encoding='utf-8'))['cases']
 
@@ -59,7 +60,7 @@ class NetworkReasoningEvidenceTests(unittest.TestCase):
             try:
                 for source in case['evidence']:
                     args = dict(target=source['target'], command=source['command'], save_output=True)
-                    response = b.handle_rpc({'jsonrpc': '2.0', 'id': source['id'],
+                    response = handle_rpc({'jsonrpc': '2.0', 'id': source['id'],
                         'method': 'tools/call', 'params': {'name': 'ssh_execute', 'arguments': args}}, c)
                     self.assertEqual(response['id'], source['id'])
                     result = json.loads(response['result']['content'][0]['text'])

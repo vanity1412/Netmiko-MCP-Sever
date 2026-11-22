@@ -9,6 +9,7 @@ from netmiko.exceptions import NetmikoAuthenticationException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 from telemetry import PhaseMetrics, time_connection_method
 
 PAYLOAD = ('username fixture_user privilege 15 password fixture_password\n'
@@ -76,7 +77,7 @@ class MeasurementsEvidenceTests(unittest.TestCase):
         request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                    'params': {'name': 'ssh_parallel', 'arguments': {'tasks': tasks}}}
         with patch.object(collector, '_connect', side_effect=connect), patch.object(collector, '_send', side_effect=read):
-            response = b.handle_rpc(request, collector)
+            response = handle_rpc(request, collector)
         self.assertTrue(response['result']['isError'])
         payload = json.loads(response['result']['content'][0]['text'])
         audit_text = collector._audit_path.read_text(encoding='utf-8')
@@ -146,11 +147,11 @@ class MeasurementsEvidenceTests(unittest.TestCase):
             c.execute(target, 'show custom data')
         for arguments in (None, [], {'target': None}, {'target': False}, {'target': 0}):
             with self.subTest(arguments=arguments):
-                response = b.handle_rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                response = handle_rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                                          'params': {'name': 'ssh_close', 'arguments': arguments}}, c)
                 self.assertEqual(response['error']['code'], -32602)
                 self.assertEqual(len(c.status()['sessions']), 2)
-        response = b.handle_rpc({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+        response = handle_rpc({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
                                  'params': {'name': 'ssh_close', 'arguments': {}}}, c)
         self.assertFalse(response['result']['isError'])
         self.assertEqual(c.status()['sessions'], [])

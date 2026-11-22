@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 import bootstrap
 import readonly_client
 import scan
@@ -37,14 +38,19 @@ class SSHSettingsContractTests(unittest.TestCase):
             }}), encoding='utf-8')
             options = {'inventory_csv': inventory, 'credentials_file': Path(credentials.name),
                        'output_dir': root / 'out'}
+            def junos_session(**kwargs):
+                conn = FakeConnection(['fixture version\nrouter>'])
+                conn.find_prompt = lambda: 'router>'
+                return conn
+
             with patch.dict('os.environ', {'NETWORK_SSH_USER': 'env-fixture', 'NETWORK_SSH_PASSWORD': 'env-only'}), \
-                    patch('netmiko.ConnectHandler', side_effect=lambda **kwargs: FakeConnection(['fixture version\nrouter#'])) as connect:
+                    patch('netmiko.ConnectHandler', side_effect=junos_session) as connect:
                 config = bootstrap.load_deployment_config(b, config_path, **options)
                 mcp = b.Collector(config)
                 self.addCleanup(mcp.shutdown)
                 request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'ssh_execute',
                     'arguments': {'target': 'edge', 'profile': 'override', 'command': 'show version'}}}
-                rpc = json.loads(b.handle_rpc(request, mcp)['result']['content'][0]['text'])
+                rpc = json.loads(handle_rpc(request, mcp)['result']['content'][0]['text'])
                 self.assertTrue(rpc['ok'])
                 desired = connect.call_args.kwargs
                 with readonly_client.CLIConnection.from_config(config_path, target='edge',

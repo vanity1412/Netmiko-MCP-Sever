@@ -16,6 +16,15 @@ BACKEND = Path(os.environ.get('NETMIKO_TEST_BACKEND') or (Path(__file__).resolve
 spec = importlib.util.spec_from_file_location('tested_collector', BACKEND)
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
+import sys
+sys.path.insert(0, str(BACKEND.parent))
+_previous_backend = sys.modules.get('collector_backend')
+sys.modules['collector_backend'] = b
+try:
+    from mcp_rpc import handle_rpc, make_tool_list, run_stdio
+finally:
+    if _previous_backend is None: sys.modules.pop('collector_backend', None)
+    else: sys.modules['collector_backend'] = _previous_backend
 
 
 class Fake:
@@ -46,7 +55,7 @@ class Regression(unittest.TestCase):
     def tearDown(self): self.c.shutdown(); self.temp.cleanup()
 
     def test_tools_unchanged(self):
-        self.assertEqual(len(b.make_tool_list()), 10)
+        self.assertEqual(len(make_tool_list()), 10)
 
     def test_commands_passthrough(self):
         for platform, command in [('juniper_junos', 'show configuration | display set | no-more'), ('cisco_ios', 'show ip route | include 10.0'), ('huawei', 'display interface brief'), ('linux', 'ip route show')]:
@@ -234,7 +243,7 @@ class Regression(unittest.TestCase):
         requests = [{'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'ssh_execute','arguments':{'target':'MOCK','command':'show system slow'}}}, {'jsonrpc':'2.0','id':2,'method':'ping'}]
         output = io.StringIO()
         with patch('sys.stdin',io.StringIO('\n'.join(map(json.dumps,requests)))), patch('sys.stdout',output):
-            b.run_stdio(self.c)
+            run_stdio(self.c)
         replies = list(map(json.loads,output.getvalue().splitlines()))
         self.assertEqual([r['id'] for r in replies],[2,1])
 
@@ -255,7 +264,7 @@ class Regression(unittest.TestCase):
                 if not self_wait: raise AssertionError('worker did not start')
                 yield json.dumps({'jsonrpc':'2.0','method':'notifications/cancelled','params':{'requestId':1}})
         output = io.StringIO()
-        with patch('sys.stdin',Input()), patch('sys.stdout',output): b.run_stdio(self.c)
+        with patch('sys.stdin',Input()), patch('sys.stdout',output): run_stdio(self.c)
         self.assertNotIn('show interfaces',fake.commands)
         self.assertTrue(json.loads(output.getvalue())['result']['isError'])
 

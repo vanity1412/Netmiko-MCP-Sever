@@ -17,6 +17,8 @@ sys.path.insert(0, str(ROOT / 'mcp'))
 spec = importlib.util.spec_from_file_location('collector_backend', ROOT / 'mcp' / 'collector_backend.py')
 backend = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backend)
+sys.modules.setdefault('collector_backend', backend)
+from mcp_rpc import handle_rpc, make_tool_list
 
 
 class FakeConn:
@@ -182,7 +184,7 @@ class BatchSummaryTests(unittest.TestCase):
         def execute_many(**kwargs):
             raise backend.BatchError(results, summary)
         collector = types.SimpleNamespace(execute_many=execute_many, audit=lambda *args: None)
-        reply = backend.handle_rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        reply = handle_rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                                     'params': {'name': 'ssh_execute_many', 'arguments': {
                                         'target': 'r1', 'commands': ['show clock', 'bad', 'show interfaces']}}}, collector)
         self.assertTrue(reply['result']['isError'])

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc
 import scan
 from test_ssh_scenarios import TimelineChannel, VirtualClock
 from test_junos_fallback import JunosChannel, ACKS, CAPS
@@ -165,7 +166,7 @@ class PreparationTimingTests(unittest.TestCase):
                 request = {'id': 1, 'method': 'tools/call', 'params': {
                     'name': 'ssh_execute_many',
                     'arguments': {'target': 'local', 'commands': ['show version']}}}
-                response = b.handle_rpc(request, c)
+                response = handle_rpc(request, c)
                 payload = json.loads(response['result']['content'][0]['text'])
                 self.assertEqual(payload['ok'], enabled)
                 audit = json.loads(c._audit_path.read_text(encoding='utf-8').splitlines()[-1])

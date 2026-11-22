@@ -18,6 +18,7 @@ MCP = (Path(__file__).resolve().parents[1] / 'mcp')
 sys.path.insert(0, str(MCP))
 import bootstrap
 import collector_backend as backend
+from mcp_rpc import handle_rpc, make_tool_list
 import scan
 
 
@@ -232,7 +233,7 @@ class CollectorTests(unittest.TestCase):
         c.output_quota = 1
         request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                    'params': {'name': 'ssh_execute', 'arguments': {'target': 'test', 'command': 'show version', 'save_output': True}}}
-        reply = backend.handle_rpc(request, c)
+        reply = handle_rpc(request, c)
         self.assertTrue(reply['result']['isError'])
         result = json.loads(reply['result']['content'][0]['text'])
         self.assertFalse(result['ok'])

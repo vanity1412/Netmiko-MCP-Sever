@@ -7,6 +7,7 @@ from unittest.mock import patch
 import test_collector as fixtures
 
 b = fixtures.b
+from test_collector import handle_rpc, make_tool_list
 
 
 class ReviewRegression(unittest.TestCase):
@@ -55,7 +56,7 @@ class ReviewRegression(unittest.TestCase):
         self.assertNotIn('alice', b.redact_text('    user alice {\n uid 2000;\n}'))
 
     def test_rpc_interact_preserves_cli_error(self):
-        result = b.handle_rpc({'id': 1, 'method': 'tools/call', 'params': {
+        result = handle_rpc({'id': 1, 'method': 'tools/call', 'params': {
             'name': 'ssh_interact', 'arguments': {'target': 'MOCK', 'steps': ['show system bad']}}}, self.c)
         body = json.loads(result['result']['content'][0]['text'])
         self.assertEqual(body['error'], 'CliError')
@@ -75,7 +76,7 @@ class ReviewRegression(unittest.TestCase):
             'steps': ['configure terminal', 'interface Gi0/1', 'end'], 'save_output': True}}}
         with self.c.request_budget(cancel=cancel), patch.object(
                 self.c, '_command_result', side_effect=complete_then_cancel):
-            response = b.handle_rpc(request, self.c)
+            response = handle_rpc(request, self.c)
         result = json.loads(response['result']['content'][0]['text'])
         prefix, cancelled, skipped = result['steps']
         self.assertEqual(result['status'], 'CANCELLED')
@@ -105,7 +106,7 @@ class ReviewRegression(unittest.TestCase):
                     'name': 'ssh_interact', 'arguments': {'target': 'MOCK',
                     'steps': commands, 'save_output': True}}}
                 with patch.object(self.c, '_save_output', side_effect=fail_one_save):
-                    response = b.handle_rpc(request, self.c)
+                    response = handle_rpc(request, self.c)
                 result = json.loads(response['result']['content'][0]['text'])
                 self.assertEqual(result['status'], 'STORAGE_ERROR')
                 self.assertIn(commands[0], self.c.read_output(result['steps'][0]['output_id'])['text'])

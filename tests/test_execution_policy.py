@@ -11,6 +11,7 @@ import scan
 from readonly_client import CLIConnection, ReadOnlyConnection
 
 b = fixtures.b
+from test_collector import handle_rpc, make_tool_list
 
 
 class ExecutionPolicyTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class ExecutionPolicyTests(unittest.TestCase):
     def call(self, collector, tool, **arguments):
         request = {'id': 1, 'method': 'tools/call',
                    'params': {'name': tool, 'arguments': arguments}}
-        result = b.handle_rpc(request, collector)['result']
+        result = handle_rpc(request, collector)['result']
         return json.loads(result['content'][0]['text'])
 
     def test_read_only_reports_policy_and_allows_observation(self):
@@ -42,6 +43,13 @@ class ExecutionPolicyTests(unittest.TestCase):
                                 ('huawei', 'display interface brief'),
                                 ('linux', 'ip route show')):
             with self.subTest(driver=driver):
+                prompt = {'juniper_junos': 'MOCK>', 'cisco_ios': 'MOCK#',
+                          'huawei': '<MOCK>', 'linux': 'mock$'}[driver]
+                conn = fixtures.Fake()
+                conn.find_prompt = lambda: prompt
+                conn.send_command = Mock(return_value=f'Device evidence\n{prompt}')
+                self.connect.side_effect = None
+                self.connect.return_value = conn
                 collector = self.collector(driver=driver)
                 status = self.call(collector, 'ssh_status')
                 self.assertEqual(status['execution_policy'], 'read_only')
@@ -63,35 +71,48 @@ class ExecutionPolicyTests(unittest.TestCase):
                 self.assertFalse(result['transport_ok'])
         result = self.call(collector, 'ssh_execute_many', target='fixture',
                            commands=['show version', 'set interfaces lo0 disable'], continue_on_error=True)
-        self.assertEqual(result['status'], 'POLICY_DENIED')
-        self.assertFalse(result['command_sent'])
+        # The allowed read runs; the blacklisted write is denied per command and never sent.
+        self.assertEqual(result['status'], 'PARTIAL')
+        self.assertEqual(result['results'][1]['status'], 'POLICY_DENIED')
+        self.assertFalse(result['results'][1]['command_sent'])
         result = self.call(collector, 'ssh_parallel', tasks=[
             {'target': 'fixture', 'command': 'commit'},
-            {'target': 'fixture', 'commands': ['show version', 'configure']},
+            {'target': 'fixture', 'commands': ['commit', 'configure']},
         ])
         self.assertEqual([task['status'] for task in result['results']], ['POLICY_DENIED'] * 2)
-        result = self.call(collector, 'ssh_interact', target='fixture', steps=['show version', ''])
+        result = self.call(collector, 'ssh_interact', target='fixture', steps=['configure', ''])
         self.assertEqual(result['status'], 'POLICY_DENIED')
-        override = b.handle_rpc({'id': 1, 'method': 'tools/call', 'params': {
+        override = handle_rpc({'id': 1, 'method': 'tools/call', 'params': {
             'name': 'ssh_execute_many', 'arguments': {'target': 'fixture', 'commands': ['show version'],
                                                      '_resolved_scan_params': {}}}}, collector)
         self.assertEqual(override['error']['code'], -32602)
         with self.assertRaises(b.CollectionError):
             scan.prepare_tasks(collector, [{'target': 'fixture', 'commands': ['configure']}])
+        # Only the allowed read in the continue_on_error batch opened a session.
+        self.assertEqual(self.connect.call_count, 1)
+
+    def test_all_denied_batch_returns_without_ssh(self):
+        collector = self.collector()
+        result = self.call(collector, 'ssh_execute_many', target='fixture',
+                           commands=['commit', 'configure'], continue_on_error=True)
+        self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.assertEqual([item['command_index'] for item in result['results']], [0, 1])
+        self.assertTrue(all(item['status'] == 'POLICY_DENIED' and not item['command_sent']
+                            for item in result['results']))
         self.connect.assert_not_called()
 
     def test_read_only_checks_resolved_driver_before_writing(self):
         collector = self.collector(driver='autodetect')
         collector._custom_detect = lambda **_: Mock(autodetect=Mock(return_value='linux'))
-        result = self.call(collector, 'ssh_execute', target='fixture', command='show version')
+        result = self.call(collector, 'ssh_execute', target='fixture', command='reboot')
         self.assertEqual(result['status'], 'POLICY_DENIED')
         self.assertFalse(result['command_sent'])
-        entry, = collector._sessions.values()
-        self.assertEqual(entry['conn'].commands, [])
+        # Denied before SSH: no session is opened, so nothing can be sent.
+        self.assertEqual(list(collector._sessions.values()), [])
         rejected = self.call(collector, 'ssh_execute', target='fixture',
-                             command='show version', device_type='juniper_junos')
+                             command='configure', device_type='juniper_junos')
         self.assertEqual(rejected['status'], 'POLICY_DENIED')
-        self.connect.assert_called_once()
+        self.connect.assert_not_called()
 
     def test_scanner_runs_safe_autodetect_plan_on_resolved_driver(self):
         collector = self.collector(driver='autodetect')
@@ -150,7 +171,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(entry['conn'].commands, commands)
         with patch.dict(os.environ, {'NETWORK_SSH_USER': 'fixture-user', 'NETWORK_SSH_PASSWORD': 'fixture-password'}), \
                 patch('readonly_client.Collector', return_value=collector):
-            with self.assertRaisesRegex(ValueError, 'ReadOnlyConnection requires read_only'):
+            with self.assertRaisesRegex(ValueError, 'ReadOnlyConnection requires the read-only blacklist policy'):
                 ReadOnlyConnection.from_config(config_path, target='fixture')
             client = CLIConnection.from_config(config_path, target='fixture', output_dir=self.directory)
             self.assertTrue(client.execute_many(commands)['ok'])
@@ -163,9 +184,9 @@ class ExecutionPolicyTests(unittest.TestCase):
                 result = client.execute('commit')
                 self.assertEqual(result['status'], 'POLICY_DENIED')
                 self.assertFalse(result['command_sent'])
-            for policy in ('operational', 'read_write'):
-                with self.assertRaisesRegex(ValueError, 'ReadOnlyConnection requires read_only'):
-                    ReadOnlyConnection(host='192.0.2.1', device_type='juniper_junos', execution_policy=policy)
+            ReadOnlyConnection(host='192.0.2.1', device_type='juniper_junos', execution_policy='operational')
+            with self.assertRaisesRegex(ValueError, 'ReadOnlyConnection requires the read-only blacklist policy'):
+                ReadOnlyConnection(host='192.0.2.1', device_type='juniper_junos', execution_policy='read_write')
         self.connect.assert_not_called()
 
     def test_invalid_policy_is_a_startup_error(self):
@@ -209,7 +230,7 @@ class ExecutionPolicyTests(unittest.TestCase):
     def test_operational_policy_on_mcp_batch_parallel_and_interact(self):
         collector = self.collector(policy='operational')
         status = self.call(collector, 'ssh_status')
-        self.assertEqual(status['execution_policy'], 'operational')
+        self.assertEqual(status['execution_policy'], 'read_only')  # operational is an alias of read_only
         for tool, arguments in (
                 ('ssh_execute_many', {'target': 'fixture', 'commands': ['ping 192.0.2.2 count 3 wait 2', 'commit']}),
                 ('ssh_interact', {'target': 'fixture', 'steps': ['show version', '']})):
@@ -240,12 +261,17 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.connect.return_value = conn
         collector = self.collector(policy='operational', driver='cisco_ios')
         collector.defaults['auto_enable'] = True
-        result = self.call(collector, 'ssh_execute', target='fixture', command='show version', device_type='linux')
+        result = self.call(collector, 'ssh_execute', target='fixture', command='reboot', device_type='linux')
         self.assertEqual(result['status'], 'POLICY_DENIED')
         self.connect.assert_not_called()
-        result = self.call(collector, 'ssh_execute', target='fixture', command='show version')
+        result = self.call(collector, 'ssh_execute', target='fixture', command='configure terminal')
         self.assertEqual(result['status'], 'POLICY_DENIED')
         self.assertFalse(result['command_sent'])
+        self.connect.assert_not_called()
+        result = self.call(collector, 'ssh_execute', target='fixture', command='show clock')
+        self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.assertFalse(result['command_sent'])
+        self.assertIn('prompt', result['message'])
         self.connect.assert_called_once()
         self.assertEqual(conn.commands, [])
 
@@ -270,7 +296,7 @@ class ExecutionPolicyTests(unittest.TestCase):
         self.assertEqual(status['mcp_protocol_versions'], versions)
         for request, expected in [(v, v) for v in versions] + [('2026-07-28', '2025-11-25')]:
             with self.subTest(request=request):
-                reply = b.handle_rpc({'id': 1, 'method': 'initialize',
+                reply = handle_rpc({'id': 1, 'method': 'initialize',
                                       'params': {'protocolVersion': request}}, collector)
                 self.assertEqual(reply['result']['protocolVersion'], expected)
         self.connect.assert_not_called()

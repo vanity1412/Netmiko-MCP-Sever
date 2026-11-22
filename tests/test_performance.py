@@ -13,6 +13,7 @@ from unittest.mock import patch
 import test_collector as f
 sys.path.insert(0,str((Path(__file__).resolve().parents[1] / 'mcp')))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 import scan
 
 class Performance(unittest.TestCase):
@@ -24,7 +25,7 @@ class Performance(unittest.TestCase):
  def tearDown(self):self.c.shutdown();self.tmp.cleanup()
  def test_tools_contract_with_optional_continue_on_error(self):
   baseline=json.loads(Path(__file__).with_name('tool-schema-v1.json').read_text(encoding='utf-8'))
-  self.assertEqual(baseline,[{'name':t['name'],'inputSchema':t['inputSchema']} for t in b.make_tool_list()])
+  self.assertEqual(baseline,[{'name':t['name'],'inputSchema':t['inputSchema']} for t in make_tool_list()])
  def test_ip_only_outside_inventory_previews_autodetect(self):
   tasks,_=scan.prepare_tasks(self.c,[{'target':'192.0.2.10'}])
   self.assertEqual(tasks[0]['device_type'],'autodetect');self.assertFalse(self.connections)

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 import scan
 import test_ssh_reliability as fixtures
 from netmiko.exceptions import ReadTimeout
@@ -265,7 +266,7 @@ class RealConfigurationTests(unittest.TestCase):
         self.assertNotIn('yes',self.server.commands)
         request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
             'name': 'ssh_execute', 'arguments': {'target': 'local', 'command': 'show clock'}}}
-        reply = b.handle_rpc(request, c)['result']
+        reply = handle_rpc(request, c)['result']
         blocked = json.loads(reply['content'][0]['text'])
         self.assertTrue(reply['isError'])
         self.assertEqual(blocked['error'], 'SessionAwaitingInput')

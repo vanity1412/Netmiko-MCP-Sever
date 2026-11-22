@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 
 
 class WorkflowContractTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.skipTest('Optional JSON Schema validator is not installed')
         text = (ROOT / 'docs/MCP_TOOL_GUIDE.md').read_text(encoding='utf-8')
         examples = [json.loads(block) for block in re.findall(r'```json\s*\n(.*?)\n```', text, re.S)]
-        tools = {tool['name']: tool['inputSchema'] for tool in b.make_tool_list()}
+        tools = {tool['name']: tool['inputSchema'] for tool in make_tool_list()}
         self.assertEqual(len(examples), 10)
         self.assertEqual({example['name'] for example in examples}, set(tools))
         for example in examples:

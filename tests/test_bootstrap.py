@@ -36,13 +36,13 @@ class Contract(unittest.TestCase):
   backend=SimpleNamespace(load_config=lambda path,**kw:config,load_inventory_csv=Mock(side_effect=lambda c,path:c),Collector=Mock(),run_stdio=Mock())
   argv=['bootstrap.py','--config','MOCK.json']
   if inventory:argv+=['--inventory-csv','MOCK.csv']
-  with patch.object(bootstrap.importlib.util,'spec_from_file_location'),patch.object(bootstrap.importlib.util,'module_from_spec',return_value=backend),patch.dict('os.environ',{'NETWORK_SSH_USER':'MOCK','NETWORK_SSH_PASSWORD':'MOCK'}),patch.object(sys,'argv',argv):
+  with patch.object(bootstrap.importlib.util,'spec_from_file_location'),patch.object(bootstrap.importlib.util,'module_from_spec',return_value=backend),patch.dict('os.environ',{'NETWORK_SSH_USER':'MOCK','NETWORK_SSH_PASSWORD':'MOCK'}),patch.object(sys,'argv',argv),patch('mcp_rpc.run_stdio') as run_stdio:
    bootstrap.main()
   result=backend.Collector.call_args.args[0]['defaults']
   self.assertEqual(result['alt_host_keys'],defaults.get('alt_host_keys',True))
   self.assertEqual(Path(result['alt_key_file']),Path(defaults.get('alt_key_file',root/'mcp/ssh/known_hosts')))
   self.assertEqual(result['system_host_keys'],defaults['system_host_keys'])
-  backend.run_stdio.assert_called_once()
+  run_stdio.assert_called_once()
   self.assertEqual(backend.Collector.call_args.args[0]['devices'],devices)
   if inventory:backend.load_inventory_csv.assert_called_once_with(config,str(root/'MOCK.csv'))
   else:backend.load_inventory_csv.assert_not_called()

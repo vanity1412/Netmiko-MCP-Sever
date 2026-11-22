@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
+from mcp_rpc import handle_rpc, make_tool_list
 from result_status import normalize_result
 from test_collector import Fake
 import test_execution_resume as resume_fixtures
@@ -90,7 +91,7 @@ class BatchContinueTests(unittest.TestCase):
         self.assertEqual(caught.exception.results[1]['status'], 'SKIPPED')
 
     def test_rpc_reports_partial_and_unsent_results(self):
-        reply = b.handle_rpc({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{
+        reply = handle_rpc({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{
             'name':'ssh_execute_many','arguments':{'target':'fixture',
             'commands':['show system bad','show version']}}}, self.c)
         self.assertTrue(reply['result']['isError'])

@@ -10,6 +10,7 @@ MCP = Path(__file__).resolve().parents[1] / 'mcp'
 sys.path.insert(0, str(MCP))
 import scan
 import collector_backend as backend
+from mcp_rpc import handle_rpc, make_tool_list
 
 
 class ScanLockTests(unittest.TestCase):
@@ -60,7 +61,7 @@ class ScanLockTests(unittest.TestCase):
 class ToolContractTests(unittest.TestCase):
     def test_all_ten_schemas_match_reviewed_contract(self):
         actual = [{'name': t['name'], 'inputSchema': t['inputSchema']}
-                  for t in backend.make_tool_list()]
+                  for t in make_tool_list()]
         expected = json.loads((MCP.parent / 'tests/tool-schema-v1.json').read_text(encoding='utf-8'))
         self.assertEqual(len(actual), 10)
         self.assertEqual(actual, expected)
@@ -75,7 +76,7 @@ class ToolContractTests(unittest.TestCase):
             import jsonschema
         except ImportError:
             self.skipTest('Optional JSON Schema validator is not installed')
-        tools = {t['name']: t['inputSchema'] for t in backend.make_tool_list()}
+        tools = {t['name']: t['inputSchema'] for t in make_tool_list()}
         examples = {
             'ssh_execute': {'target': 'fixture', 'command': 'show version'},
             'ssh_execute_many': {'target': 'fixture', 'commands': ['show version']},
