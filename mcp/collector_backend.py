@@ -3145,6 +3145,12 @@ class Collector:
         self._request.command_sent = False
         conn._network_command_sent = False
         timeout = min(timeout, self._checkpoint())
+        if getattr(conn, '_network_awaiting_input', False) and not allow_reply:
+            error = CollectionError({'error': 'SessionAwaitingInput', 'error_category': 'awaiting_input',
+                                     'error_stage': 'command', 'awaiting_input': True, 'retryable': False,
+                                     'message': 'Session awaits an explicit reply via ssh_interact'})
+            error._network_keep_session = True
+            raise error
         if self.execution_policy in ('read_only', 'operational'):
             driver = getattr(self._request, 'resolved_driver', '') or ''
             try:
@@ -3155,12 +3161,6 @@ class Collector:
             except CollectionError as exc:
                 exc._network_keep_session = True
                 raise
-        if getattr(conn, '_network_awaiting_input', False) and not allow_reply:
-            error = CollectionError({'error': 'SessionAwaitingInput', 'error_category': 'awaiting_input',
-                                     'error_stage': 'command', 'awaiting_input': True, 'retryable': False,
-                                     'message': 'Session awaits an explicit reply via ssh_interact'})
-            error._network_keep_session = True
-            raise error
         pattern = expect_string or getattr(conn, "_network_prompt_regex", None)
         if pattern:
             if len(pattern) > 1000:
