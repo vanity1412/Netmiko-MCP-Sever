@@ -1,5 +1,6 @@
 """Preparation/timing boundaries with deterministic CLI transcripts, no SSH."""
 import json
+from contextlib import ExitStack
 from pathlib import Path
 import sys
 import tempfile
@@ -7,6 +8,8 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
@@ -32,9 +35,10 @@ class PreparationChannel(JunosChannel):
 class PreparationTimingTests(unittest.TestCase):
     def setUp(self):
         self.clock = VirtualClock()
-        context = patch.object(b, 'time', SimpleNamespace(monotonic=self.clock.now, sleep=self.clock.sleep, time=time.time))
-        context.start()
-        self.addCleanup(context.stop)
+        context = patch_collector_clock(b, SimpleNamespace(monotonic=self.clock.now, sleep=self.clock.sleep, time=time.time))
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(context)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -53,7 +57,7 @@ class PreparationTimingTests(unittest.TestCase):
                 started = self.clock.now()
                 conn = self.prepare(responses)
                 self.assertGreaterEqual(self.clock.now() - started, 4.5)
-                self.assertEqual(conn.writes, [cmd + '\n' for cmd in SETUP_COMMANDS])
+                self.assertEqual(conn.writes, [SETUP_COMMANDS[0], '\n', SETUP_COMMANDS[1], '\n', SETUP_COMMANDS[2]+'\n'])
                 self.assertEqual(conn._network_prompt_text, 'noc@router>')
                 self.assertEqual(conn.base_prompt, 'noc@router')
 
@@ -110,7 +114,7 @@ class PreparationTimingTests(unittest.TestCase):
                         result = c.execute('local', 'show version')
                         self.assertTrue(result['ok'], result)
                         record = result['junos_preparation'][0]
-                        self.assertEqual(record['output'], initial)
+                        self.assertEqual(record['output'], width + '\n' + initial)
                         self.assertIn(late, record['resync_output'])
                         self.assertNotIn(ACKS[width], result['output'])
                         self.assertEqual(conn.submitted, [width, 'show cli', 'show version'])
@@ -118,12 +122,12 @@ class PreparationTimingTests(unittest.TestCase):
                         with self.assertRaises(b.CollectionError) as caught:
                             c.execute('local', 'show version')
                         result = c.failure_result(caught.exception, 'local', 'show version')
-                        self.assertEqual(result['output'], initial)
+                        self.assertEqual(result['output'], width + '\n' + initial)
                         self.assertEqual(result['resync_output'], late)
                         self.assertIs(result['command_sent'], False)
                         self.assertEqual(result['execution_state'], 'NOT_SENT')
                         self.assertEqual(conn.submitted, [width])
-                        self.assertEqual(conn.writes, [width + '\n', '\x03'])
+                        self.assertEqual(conn.writes, [width, '\n', '\x03'])
 
     def test_junos_width_settling_rejects_extra_data_and_keeps_it(self):
         width = SETUP_COMMANDS[0]
@@ -159,7 +163,7 @@ class PreparationTimingTests(unittest.TestCase):
         for enabled in (False, True):
             with self.subTest(enabled=enabled):
                 first = PreparationChannel(self.clock, {width: 'error: permission denied'})
-                first.echo = lambda command: command + ' wrong'
+                first.echo = lambda command: command + ' wrong' if command == 'show cli' else command
                 second = PreparationChannel(self.clock, {})
                 c = self.batch_collector(first, second)
                 c.defaults['junos_minimal_recovery'] = enabled
@@ -240,7 +244,7 @@ class PreparationTimingTests(unittest.TestCase):
                     self.assertEqual(first.submitted, [width])
                     self.assertTrue(first.remote_conn.closed)
                     self.assertEqual(result['recovery_attempts'], 1)
-                    self.assertEqual(result['previous_attempt']['output'], diagnostic)
+                    self.assertEqual(result['previous_attempt']['output'], width + '\n' + diagnostic)
                     self.assertEqual(len(attempts), 2)
                     for key in ('host', 'port', 'device_type', 'ssh_strict', 'alt_key_file', 'username', 'password'):
                         self.assertEqual(attempts[0][key], attempts[1][key])
@@ -346,7 +350,7 @@ class PreparationTimingTests(unittest.TestCase):
         attempt, = record['attempts']
         result = attempt['result']
         self.assertEqual(result['recovery_attempts'], 1)
-        self.assertEqual(result['previous_attempt']['output'], 'first preparation output\n')
+        self.assertEqual(result['previous_attempt']['output'], width + '\nfirst preparation output\n')
         self.assertEqual([item['status'] for item in result['results']], ['CLI_ERROR', 'SKIPPED'])
 
     def test_junos_cli_setup_error_with_valid_prompt_keeps_existing_preparation_contract(self):
@@ -371,12 +375,12 @@ class PreparationTimingTests(unittest.TestCase):
         with self.assertRaises(b.CollectionError) as caught:
             JuniperBase.session_preparation(conn)
         self.assertEqual(caught.exception.details['error_category'], 'read_timeout')
-        self.assertEqual(conn.writes, [SETUP_COMMANDS[0] + '\n', '\x03'])
+        self.assertEqual(conn.writes, [SETUP_COMMANDS[0], '\n', '\x03'])
 
     def test_complete_syntax_error_uses_prompt_event_without_echo_deadline(self):
         started = self.clock.now()
         conn = self.prepare({SETUP_COMMANDS[0]: [(0, 'set cli screen-width511\n  ^\nsyntax error, expecting <command>.\nnoc@router>')]})
-        self.assertLess(self.clock.now() - started, 1.1)
+        self.assertLess(self.clock.now() - started, 1.4)
         self.assertEqual(conn.submitted, [SETUP_COMMANDS[0], 'show cli'])
 
     def test_syntax_without_prompt_waits_for_late_completion_within_budget(self):
@@ -425,7 +429,8 @@ class PreparationTimingTests(unittest.TestCase):
                 self.assertIn('bằng chứng', result['output'])
                 self.assertIn('secret-value', result['output'])
                 self.assertEqual(result['preparation_command'], command)
-                self.assertEqual(conn.writes, [command + '\n'] + (['\x03'] if driver == 'juniper_junos' else []))
+                expected_writes = [command, '\n', '\x03'] if driver == 'juniper_junos' else [command + '\n']
+                self.assertEqual(conn.writes, expected_writes)
 
     def test_unrecognized_question_with_timing_preserves_output_without_success_or_replay(self):
         question = 'Chọn thao tác\nSelect maintenance slot (A/B):'

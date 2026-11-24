@@ -19,8 +19,9 @@ là bằng chứng người dùng cung cấp; chưa được chạy lại hoặc
 
 ## Hành vi
 
-- Giữ đường bình thường: ba prep theo thứ tự cũ, cùng deadline, không thêm
-  `show cli` hoặc echo settle khi ACK chuẩn xác nhận từng setting.
+- Phiên bình thường gửi ba lệnh chuẩn bị theo thứ tự hiện có. Reader kiểm tra
+  echo của từng lệnh trước Enter cho đến khi ACK xác nhận complete-on-space đã
+  tắt. ACK chuẩn cho cả ba lệnh cho phép bỏ qua probe `show cli`.
 - Khi prep lỗi hoặc ACK chưa xác nhận, probe `show cli` một lần sau boundary
   operational sạch. Không gửi lại prep đã lỗi. Các prep còn lại được bỏ qua
   bằng capability đã biết hoặc thay bằng exact echo guard và pager reader.
@@ -37,9 +38,10 @@ là bằng chứng người dùng cung cấp; chưa được chạy lại hoặc
   Cần cancel echo rõ ràng, đúng operational prompt, không question và ổn định
   ít nhất 300 ms. Prompt cũ đến trễ hoặc chuỗi `^C` trong payload không đủ.
   Không có bằng chứng thì dừng; không retry prep hay gửi Enter để chữa mismatch.
-- Syntax error hoàn chỉnh cùng prompt được reader xử lý sau quiet period hiện
-  có, không chờ echo deadline 5 giây. Syntax chưa có prompt vẫn chờ dữ liệu
-  trong ngân sách cũ. Không đổi verifier/deadline chung cho lệnh nghiệp vụ.
+- Reader xử lý syntax error hoàn chỉnh sau khi prompt ổn định. Nếu prompt chưa
+  xuất hiện, reader tiếp tục chờ trong cửa sổ phản hồi 5 giây sau Enter. Với
+  lệnh chuẩn bị có echo guard, bước kiểm tra echo và cửa sổ phản hồi cùng dùng
+  ngân sách tối đa 10 giây, trong giới hạn deadline của yêu cầu.
 - Probe không xác nhận capability nhưng kết thúc ở boundary an toàn vẫn cho
   phép lệnh chính đi qua strict echo guard. Lỗi lệnh chính vẫn là CLI_ERROR;
   prep advisory không biến output thiếu, pager thiếu hoặc echo sai thành SUCCESS.

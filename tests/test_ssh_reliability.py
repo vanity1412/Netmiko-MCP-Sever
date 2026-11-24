@@ -349,6 +349,11 @@ class LocalSSHServer:
                     buffer = ''
                     channel.sendall(('^C\r\n' + self.prompt).encode())
                     continue
+                if getattr(self, 'echo_prep_input', False):
+                    if data.startswith('set cli ') and not data.endswith(('\r', '\n')):
+                        channel.sendall(data.encode())
+                    elif buffer.startswith('set cli ') and data.startswith(('\r', '\n')):
+                        channel.sendall(b'\r\n')
                 buffer += data.replace('\r', '\n')
                 while '\n' in buffer:
                     command, buffer = buffer.split('\n', 1)
@@ -523,7 +528,7 @@ class RealSSHTests(unittest.TestCase):
         self.assertEqual(len(keys), 8)
         self.assertTrue(all(keys.check(f'host-{i}', self.key) for i in range(8)))
 
-    def test_real_vendor_preparation_without_echo(self):
+    def test_real_vendor_preparation_and_command_without_echo(self):
         vendors = [('cisco_ios', 'router#', 'show version', 'Cisco IOS Software'),
                    ('cisco_xr', 'RP/0/RP0/CPU0:router#', 'show version', 'Cisco IOS XR'),
                    ('cisco_nxos', 'router#', 'show version', 'Cisco Nexus NX-OS'),
@@ -535,6 +540,7 @@ class RealSSHTests(unittest.TestCase):
                 self.server = LocalSSHServer(self.key)
                 self.addCleanup(self.server.close)
                 self.server.prompt = prompt
+                self.server.echo_prep_input = dtype == 'juniper_junos'
                 self.server.responses[command] = response
                 c = self.collector(dtype)
                 result = c.execute('local', command, read_timeout=3)

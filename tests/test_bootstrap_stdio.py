@@ -26,6 +26,7 @@ class BootstrapStdioTests(unittest.TestCase):
                 server = LocalSSHServer(self.key)
                 try:
                     server.prompt = 'noc@router>'
+                    server.echo_prep_input = True
                     server.responses['show version'] = 'Junos: 23.4R1'
                     server.responses['set cli screen-width 511'] = lambda ch: ch.sendall(
                         'bằng chứng loopback-only\n'.encode('utf-8'))
@@ -74,7 +75,7 @@ class BootstrapStdioTests(unittest.TestCase):
                         'request maintenance': lambda channel: channel.sendall(question.encode('utf-8'))})
                     def delayed_log(channel):
                         channel.sendall(('log header\n' + server.prompt).encode('utf-8'))
-                        time.sleep(.7)
+                        time.sleep(1)
                         channel.sendall(('\nremaining log data\n' + server.prompt).encode('utf-8'))
                     server.responses['show logging'] = delayed_log
                     config = {'defaults': {'execution_policy': 'read_write', 'device_type': 'linux', 'port': server.port,

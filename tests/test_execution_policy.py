@@ -37,6 +37,75 @@ class ExecutionPolicyTests(unittest.TestCase):
         result = handle_rpc(request, collector)['result']
         return json.loads(result['content'][0]['text'])
 
+    def test_junos_regex_escapes_preserve_the_command_and_real_pipes(self):
+        conn = fixtures.Fake()
+        conn.find_prompt = lambda: 'MOCK>'
+        conn.send_command = Mock(return_value='Device evidence\nMOCK>')
+        self.connect.side_effect = None
+        self.connect.return_value = conn
+        collector = self.collector()
+        for command in (r'show log messages | match "link\|down"',
+                        r'show log messages | match link\|down',
+                        r'show log messages | match "link|down"',
+                        'show log messages | match "A;B"',
+                        'show log messages | except "A&B" | count',
+                        'show log messages | find "`literal`"',
+                        'show log messages | mat "A;B|C&D"',
+                        r'show log messages | match "state=\"down\"|error" | count'):
+            with self.subTest(command=command):
+                result = self.call(collector, 'ssh_execute', target='fixture', command=command)
+                self.assertTrue(result['ok'], result)
+                self.assertEqual(conn.send_command.call_args.args[0], command)
+        conn.send_command.reset_mock()
+        for command in (r'show log messages | match "state=\"down\"|error" | save denied.txt',
+                        'show log messages | match "A;B|C&D" | sav denied.txt',
+                        'show log messages | match "A;B"; show version',
+                        'show log messages | match A&B',
+                        'show log messages | include "A&B"',
+                        r'show log messages | match "state=\"down',
+                        r'show log messages | match "link|down" | | count'):
+            with self.subTest(command=command):
+                result = self.call(collector, 'ssh_execute', target='fixture', command=command)
+                self.assertEqual(result['status'], 'POLICY_DENIED')
+        conn.send_command.assert_not_called()
+
+    def test_cisco_abbreviated_show_uses_full_wire_command(self):
+        conn = fixtures.Fake()
+        conn.find_prompt = lambda: 'MOCK#'
+        conn.send_command = Mock(side_effect=lambda cmd, **_: f'{cmd}\nDevice evidence\nMOCK#')
+        self.connect.side_effect = None
+        self.connect.return_value = conn
+        collector = self.collector(driver='cisco_ios')
+        with patch('netmiko.utilities.structured_data_converter', return_value='raw') as parse:
+            result = self.call(collector, 'ssh_execute', target='fixture', command='sh ip route', use_textfsm=True)
+        self.assertEqual(parse.call_args.kwargs['command'], 'show ip route')
+        batch = self.call(collector, 'ssh_execute_many', target='fixture', commands=['sho ip route'])
+        for command, item in (('sh ip route', result), ('sho ip route', batch['results'][0])):
+            self.assertTrue(item['ok'], item)
+            self.assertEqual(item['command'], command)
+            self.assertEqual(item['sent_command'], 'show ip route')
+            self.assertTrue(item['command_echo_verified'])
+        self.assertEqual([call.args[0] for call in conn.send_command.call_args_list], ['show ip route'] * 2)
+        for command in ('sh', 'shell', 'sh ip route | redirect flash:denied', 'sh ip route; configure'):
+            with self.subTest(command=command):
+                result = self.call(collector, 'ssh_execute', target='fixture', command=command)
+                self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.assertEqual(conn.send_command.call_count, 2)
+
+    def test_autodetect_checks_junos_regex_exception_against_actual_driver(self):
+        command = 'show log messages | match "A&B"'
+        self.assertTrue(b.operational_policy_allows(command, 'autodetect'))
+        collector = self.collector(driver='autodetect')
+        collector._custom_detect = Mock(return_value=Mock(autodetect=Mock(return_value='linux')))
+        conn = fixtures.Fake()
+        conn.send_command = Mock()
+        self.connect.side_effect = None
+        self.connect.return_value = conn
+        result = self.call(collector, 'ssh_execute', target='fixture', command=command)
+        self.assertEqual(result['status'], 'POLICY_DENIED')
+        self.assertFalse(result['command_sent'])
+        conn.send_command.assert_not_called()
+
     def test_read_only_reports_policy_and_allows_observation(self):
         for driver, command in (('juniper_junos', 'show configuration | display set | no-more'),
                                 ('cisco_ios', 'show running-config | include hostname'),

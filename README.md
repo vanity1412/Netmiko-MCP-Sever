@@ -231,7 +231,11 @@ Copy toàn bộ mcp/ khi cập nhật, gồm result_status.py; restart MCP. Ki�
 
 ## Reliability — 1.8.2
 
-Pool đầy sẽ chờ theo deadline/cancel, không đẩy session đang được sử dụng ra ngoài. Reader chờ prompt ổn định tối thiểu 300 ms; dữ liệu tiếp tục sau prompt nghi ngờ được giữ lại và báo chưa xác nhận đầy đủ. ANSI/pager được chuẩn hóa trước khi so sánh. Với `show logging`, `show log ...` và `display logbuffer`, prompt cộng quiet time đơn thuần không đủ chứng minh hoàn tất: reader trả `output_verification`, `output_complete=false`, giữ dữ liệu đã nhận và không tự retry. Log đã đủ cũng có thể bị đánh dấu chưa xác minh. Kênh đóng sau prompt cho phép xác nhận điểm kết thúc; các kiểm tra lỗi/ambiguity còn lại vẫn áp dụng. Không tăng quiet time hoặc timeout. Phần dữ liệu đến sau lúc reader kết thúc chưa được thu thập; không coi dữ liệu partial là toàn bộ log. Quy tắc này không bảo đảm phát hiện prompt giả trong mọi loại CLI khác.
+Khi pool đầy, yêu cầu chờ một session rảnh trong giới hạn deadline và cancel.
+
+Trên kênh SSH còn mở, reader quan sát prompt thiết bị ít nhất 1,1 giây từ lần khớp đầu tiên của lệnh thu thập. Reader cũng chờ ít nhất 300 ms kể từ dữ liệu cuối, hoặc lâu hơn theo cấu hình quiet time. `read_timeout` vẫn giới hạn cả hai mốc, nên timeout 1 giây có thể hết dù đã thấy prompt. Nếu transcript thay đổi sau prompt nghi ngờ, reader giữ dữ liệu đã nhận và có thể trả `output_verification` với `output_complete=false`.
+
+Prompt trong nội dung file hoặc log có thể giống hệt prompt thiết bị. Dữ liệu đến sau khi cửa sổ quan sát kết thúc vẫn có thể bị bỏ sót. Trên kênh còn mở, reader báo chưa xác minh khi lệnh đọc file kết thúc bằng prompt. Reader cũng báo chưa xác minh nếu lệnh đọc log chỉ trả echo và prompt. Kênh đóng sau prompt vẫn cho phép kiểm tra kết thúc dựa trên toàn bộ dữ liệu đã nhận.
 
 Scanner thêm `--device-timeout 240`: ngân sách chung cho fast và retry slow, mặc định bằng `--slow-timeout`. Resume giữ thời gian đã dùng; explicit retry mở chu kỳ mới. Không tự replay cấu hình chưa rõ kết quả. Timeout trực tiếp vẫn phụ thuộc lời gọi Netmiko/OS trả về; metadata `device_budget_exceeded` ghi nhận vượt trần. Xem [chi tiết và giới hạn](docs/SCAN.md).
 

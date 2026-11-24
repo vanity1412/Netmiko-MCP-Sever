@@ -1,4 +1,5 @@
 """Junos optional prep and pre-Enter echo guards, synthetic/loopback only."""
+from contextlib import ExitStack
 import importlib.util
 import os
 from pathlib import Path
@@ -7,6 +8,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'mcp'))
@@ -75,13 +78,15 @@ class JunosChannel:
 class JunosFallbackTests(unittest.TestCase):
     def setUp(self):
         self.clock = VirtualClock()
-        context = patch.object(b, 'time', SimpleNamespace(monotonic=self.clock.now, sleep=self.clock.sleep))
-        context.start(); self.addCleanup(context.stop)
+        context = patch_collector_clock(b, SimpleNamespace(monotonic=self.clock.now, sleep=self.clock.sleep))
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(context)
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         b.install_tolerant_preparation()
     def prepare(self, responses=None, echo=None):
         from netmiko.juniper.juniper import JuniperBase
-        conn = JunosChannel(self.clock, responses, (lambda cmd: cmd if cmd == 'show cli' else echo(cmd)) if echo else None)
+        conn = JunosChannel(self.clock, responses, (lambda cmd: cmd if cmd in (*PREP, 'show cli') else echo(cmd)) if echo else None)
         JuniperBase.session_preparation(conn)
         return conn
     def collector(self, conn):
@@ -90,16 +95,30 @@ class JunosFallbackTests(unittest.TestCase):
             connect_factory=lambda **kw: conn)
         self.addCleanup(c.shutdown)
         return c
-    def test_normal_prep_has_same_writes_and_no_guard_delay(self):
+    def test_normal_prep_guards_setup_until_autocomplete_is_disabled(self):
         conn = self.prepare()
         elapsed = self.clock.now() - 100
-        self.assertLess(elapsed, 1.1)
-        self.assertEqual(conn.writes, [cmd+'\n' for cmd in PREP])
+        self.assertLess(elapsed, 1.7)
+        self.assertEqual(conn.writes, [PREP[0], '\n', PREP[1], '\n', PREP[2]+'\n'])
         self.assertFalse(getattr(conn, '_network_junos_verify_echo', False))
         c = self.collector(conn)
         self.assertTrue(c.execute('mx', 'show version')['ok'])
         self.assertTrue(c.execute('mx', 'show version')['session_reused'])
         self.assertEqual(c.status()['connections_opened'], 1)
+
+    def test_malformed_width_echo_is_cancelled_before_enter_then_uses_fallback(self):
+        width = PREP[0]
+        conn = JunosChannel(self.clock, echo=lambda cmd: cmd.replace(' ', '') if cmd == width else cmd)
+        conn.cancel_input = True
+        b.junos_prepare_session(conn)
+        record = conn._network_junos_preparation[0]
+        self.assertEqual(record['reason'], 'junos_echo_mismatch')
+        self.assertFalse(record['command_sent'])
+        self.assertIn(width.replace(' ', ''), record['output'])
+        self.assertEqual(conn.writes[:2], [width, '\x03'])
+        self.assertEqual(conn.submitted, ['show cli'])
+        self.assertTrue(self.collector(conn).execute('mx', 'show version')['ok'])
+        self.assertEqual(conn.submitted, ['show cli', 'show version'])
     def test_permission_and_syntax_denials_are_optional_and_recorded(self):
         for diagnostic, reason in [('error: permission denied', 'permission_denied'),
                                    ('syntax error, expecting command.', 'syntax_error')]:
@@ -123,7 +142,8 @@ class JunosFallbackTests(unittest.TestCase):
         events = [(0, 'Screen width set to 511\n' + JunosChannel.prompt),
                   (.05, '\nlate response\n' + JunosChannel.prompt)]
         with self.assertRaises(b.CollectionError) as caught:
-            b.junos_prepare_session(JunosChannel(self.clock, {PREP[0]: events}, echo=lambda cmd: 'show clisomething'))
+            b.junos_prepare_session(JunosChannel(self.clock, {PREP[0]: events},
+                echo=lambda cmd: 'show clisomething' if cmd == 'show cli' else cmd))
         details = caught.exception.details
         self.assertEqual(details['error_reason'], 'junos_echo_mismatch')
         self.assertEqual(details['preparation_command'], 'show cli')
@@ -185,7 +205,7 @@ class JunosFallbackTests(unittest.TestCase):
             with self.subTest(command=malformed):
                 started = self.clock.now()
                 conn = self.prepare({PREP[0]: malformed + '\n                      ^\nsyntax error, expecting <command>.'})
-                self.assertLess(self.clock.now() - started, 1.1)
+                self.assertLess(self.clock.now() - started, 1.4)
                 self.assertEqual(conn.submitted, [PREP[0], 'show cli'])
                 self.assertEqual(conn._network_junos_capabilities['screen_width'], 511)
                 self.assertFalse(conn._network_junos_capabilities['paging_disabled'])
@@ -240,7 +260,8 @@ class JunosFallbackTests(unittest.TestCase):
         self.assertNotIn('show cli', conn.submitted)
 
     def test_single_ctrl_c_cancels_pending_probe_without_enter(self):
-        conn = JunosChannel(self.clock, {PREP[0]: 'syntax error'}, echo=lambda cmd: 'showcli')
+        conn = JunosChannel(self.clock, {PREP[0]: 'syntax error'},
+            echo=lambda cmd: 'showcli' if cmd == 'show cli' else cmd)
         conn.cancel_input = True
         b.junos_prepare_session(conn)
         self.assertEqual(conn.submitted, [PREP[0]])  # Probe was typed, never entered.
@@ -290,7 +311,7 @@ class JunosFallbackTests(unittest.TestCase):
             conn.events.append((self.clock.now() + .7, command[5:]))
             return command[:5]
         conn.echo = delayed_echo
-        result = self.collector(conn).execute('mx', 'show version', read_timeout=2)
+        result = self.collector(conn).execute('mx', 'show version', read_timeout=3)
         self.assertTrue(result['ok'], result)
         self.assertEqual(conn.submitted.count('show version'), 1)
 
@@ -391,9 +412,13 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
         owner = self
         self.mutate = False
         self.repaint = False
+        self.mutate_width = False
         def echo_server(channel, size):
             data = original(channel, size)
             if channel.transport in owner.server.transports and data:
+                if owner.mutate_width:
+                    width = PREP[0].encode()
+                    data = data.replace(width, width.replace(b' ', b''))
                 echoed = data.replace(b'show version', b'show version detail') if owner.mutate else data
                 if owner.repaint:
                     echoed = data.replace(b'show version', b'show versiox\r\x1b[Kshow version')
@@ -404,6 +429,16 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
     def collector(self, driver):
         from test_ssh_reliability import RealSSHTests
         return RealSSHTests.collector(self, driver)
+
+    def test_width_mutation_on_ssh_is_cancelled_without_submission(self):
+        self.mutate_width = True
+        collector = self.collector('juniper_junos')
+        result = collector.execute('local', 'show version', read_timeout=3)
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.server.commands, ['show cli', 'show version'])
+        record = result['junos_preparation'][0]
+        self.assertEqual(record['reason'], 'junos_echo_mismatch')
+        self.assertFalse(record['command_sent'])
     def test_direct_denied_prep_reuses_verified_session(self):
         c = self.collector('juniper_junos')
         for _ in range(2):

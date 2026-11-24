@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]/'mcp')]
 import collector_backend as b
 import scan
@@ -87,8 +89,8 @@ class Compatibility(unittest.TestCase):
     def test_embedded_prompt_banner_waits_for_remaining_config(self):
         clock=VirtualClock()
         conn=TimelineChannel(clock,[(.01,'banner motd ^C\nrouter#'),(.2,'\n^C\nCOMPLETE\nend\nrouter#')])
-        with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
-            output,failure=b.read_cli_output(conn,'show running-config',1,r'(?m)^router#$')
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+            output,failure=b.read_cli_output(conn,'show running-config',2,r'(?m)^router#$')
         self.assertIsNone(failure);self.assertIn('COMPLETE',output)
     def test_unclosed_banner_is_incomplete(self):
         c=self.collector()

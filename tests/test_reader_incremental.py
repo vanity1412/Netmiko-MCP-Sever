@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from collector_test_clock import patch_collector_clock
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
 from test_ssh_scenarios import TimelineChannel, VirtualClock
@@ -17,7 +19,7 @@ class IncrementalReaderTests(unittest.TestCase):
         conn = TimelineChannel(clock, events)
         conn._network_prompt_text = 'router#'
         conn._network_prompt_regex = r'(?m)^router#$'
-        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
             result = b.read_cli_output(conn, command, timeout, pattern)
         return result, conn
 
@@ -54,6 +56,22 @@ class IncrementalReaderTests(unittest.TestCase):
         self.assertEqual(len(reads), 1)
         self.assertEqual(conn.writes, ['show data | display xml\n'])
 
+    def test_one_second_continuation_is_preserved_and_rejected(self):
+        first = 'body\nrouter#'
+        remainder = '\nlate payload\nrouter#'
+        (output, failure), conn = self.read('show data', [(0, first), (1, remainder)])
+        self.assertEqual(output, first + remainder)
+        self.assertEqual(failure['error_reason'], 'prompt_candidate_continuation')
+        self.assertFalse(failure['retryable'])
+        self.assertEqual(conn.writes, ['show data\n'])
+
+    def test_regex_pipe_does_not_activate_xml_guard(self):
+        output = '<unclosed text from log>\nrouter#'
+        command = r'show log messages | match "state=\"down\" | display xml"'
+        (actual, failure), _ = self.read(command, [(0, output)])
+        self.assertEqual(actual, output)
+        self.assertIsNone(failure)
+
     def test_open_xml_timeout_and_eof_keep_all_received_data(self):
         for ending in ([], [(.1, None)]):
             with self.subTest(eof=bool(ending)):
@@ -67,7 +85,7 @@ class IncrementalReaderTests(unittest.TestCase):
         conn = TimelineChannel(clock, [(0, 'body\nrouter#'), (.1, '\nlate bytes')])
         def callback(data):
             if 'late' in data: raise OSError('fixture sink failure')
-        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
             output, failure = b.read_cli_output(conn, 'show data', 2, r'(?m)^router#$', on_data=callback)
         self.assertEqual(output, 'body\nrouter#\nlate bytes')
         self.assertIsNotNone(failure)

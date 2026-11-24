@@ -9,6 +9,8 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mcp'))
 import collector_backend as b
 import scan
@@ -23,7 +25,7 @@ class ReaderCompletionTests(unittest.TestCase):
                 with self.subTest(command=command, delay=delay):
                     clock = VirtualClock()
                     conn = TimelineChannel(clock, [(0, 'router#'), (delay, '\nVersion payload\nrouter#')])
-                    with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+                    with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
                         output, failure = b.read_cli_output(conn, command, 2, r'(?m)^router#$')
                     self.assertIsNone(failure)
                     self.assertIn('Version payload', output)
@@ -41,8 +43,8 @@ class ReaderCompletionTests(unittest.TestCase):
                                               'device_type': 'cisco_ios'}},
                                 connect_factory=lambda **kw: next(connections))
                 try:
-                    with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
-                        result = c.execute('192.0.2.1', 'show version', read_timeout=1, save_output=True)
+                    with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
+                        result = c.execute('192.0.2.1', 'show version', read_timeout=2, save_output=True)
                     self.assertEqual(result['status'], 'SUCCESS' if recovered else 'TIMEOUT')
                     self.assertEqual(result['recovery_attempts'], 1)
                     previous = result['previous_attempt']
@@ -58,8 +60,8 @@ class ReaderCompletionTests(unittest.TestCase):
     def test_empty_filtered_version_can_complete(self):
         clock = VirtualClock()
         conn = TimelineChannel(clock, [(0, 'router#')])
-        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
-            output, failure = b.read_cli_output(conn, 'show version | include NOMATCH', 1, r'(?m)^router#$')
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+            output, failure = b.read_cli_output(conn, 'show version | include NOMATCH', 2, r'(?m)^router#$')
         self.assertEqual(output, 'router#')
         self.assertIsNone(failure)
 
@@ -73,7 +75,7 @@ class ReaderCompletionTests(unittest.TestCase):
                                           'device_type': 'cisco_ios'}},
                             connect_factory=lambda **kw: next(sessions))
             try:
-                with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
+                with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)):
                     result = c.execute('192.0.2.1', 'show version', read_timeout=1)
                 self.assertEqual(result['status'], 'CONNECT_ERROR')
                 self.assertEqual(result['recovery_skipped'], 'cli_context_changed')
@@ -88,7 +90,7 @@ class ReaderCompletionTests(unittest.TestCase):
         for command in ('show logging','show log messages','display logbuffer'):
             with self.subTest(command=command):
                 clock=VirtualClock(); conn=TimelineChannel(clock,[(0,'row\nrouter#'),(.02,None)])
-                with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+                with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
                     output,failure=b.read_cli_output(conn,command,2,r'(?m)^router#$')
                 self.assertIsNone(failure)
                 self.assertEqual(output,'row\nrouter#')
@@ -99,7 +101,7 @@ class ReaderCompletionTests(unittest.TestCase):
             c=b.Collector({'defaults':{'output_dir':directory,'session_sweep_seconds':0,
                                       'device_type':'cisco_ios'}},connect_factory=lambda **kw:conn)
             try:
-                with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+                with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
                     result=c.execute('192.0.2.1','show logging',read_timeout=2)
                 self.assertFalse(result['ok'])
                 self.assertFalse(result['output_complete'])
@@ -113,15 +115,15 @@ class ReaderCompletionTests(unittest.TestCase):
     def test_prompt_inside_file_output_cannot_certify_completion(self):
         clock = VirtualClock()
         conn = TimelineChannel(clock, [(0, 'first record\nrouter#'), (.7, '\nlast record\nrouter#')])
-        with patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep)):
             output, failure = b.read_cli_output(conn, 'more flash:diag.txt', 2, r'(?m)^router#$')
-        self.assertEqual(output, 'first record\nrouter#')
+        self.assertEqual(output, 'first record\nrouter#\nlast record\nrouter#')
         self.assertEqual(failure['error_reason'], 'file_prompt_ambiguity')
         self.assertFalse(failure['retryable'])
 
     def test_late_log_rows_retained_but_not_certified(self):
         clock=VirtualClock();conn=TimelineChannel(clock,[(0,'historical data\nrouter#'),(.2,'\nLATE DATA\nrouter#')])
-        with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
             output,failure=b.read_cli_output(conn,'show version',2,r'(?m)^router#$')
         self.assertIn('LATE DATA',output)
         self.assertEqual(failure['error_category'],'output_verification')
@@ -129,7 +131,7 @@ class ReaderCompletionTests(unittest.TestCase):
         self.assertEqual(conn.writes,['show version\n'])
     def test_slow_log_timeout_keeps_partial_data(self):
         clock=VirtualClock();conn=TimelineChannel(clock,[(0,'row\nrouter#'),(.2,'\nmore rows')])
-        with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
             output,failure=b.read_cli_output(conn,'display logbuffer',.5,r'(?m)^router#$')
         self.assertIn('more rows',output)
         self.assertEqual(failure['error_category'],'read_timeout')

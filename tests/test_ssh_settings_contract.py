@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from collector_test_clock import patch_collector_clock
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mcp'))
 import collector_backend as b
 from mcp_rpc import handle_rpc, make_tool_list
@@ -79,7 +81,7 @@ class SSHSettingsContractTests(unittest.TestCase):
         first = TimelineChannel(clock, [(0, 'first partial\n')])
         second = TimelineChannel(clock, [(0, 'second partial\n')])
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(b, 'time', SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)), \
+                patch_collector_clock(b, SimpleNamespace(monotonic=clock.now, sleep=clock.sleep, time=time.time)), \
                 patch('netmiko.ConnectHandler', side_effect=[first, second]) as connect:
             with readonly_client.CLIConnection(host='192.0.2.1', device_type='cisco_ios', output_dir=directory) as client:
                 with self.assertRaises(RuntimeError) as caught:

@@ -13,6 +13,7 @@ from unittest.mock import patch
 import test_collector as f
 sys.path.insert(0,str((Path(__file__).resolve().parents[1] / 'mcp')))
 import collector_backend as b
+import detection
 from mcp_rpc import handle_rpc, make_tool_list
 import scan
 
@@ -74,12 +75,12 @@ class Performance(unittest.TestCase):
   self.assertIsNone(self.c._request.detection_timeout)
  def test_detection_worker_does_not_trust_banner_or_partial_output(self):
   fake=f.Fake()
-  with patch('netmiko.ConnectHandler',return_value=fake),patch.object(b,'read_cli_output',return_value=('JUNOS login banner\nshow version\nPARTIAL',None)) as reader:
+  with patch('netmiko.ConnectHandler',return_value=fake),patch.object(detection,'read_cli_output',return_value=('JUNOS login banner\nshow version\nPARTIAL',None)) as reader:
    result=b.detection_worker({'host':'MOCK'})
   self.assertEqual(result['error_category'],'output_verification')
   self.assertEqual(reader.call_args.args[1],'show version');self.assertFalse(fake.alive)
  def test_detection_worker_verified_response_and_slow_read_budget(self):
-  with patch('netmiko.ConnectHandler',return_value=f.Fake()) as factory,patch.object(b,'read_cli_output',return_value=('show version\nJunos: 23.4R1\nMOCK>',None)) as reader:
+  with patch('netmiko.ConnectHandler',return_value=f.Fake()) as factory,patch.object(detection,'read_cli_output',return_value=('show version\nJunos: 23.4R1\nMOCK>',None)) as reader:
    result=b.detection_worker({'host':'MOCK','_probe_read_timeout':30})
   self.assertEqual(result['device_type'],'juniper_junos');self.assertEqual(reader.call_args.args[2],30)
   self.assertNotIn('_probe_read_timeout',factory.call_args.kwargs)

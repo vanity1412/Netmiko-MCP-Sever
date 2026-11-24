@@ -1,12 +1,13 @@
 """Deterministic fault matrix and seeded chunk-boundary replay (no device SSH)."""
 import concurrent.futures
+from contextlib import ExitStack
 from pathlib import Path
 import random
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from collector_test_clock import patch_collector_clock
 
 sys.path.insert(0, str((Path(__file__).resolve().parents[1] / 'mcp')))
 import collector_backend as backend
@@ -58,9 +59,10 @@ class TimelineChannel:
 class ScenarioTests(unittest.TestCase):
     def setUp(self):
         self.clock = VirtualClock()
-        self.time_patches = [patch.object(backend.time, 'monotonic', self.clock.now),
-                             patch.object(backend.time, 'sleep', self.clock.sleep)]
-        for context in self.time_patches: context.start(); self.addCleanup(context.stop)
+        clock = SimpleNamespace(monotonic=self.clock.now, sleep=self.clock.sleep)
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch_collector_clock(backend, clock))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -154,10 +156,18 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(conn.writes.count(' '), 3)
 
     def test_delay_and_false_prompt_from_other_host_do_not_truncate(self):
-        conn = TimelineChannel(self.clock, [(0, 'other-router#'), (.6, '\nmore data\n'), (1.2, 'router#')])
-        output, failure = backend.read_cli_output(conn, 'show version', 2, r'(?m)^router#$')
-        self.assertIsNone(failure)
-        self.assertEqual(output, 'other-router#\nmore data\nrouter#')
+        events = [(0, 'other-router#'), (.6, '\nmore data\n'), (1.2, 'router#')]
+        for timeout in (2, 3):
+            with self.subTest(timeout=timeout):
+                conn = TimelineChannel(self.clock, events)
+                started = self.clock.now()
+                output, failure = backend.read_cli_output(conn, 'show version', timeout, r'(?m)^router#$')
+                self.assertEqual(output, 'other-router#\nmore data\nrouter#')
+                if timeout == 2:
+                    self.assertEqual(failure['error_category'], 'read_timeout')
+                    self.assertAlmostEqual(self.clock.now() - started, timeout)
+                else:
+                    self.assertIsNone(failure)
 
     def test_stale_banner_is_drained_before_probe(self):
         conn = TimelineChannel(self.clock, [(0, 'Linux\nrouter#')], stale=['JUNOS old banner\nrouter#'])

@@ -30,6 +30,7 @@ if os.environ.get('READER_BENCHMARK_BACKEND'):
     spec.loader.exec_module(backend)
 else:
     import collector_backend as backend
+from collector_test_clock import patch_collector_clock
 from stress_resources import ResourceMonitor
 
 
@@ -137,7 +138,7 @@ def measure(size_bytes, chunk_bytes, kind, clock_mode='accelerated', profile_pat
     dummy = SimpleNamespace(_guard=threading.Lock(), _sessions={})
     profiler = cProfile.Profile() if profile_path else None
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patch.object(backend, 'time', clock))
+        stack.enter_context(patch_collector_clock(backend, clock))
         for name, owner, attribute in (
                 ('buffer_value', backend.OutputBuffer, 'value'),
                 ('clean_terminal', backend, 'clean_terminal'),

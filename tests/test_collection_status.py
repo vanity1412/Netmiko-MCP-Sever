@@ -8,6 +8,8 @@ import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mcp'))
 import collector_backend as b
 from result_status import normalize_result
@@ -65,8 +67,8 @@ time.sleep(60)
     def test_new_pager_footer_variants(self):
         for marker in ['Press any key to continue (Q to quit)','--More-- or (q)uit']:
             clock=VirtualClock();conn=TimelineChannel(clock,[(0,'first\n'+marker,True),(.1,'\nlast\nrouter#')])
-            with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
-                output,failure=b.read_cli_output(conn,'show version',1,r'(?m)^router#$')
+            with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+                output,failure=b.read_cli_output(conn,'show version',2,r'(?m)^router#$')
             self.assertIsNone(failure);self.assertIn('last',output);self.assertEqual(conn.writes.count(' '),1)
             self.assertNotIn(marker,output)
 

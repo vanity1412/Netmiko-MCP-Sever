@@ -9,6 +9,8 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from collector_test_clock import patch_collector_clock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mcp'))
 import collector_backend as b
 from mcp_rpc import handle_rpc, make_tool_list
@@ -22,8 +24,8 @@ class ReaderTests(unittest.TestCase):
         clock=VirtualClock();conn=TimelineChannel(clock,events,prompt=prompt)
         conn._network_prompt_text=prompt
         conn._network_prompt_regex=r'(?m)^'+__import__('re').escape(prompt)+r'$'
-        with patch.object(b,'time',SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
-            output,failure=b.read_cli_output(conn,command,1,conn._network_prompt_regex if expect is None else expect)
+        with patch_collector_clock(b, SimpleNamespace(monotonic=clock.now,sleep=clock.sleep)):
+            output,failure=b.read_cli_output(conn,command,2,conn._network_prompt_regex if expect is None else expect)
         return output,failure,conn
     def test_xml_prompt_inside_text_waits_for_closing_root(self):
         output,failure,_=self.read('show interfaces | display xml',
@@ -298,6 +300,7 @@ class RealConfigurationTests(unittest.TestCase):
         self.assertIn('late output',result['preceding_output'])
     def test_junos_configuration_mode_and_commit(self):
         self.server.prompt='noc@router>'
+        self.server.echo_prep_input = True
         def mode(prompt):
             def reply(ch):
                 self.server.prompt=prompt;ch.sendall(('\r\n'+prompt).encode())

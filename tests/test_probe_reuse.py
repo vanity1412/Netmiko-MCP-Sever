@@ -169,6 +169,7 @@ class ReuseOnly(unittest.TestCase):
                 self.server = fixtures.LocalSSHServer(self.key)
                 self.addCleanup(self.server.close)
                 self.server.prompt = prompt
+                self.server.echo_prep_input = driver == 'juniper_junos'
                 self.server.responses[command] = response
                 c = self.collector('autodetect')
                 result = c.execute('local', command, read_timeout=3)

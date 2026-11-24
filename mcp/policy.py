@@ -24,10 +24,15 @@ def safe_command(cmd: Any) -> str:
 
 
 def cli_pipeline(command: str) -> list[str]:
-    """Split CLI pipes outside quotes; preserve quoted regular expressions."""
+    """Split unquoted, unescaped pipes while retaining the original CLI text."""
     parts, start, quote = [], 0, None
+    escaped = False
     for index, char in enumerate(command):
-        if char in ('"', "'"):
+        if escaped:
+            escaped = False
+        elif char == '\\' and quote != "'":
+            escaped = True
+        elif char in ('"', "'"):
             if quote is None:
                 quote = char
             elif quote == char:
@@ -37,6 +42,8 @@ def cli_pipeline(command: str) -> list[str]:
             start = index + 1
     if quote:
         raise PermissionError("Unclosed CLI quote")
+    if escaped:
+        raise PermissionError("Incomplete CLI escape")
     parts.append(command[start:].strip())
     if any(not part for part in parts):
         raise PermissionError("Empty CLI pipeline")
@@ -76,6 +83,16 @@ _LINUX_BLOCKED_PROGRAMS = frozenset('''
     env command exec eval source . xargs awk gawk mawk timeout nohup nice ionice
     setsid screen tmux ssh telnet sftp scp ftp tftp rsync
 '''.split())
+_CLI_SEPARATORS = re.compile(r'[;&`]')
+_JUNOS_REGEX_STAGE = re.compile(
+    r'''(?:mat(?:ch?)?|exc(?:e(?:pt?)?)?|find?)\s+(?:(?P<quoted>"(?:[^"\\]|\\.)*")|[^\s"']+)''', re.I)
+
+
+def canonical_operational_command(command, driver):
+    """Use the full Cisco read verb so an abbreviated alias is never sent."""
+    if driver.startswith('cisco_') or driver == 'autodetect':
+        return re.sub(r'^(\s*)sho?(?=\s+\S)', r'\1show', command, count=1, flags=re.I)
+    return command
 
 
 def linux_operational_stage_allows(stage):
@@ -144,18 +161,24 @@ def operational_policy_allows(command, driver):
               else 'huawei' if driver.startswith('huawei') else None)
     if family is None and driver not in {'autodetect', 'generic_termserver', 'linux'}:
         return False
-    if not command.isprintable() or re.search(r'[;&`]', command):
+    if not command.isprintable():
         return False
     try:
-        head, *filters = cli_pipeline(command)
+        head, *filters = cli_pipeline(canonical_operational_command(command, driver))
     except PermissionError:
         return False
     if driver == 'linux':
         # Redirections write files; they are not blacklisted by program name.
-        return not re.search(r'[(){}!<>]', command) and all(
+        return not re.search(r'[(){}!<>;&`]', command) and all(
             linux_operational_stage_allows(stage) for stage in (head, *filters))
-    if any('|' in part for part in (head, *filters)):
+    if '|' in head or _CLI_SEPARATORS.search(head):
         return False
+    for stage in filters:
+        regex = _JUNOS_REGEX_STAGE.fullmatch(stage) if driver in {'juniper_junos', 'autodetect'} else None
+        if '|' in stage and not regex:
+            return False
+        if _CLI_SEPARATORS.search(stage) and (not regex or not regex['quoted']):
+            return False
 
     def matches_rule(text, rule):
         words = text.casefold().replace('"', '').replace("'", '').split()
