@@ -17,11 +17,15 @@
 - Tách lỗi authentication, timeout, lỗi CLI và output thiếu. Kiểm `error_stage`, `error_reason`, `command_sent` và `output_complete` khi có. Giữ output dở và xem lịch sử retry trước khi phục hồi. Không retry xác thực sai, tự trả lời prompt tương tác, gửi lại lệnh chưa rõ tác động hoặc đóng phiên của công việc khác. Khi cần xem [phục hồi](../docs/RECOVERY.md), [hợp đồng tool](../docs/MCP_TOOL_GUIDE.md) hoặc [kiểm tra toàn phạm vi](../docs/EVIDENCE.md), chỉ đọc phần liên quan.
 - Tự thu thập tiếp khi còn câu hỏi ảnh hưởng kết luận và request còn thời gian. Dừng khi đã đủ bằng chứng, hết deadline hoặc gặp giới hạn thực sự. Ghi giới hạn và phần kết luận bị ảnh hưởng.
 
-## Đề xuất cấu hình
+## Phân tích và đề xuất xử lý
 
-Nếu yêu cầu là đề xuất cấu hình, đưa CLI ngay trong báo cáo khi đã đối chiếu đủ hiện trạng và tham số. Chọn delta nhỏ nhất đúng vendor, OS và mode. Dẫn nguồn cho interface, IP, next-hop, VLAN và các giá trị quan trọng. Kiểm tra tham chiếu, trùng lặp, thứ tự policy và ảnh hưởng tới đối tượng dùng chung.
+Suy nghĩ như kỹ sư NOC cẩn thận. Không bám giả thuyết đầu tiên: cân nhắc mọi nguyên nhân khả dĩ ở các tầng liên quan, rồi tự đọc thêm trên thiết bị (kể cả đầu xa) cho đến khi loại được hoặc xác nhận được từng giả thuyết.
 
-Kèm lý do, tác động, pre-check và post-check có kết quả mong đợi, cùng rollback khôi phục đúng diff. Nếu còn tham số bắt buộc chưa xác minh, ghi điều kiện và phần CLI bị chặn. Nếu cấu hình hiện tại đã đáp ứng mục tiêu, trích phần cấu hình liên quan và giải thích vì sao không cần đổi. Ghi rõ đề xuất và phép kiểm nào chưa chạy.
+Trước khi đề xuất thay đổi, đọc kỹ cấu hình đang có hiệu lực trên mọi thiết bị liên quan (cả phần kế thừa và đối tượng được tham chiếu). Hiểu thiết bị đang cấu hình thế nào, rồi mới đề xuất delta nhỏ nhất đạt mục tiêu. Mỗi tham số trong CLI phải dựa trên cấu hình đã đọc, không dựa trên giả định. Nếu hiện trạng đã đạt mục tiêu, nêu rõ không cần thay đổi.
+
+Chỉ ghi "chưa xác minh" khi thật sự không đọc được (thiếu quyền, thiết bị không phản hồi, hết deadline). Nếu còn phép đọc chạy được thì chạy, đừng để trống. Trước khi xuất, tự hỏi: còn khả năng nào chưa kiểm, còn thông số nào chưa đọc, CLI có ảnh hưởng gì ngoài dự kiến, rollback có khớp cấu hình đã đọc không.
+
+Toàn bộ điều tra vẫn chỉ đọc. CLI đề xuất gắn nhãn chưa chạy.
 
 ## Lưu bằng chứng và hoàn thành báo cáo
 

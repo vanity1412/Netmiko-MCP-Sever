@@ -8,11 +8,13 @@ Dùng mã sự cố người dùng đã cung cấp. Nếu chưa có, tự tạo 
 
 ## Nội dung báo cáo
 
-- **Kết luận** ghi hiện trạng, nguyên nhân hoặc giả thuyết có căn cứ và mức độ tin cậy.
-- **Bằng chứng** ghi thiết bị, lệnh thực tế, output quan trọng, nguồn đầy đủ và ý nghĩa.
-- **Hướng xử lý** ghi phương án, CLI đề xuất đã đối chiếu, pre-check, post-check và rollback nếu cần.
-- **Chưa xác minh** ghi phần còn thiếu và ảnh hưởng đến quyết định.
-- **Nhật ký điều tra** ghi mục tiêu, nguồn, kết quả, phân tích và quyết định theo [workflow](../mcp/WORKFLOW.md).
+1. **Kết luận.** Ghi hiện trạng, nguyên nhân đã xác minh hoặc giả thuyết còn phù hợp. Nêu mức độ tin cậy và căn cứ.
+2. **Bằng chứng.** Ghi thiết bị, lệnh thực tế, trích đoạn output nguyên văn, ID hoặc đường dẫn tới bản đầy đủ và ý nghĩa. Đối chiếu đúng thiết bị, lệnh và ngữ cảnh trước khi dùng output để kết luận.
+3. **Hướng xử lý.** Nêu cấu hình hiện tại liên quan (trích nguyên văn, kèm ID bằng chứng), giả thuyết đã kiểm và kết quả, phương án chọn và lý do. CLI đề xuất theo từng thiết bị, tách PRE-CHECK, APPLY, POST-CHECK, ROLLBACK, gắn nhãn chưa chạy.
+4. **Chưa xác minh.** Chỉ ghi phần thật sự không đọc được: đã thử gì, còn cần gì, ảnh hưởng tới kết luận.
+5. **Nhật ký điều tra.** Mỗi bước ghi mục tiêu hoặc giả thuyết → thiết bị và lệnh thực tế → output quan trọng và đường dẫn bằng chứng → phân tích ủng hộ, bác bỏ hoặc chưa đủ → quyết định tiếp theo và lý do. Ghi lỗi, timeout, cách xử lý và kết quả kiểm chứng lại. Phân biệt dữ liệu thật, mô phỏng, suy luận và đề xuất chưa chạy.
+
+Chỉ ghi thời gian và số đo thực. Nêu định nghĩa phép đo, đơn vị, khoảng lấy mẫu và cách tính khi áp dụng. Giữ nguyên nguồn và xuất xứ của bằng chứng. Dùng counter tích lũy để mô tả số đếm đã ghi nhận. Muốn đánh giá biến động hoặc nguyên nhân, cần đối chiếu thêm dữ liệu theo thời gian và trạng thái liên quan.
 
 Với lượt xem nhanh, viết `analysis.md` ngắn theo kết quả thực tế và chỉ đưa các bằng chứng của lệnh đã chạy. Dùng cùng bước dựng bundle và gửi email.
 
