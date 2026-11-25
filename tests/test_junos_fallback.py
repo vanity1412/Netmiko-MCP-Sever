@@ -430,6 +430,58 @@ class JunosLoopbackFallbackTests(unittest.TestCase):
         from test_ssh_reliability import RealSSHTests
         return RealSSHTests.collector(self, driver)
 
+    def check_long_paged_output(self, skip):
+        for cmd in PREP:
+            self.server.responses.pop(cmd)
+        payload = [[f'Interface {page}/{row:03d} ' + 'x' * 160 for row in range(180)]
+                   for page in range(3)]
+        advances = []
+
+        def pages(channel):
+            channel.settimeout(4)
+            for index, lines in enumerate(payload):
+                channel.sendall(('\r\n' + '\r\n'.join(lines)).encode())
+                if index < len(payload) - 1:
+                    channel.sendall(b'\r\n---(more)---')
+                    advances.append(channel.recv(1))
+            channel.sendall(('\r\n' + self.server.prompt).encode())
+
+        command = 'show interfaces'
+        self.server.responses[command] = pages
+        with patch.dict(os.environ, {'NETMIKO_JUNOS_SKIP_CLI_SETUP': '1' if skip else ''}):
+            if not skip:
+                del os.environ['NETMIKO_JUNOS_SKIP_CLI_SETUP']
+            collector = self.collector('juniper_junos')
+            result = collector.execute('local', command, read_timeout=8, save_output=True)
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['output_complete'])
+        self.assertEqual(advances, [b' ', b' '])
+        saved = (Path(collector.output_dir) / (result['output_id'] + '.txt')).read_text(encoding='utf-8')
+        body = saved[saved.index(payload[0][0]):]
+        self.assertEqual([line for line in body.splitlines() if line.strip()],
+                         [line for page in payload for line in page] + [self.server.prompt])
+        self.assertEqual(self.server.commands, [command] if skip else [*PREP, command])
+        if skip:
+            self.assertTrue(result['command_echo_verified'])
+            self.assertEqual(result['junos_preparation'], [
+                {'command': cmd, 'skipped': True, 'command_sent': False, 'reason': 'skipped_by_policy'}
+                for cmd in PREP])
+
+    def test_default_setup_preserves_long_paged_output(self):
+        self.check_long_paged_output(skip=False)
+
+    def test_skipped_setup_preserves_long_paged_output(self):
+        self.check_long_paged_output(skip=True)
+
+    def test_skipped_setup_rejects_changed_echo_before_enter(self):
+        self.mutate = True
+        with patch.dict(os.environ, {'NETMIKO_JUNOS_SKIP_CLI_SETUP': '1'}):
+            result = self.collector('juniper_junos').execute('local', 'show version', read_timeout=3)
+        self.assertFalse(result['ok'], result)
+        self.assertFalse(result['command_sent'], result)
+        self.assertEqual(result['error_reason'], 'junos_echo_mismatch')
+        self.assertEqual(self.server.commands, [])
+
     def test_width_mutation_on_ssh_is_cancelled_without_submission(self):
         self.mutate_width = True
         collector = self.collector('juniper_junos')

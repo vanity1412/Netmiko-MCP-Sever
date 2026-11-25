@@ -505,6 +505,8 @@ def junos_prepare_session(conn):
     pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
     conn._network_prompt_text, conn._network_prompt_regex = prompt, pattern
     conn._network_junos_verify_echo = True
+    skip_cli_setup = os.environ.get('NETMIKO_JUNOS_SKIP_CLI_SETUP', '').strip().lower() in {
+        '1', 'true', 'yes', 'on'}
     conn._network_junos_capabilities = {}
     conn._network_junos_preparation = []
     conn._network_junos_preparing = True
@@ -534,6 +536,10 @@ def junos_prepare_session(conn):
             return
 
         for command, field, desired, ack in steps:
+            if skip_cli_setup:
+                conn._network_junos_preparation.append({'command': command, 'skipped': True,
+                    'command_sent': False, 'reason': 'skipped_by_policy'})
+                continue
             caps = conn._network_junos_capabilities
             if adaptive:
                 known = field in caps and caps[field] == desired

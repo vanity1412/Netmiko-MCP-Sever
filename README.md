@@ -131,6 +131,8 @@ Các cờ trên không hoạt động độc lập với `ssh_mode`; `false` kh�
 
 Prep Junos tùy chọn có thể fallback khi CLI operational đồng bộ. Khi không tắt được complete-on-space, backend xác minh input chính xác trước Enter. Pager vẫn do reader xử lý. Xem [nguyên nhân, kiểm thử và giới hạn](docs/JUNOS_PREPARATION.md).
 
+Đặt `NETMIKO_JUNOS_SKIP_CLI_SETUP=1` trong môi trường của tiến trình MCP rồi khởi động lại MCP để bỏ qua ba lệnh `set cli` chuẩn bị trên các phiên Junos mới. Cờ mặc định tắt và chấp nhận `1`, `true`, `yes` hoặc `on`. Khi bật cờ, backend vẫn kiểm tra echo trước Enter và xử lý phân trang. Nếu echo sai hoặc hết thời gian chờ echo, backend dừng trước Enter.
+
 Lỗi prep chưa thể phục hồi an toàn và lỗi terminal-width Cisco trả `error_stage=preparation`, `ssh_authenticated=true`, `cli_ready=false`, `command_sent=false` cho lệnh nghiệp vụ chưa gửi. `output` giữ phản hồi preparation dở dang; chỉ che credential khi bật `redaction_enabled=true`; `preparation_command` chỉ rõ lệnh setup. Prep Junos lỗi không tự refresh driver suy ra từ cache.
 
 Profile/device hỗ trợ read_timeout, prompt_quiet_seconds, timing_quiet_seconds; tham số tool tường minh ưu tiên. Connection options gồm conn_timeout, auth_timeout, banner_timeout, key_file, passphrase, encoding, disable_sha2_fix, disabled_algorithms và ssh_config_file. Credential literal giữ nguyên; chuỗi ${ENV_NAME} nguyên vẹn lấy từ environment. auto_enable=true chủ động gọi enable cho Cisco bằng secret backend; mặc định false.
