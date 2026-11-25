@@ -86,6 +86,89 @@ name,ip,netmiko_device_type,profile
 BRANCH-01,192.0.2.1,cisco_ios,branch
 ```
 
+## Runbook trước khi quét fleet
+
+Chạy thử một nhóm nhỏ với cùng máy nguồn, inventory và file credential sẽ
+dùng cho lượt quét. Chọn mẫu theo driver, profile và đường truy cập OOB.
+Với nhóm Junos gặp lỗi prep hoặc echo, thử biến môi trường theo bằng chứng
+của nhóm đó. [Biến môi trường Junos](JUNOS_PREPARATION.md#biến-môi-trường-cho-lượt-quét-fleet)
+
+### Cấu hình Vertiv ACS8000
+
+Thêm override theo đúng alias CSV trong mục `devices` của file
+`mcp/devices.json` cục bộ. Loader giữ nguyên mục JSON khi alias trùng,
+nên điền đầy đủ host, cổng SSH và profile đã xác minh.
+
+```json
+{
+  "devices": {
+    "ACS8000-PILOT": {
+      "host": "192.0.2.10",
+      "port": 22,
+      "device_type": "terminal_server",
+      "fast_cli": false,
+      "profile": "oob_console"
+    }
+  }
+}
+```
+
+Thay alias, IP, cổng và tên profile bằng giá trị triển khai. Khai báo
+credential của profile trong file riêng. Khi chạy thử, dùng một lệnh đọc
+đã xác minh cho ACS8000 và kiểm tra prompt cuối `--:- / cli->` cùng
+`output_complete`. Với plan scanner, khai báo lệnh trong `commands`.
+Với `--all`, thêm nhóm lệnh `terminal_server` trong file truyền cho
+`--commands-file`. Cả scanner và validator đều thiếu nhóm lệnh mặc định
+cho driver này, nên xác minh ACS8000 bằng plan scanner riêng.
+
+### Xác minh profile trước khi quét
+
+1. Đối chiếu alias, host, cổng, driver và profile của từng nhóm. Profile
+   trong plan được ưu tiên, kế đến là profile trong mục thiết bị đã merge,
+   rồi `default`. Dùng cùng file cấu hình, CSV và credential cho bước
+   kiểm tra và lượt quét. Nếu dùng đường dẫn riêng, truyền cùng bộ
+   `--config`, `--inventory-csv` và `--credentials-file` cho các lệnh bên dưới.
+2. Chạy kiểm tra cấu hình cục bộ. Bước này phát hiện profile thiếu hoặc
+   cấu hình credential không đầy đủ. Xác minh đăng nhập cần một lượt SSH.
+
+   ```powershell
+   python mcp/bootstrap.py --config mcp/devices.json --inventory-csv input/device.csv --check
+   ```
+
+3. Dùng validator khi cần phân loại TCP và banner trước khi chạy SSH.
+   Lệnh dưới đây đo toàn inventory và ghi `tcp-results.json`. Thêm
+   `--execute` khi cả config và CSV dùng cho validator chỉ chứa các
+   driver có lệnh mặc định trong validator. Khi đó validator chạy lệnh
+   đọc trên một mẫu, dùng profile đã gán cho từng alias.
+
+   ```powershell
+   python mcp/validate_fleet.py --output output/FLEET-PREFLIGHT
+   ```
+
+4. Tạo `fleet-profile-pilot.json` với các alias cần kiểm tra và một lệnh
+   đọc phù hợp mỗi thiết bị. Bỏ trường `profile` trong plan để thử đúng
+   mapping của inventory. Ví dụ sau dành cho thiết bị có lệnh `show version`.
+
+   ```json
+   [
+     {"target": "EDGE-PILOT", "commands": ["show version"]}
+   ]
+   ```
+
+   Chạy plan từ máy nguồn dự kiến dùng để quét. Dùng thư mục output mới.
+
+   ```powershell
+   python mcp/scan.py --plan fleet-profile-pilot.json --output output/FLEET-PROFILE-PILOT --workers 2 --slow-workers 1 --execute
+   ```
+
+5. Đọc `results/<task_id>.json` và transcript. Kết quả lệnh đọc đầy đủ
+   xác nhận profile và quyền đọc cho alias đã thử. TCP mở hoặc banner hợp lệ
+   chỉ xác nhận đường kết nối. Với lỗi `authentication` hoặc `auth_method`,
+   xác minh lại tài khoản, phương thức và mapping với nguồn quản lý
+   credential. Với lỗi sau xác thực, kiểm tra prompt, quyền chạy lệnh và
+   output. Chỉ thử lại khi đã xác minh profile cần dùng. Tránh thử tuần tự
+   các profile để giảm nguy cơ khóa tài khoản AAA.
+
 ## Nhanh nhưng không làm đẹp tỷ lệ giả
 
 - Tổng worker mặc định16, tối đa32 và không vượt max_workers của collector; gồm lượt chậm mặc định4. Tối thiểu2 slot để có hai lane. Detection và collection cùng dùng semaphore SSH toàn collector. Một transport vẫn serialize từng lệnh.

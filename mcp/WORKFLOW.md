@@ -10,6 +10,11 @@
 - Khi gom nhiều lệnh đọc `show` hoặc `display` độc lập trên cùng thiết bị, truyền `"continue_on_error": true` cho `ssh_execute_many`. Với `ssh_parallel`, đặt cờ trong từng task có danh sách `commands` đáp ứng điều kiện này. Giữ `false` cho chuỗi lệnh phụ thuộc nhau hoặc khi có lệnh thay đổi trạng thái thiết bị.
 - Kiểm tra kết quả từng lệnh trong batch. Ghi nhận batch chưa thành công nếu còn lệnh lỗi hoặc chưa chạy. Khi kết nối lỗi hoặc output chưa hoàn chỉnh, dừng gửi lệnh trên kênh đó cho đến khi xác minh phiên đã sẵn sàng.
 
+## Chuẩn bị quét fleet
+
+- Đối chiếu alias, cổng SSH, driver và profile hiệu lực. Chạy thử một nhóm nhỏ từ cùng máy nguồn và với cùng cấu hình dự kiến dùng để quét fleet. [Xác minh profile trước khi quét](../docs/SCAN.md#xác-minh-profile-trước-khi-quét)
+- Với Junos, dùng bằng chứng prep và echo để chọn biến môi trường cho nhóm bị ảnh hưởng. Với Vertiv ACS8000, kiểm tra override `terminal_server` và `fast_cli: false`. [Biến môi trường Junos](../docs/JUNOS_PREPARATION.md#biến-môi-trường-cho-lượt-quét-fleet) · [Cấu hình ACS8000](../docs/SCAN.md#cấu-hình-vertiv-acs8000)
+
 ## Kiểm chứng như kỹ sư NOC
 
 - Lấy dữ liệu có thể ủng hộ hoặc bác bỏ giả thuyết đang ảnh hưởng quyết định. Đọc cấu hình running/effective của đối tượng cần xử lý, gồm phần kế thừa, policy và tham chiếu trực tiếp. Xác định nguồn, đích, chiều, VRF/RI và address family khi chúng chi phối luồng. Lần theo interface, neighbor, route, next-hop hoặc service reference để tìm đầu xa thật và kiểm chứng cấu hình hoặc trạng thái tại đó khi cần. Chỉ dùng thiết bị cùng vai trò đã xác minh làm đối chiếu.

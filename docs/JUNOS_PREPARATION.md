@@ -58,6 +58,40 @@ Không sửa authentication, session key/isolation, retry transport, driver sele
 10 tool schema hoặc cấu hình persistent. Ba lệnh prep chỉ đổi tùy chọn CLI của
 phiên. Transcript prep/probe/resync được giữ trong diagnostic hiện có.
 
+## Biến môi trường cho lượt quét fleet
+
+Giữ mặc định cho nhóm chạy được bằng prep chuẩn. Chỉ đặt biến cho tiến trình
+MCP hoặc scanner của nhóm cần chạy thử. Mọi phiên Junos mới trong tiến trình
+đó có thể chịu tác động.
+
+| Biến | Khi bật `=1` | Hành vi |
+|---|---|---|
+| `NETMIKO_JUNOS_SKIP_CLI_SETUP` | Khi đã tái hiện lỗi ở bước prep và thử thành công lệnh đọc với cài đặt CLI hiện có của tài khoản. | Luồng prep chuẩn bỏ ba lệnh `set cli` cho screen width, complete-on-space và screen length. Xác minh prompt ban đầu vẫn chạy. Nhánh phục hồi minimal vẫn dùng `show cli` nếu được chọn. |
+| `NETMIKO_JUNOS_TRUST_ECHO` | Khi transcript xác nhận thiết bị trong nhóm làm mất hoặc vẽ lại echo trước Enter, chẳng hạn khi `complete-on-space` bật. Đối chiếu lệnh đọc và output trên vài phiên mới trước khi mở rộng. | Bỏ xác minh echo trước Enter ở bước prep và các lệnh dùng cùng cơ chế bảo vệ. Reader vẫn kiểm tra prompt cuối và xử lý pager. |
+
+Nếu nhóm cần cả hai cách xử lý, đặt hai biến trong cùng cửa sổ PowerShell
+trước khi chạy plan thử. Với MCP, đặt biến trong cấu hình launcher rồi
+khởi động lại tiến trình để launcher truyền biến cho phiên mới.
+
+```powershell
+$env:NETMIKO_JUNOS_SKIP_CLI_SETUP = '1'
+$env:NETMIKO_JUNOS_TRUST_ECHO = '1'
+python mcp/scan.py --plan junos-pilot.json --output output/JUNOS-PILOT --workers 2 --slow-workers 1 --execute
+```
+
+Trong plan thử, dùng một lệnh nhận dạng như `show version` và một lệnh đọc
+đại diện có nhiều dòng. Kiểm tra đúng thiết bị, đúng nội dung, prompt cuối,
+`output_complete` và các trang output. Khi bỏ setup, chiều dài và chiều
+rộng màn hình phụ thuộc phiên hiện tại. Nếu transcript còn thiếu hoặc sai
+nội dung, dừng mở rộng và giữ bằng chứng để đối chiếu.
+
+Bỏ biến khỏi launcher hoặc khỏi cửa sổ PowerShell trước khi khởi động tiến
+trình cho nhóm dùng prep chuẩn.
+
+```powershell
+Remove-Item Env:NETMIKO_JUNOS_SKIP_CLI_SETUP, Env:NETMIKO_JUNOS_TRUST_ECHO -ErrorAction SilentlyContinue
+```
+
 ## Mở lại phiên khi đồng bộ thất bại
 
 Đặt `"junos_minimal_recovery": true` trong cấu hình thiết bị hoặc profile để
