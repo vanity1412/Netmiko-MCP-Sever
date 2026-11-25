@@ -127,6 +127,38 @@ def command_echo_line(command: str, output: str) -> int | None:
     return None
 
 
+@functools.lru_cache(maxsize=4096)
+def command_requires_payload(command: str) -> bool:
+    if not re.match(r'^\s*(?:show|display)\s+\S', command, re.I):
+        return False
+    try:
+        base, *pipeline = cli_pipeline(command)
+    except PermissionError:
+        return False  # Leave malformed command diagnostics to the CLI.
+    stages = [' '.join(stage.casefold().split()) for stage in pipeline]
+    if ' '.join(base.casefold().split()) == 'show version' and stages == ['include uptime']:
+        return True  # This query collects an uptime value.
+    return not any(stage.split()[0] in {'match', 'include', 'exclude', 'find', 'count', 'except', 'begin'}
+                   for stage in stages)
+
+
+def has_cli_payload(command: str, output: str) -> bool:
+    """Check a transcript with a verified final prompt without changing the evidence."""
+    body, _, prompt_line = output.rstrip().rpartition('\n')
+    prompt = ' '.join(prompt_line.split())
+    echo = ' '.join(command.split())
+    for raw_line in body.splitlines():
+        line = ' '.join(raw_line.split())
+        if not line or line == prompt or line == echo:
+            continue
+        if line.startswith(prompt) and line[len(prompt):].lstrip() == echo:
+            continue
+        if re.fullmatch(r'\{(?:master|backup|primary|secondary)(?::\d+)?\}', line):
+            continue
+        return True
+    return False
+
+
 def ending_matches(pattern: str, text: str) -> bool:
     ending = text.rstrip()
     match = None

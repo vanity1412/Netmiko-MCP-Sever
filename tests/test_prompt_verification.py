@@ -8,9 +8,11 @@ Also covers `error_reason` propagation and the normalized batch payload.
 import importlib.util
 import json
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'mcp'))
@@ -127,6 +129,56 @@ class PromptVerificationTests(unittest.TestCase):
                               command, 'CORE1#')
         self.assertEqual(failure['error_reason'], 'prompt_candidate_continuation')
         self.assertIn('unrelated data', output)
+
+
+class CollectorPayloadTests(unittest.TestCase):
+    def collect(self, command, transcript, *, interact=False):
+        with tempfile.TemporaryDirectory() as directory:
+            connection = types.SimpleNamespace(
+                device_type='cisco_ios', find_prompt=lambda: 'CORE1#',
+                is_alive=lambda: True, disconnect=lambda: None,
+                send_command=Mock(return_value=transcript),
+                send_command_timing=Mock(return_value=transcript),
+            )
+            collector = backend.Collector({'defaults': {
+                'device_type': 'cisco_ios', 'output_dir': directory,
+                'session_sweep_seconds': 0, 'execution_policy': 'read_write',
+            }}, connect_factory=lambda **_: connection)
+            try:
+                if interact:
+                    return collector.interact('192.0.2.1', [command])
+                return collector.execute('192.0.2.1', command)
+            finally:
+                collector.shutdown()
+
+    def assert_empty_output(self, command, transcript):
+        result = self.collect(command, transcript)
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['output_complete'])
+        self.assertEqual(result['error_category'], 'output_verification')
+        self.assertEqual(result['error_reason'], 'empty_output')
+        self.assertEqual(result['output'], transcript)
+
+    def test_uptime_with_only_prompt_is_incomplete(self):
+        self.assert_empty_output('show system uptime', 'CORE1#')
+
+    def test_filtered_version_uptime_requires_payload(self):
+        command = 'show version | include uptime'
+        self.assert_empty_output(command, f'CORE1#\nCORE1#{command}\nCORE1#')
+
+    def test_empty_interface_filter_still_succeeds(self):
+        command = 'show interfaces | match KHONGCO'
+        result = self.collect(command, f'{command}\nCORE1#')
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['output_complete'])
+
+    def test_version_with_only_prompt_is_incomplete(self):
+        self.assert_empty_output('show version', 'CORE1#')
+
+    def test_enter_only_interaction_still_succeeds(self):
+        result = self.collect('\n', 'CORE1#', interact=True)
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['steps'][0]['ok'])
 
 
 class ErrorReasonTests(unittest.TestCase):

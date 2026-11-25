@@ -64,7 +64,8 @@ from diagnostics import (
 from terminal_utils import (
     PAGER_RE, CONFIRM_RE, PERMISSION_DENIAL_RE, CLI_SYNTAX_RE,
     clean_terminal, last_prompt, platform_from_version, redact_text, redact_data,
-    command_echo_line, ending_matches, pending_interaction, config_banner_open,
+    command_echo_line, command_requires_payload, has_cli_payload, ending_matches,
+    pending_interaction, config_banner_open,
     output_container_open, XMLPrefixGuard, OutputBuffer, strip_pager_spans,
     dead_session
 )
@@ -1205,10 +1206,15 @@ class Collector:
         if re.match(r'^show\s+bgp\s+neighbors?\b', command.strip(), re.I) and re.search(r'(?m)^Peer:\s+', output):
             errors = [line for line in errors if not re.fullmatch(
                 r"\s*Error:\s+'[^'\n]+'\s+Sent:\s+\d+\s+Recv:\s+\d+\s*", line)]
-        if ending_matches(PAGER_RE.pattern, output) or pending_interaction(output):
+        pending = ending_matches(PAGER_RE.pattern, output) or pending_interaction(output)
+        if pending:
             complete = False
         echo = interactive or command_echo_line(command, output) is not None
         cli_ok = not bool(errors)
+        empty_output = bool(complete and cli_ok and command_requires_payload(command)
+                            and not has_cli_payload(command, output))
+        if empty_output:
+            complete = False
         denied = next((line for line in errors if PERMISSION_DENIAL_RE.search(line)), None)
         output = self.redact_output(output)
         size = len(output)
@@ -1223,10 +1229,12 @@ class Collector:
                 data['error_reason'] = ('permission_denied' if denied else
                                         'syntax_error' if any(CLI_SYNTAX_RE.search(line) for line in errors) else 'command_failed')
             else:
-                data['error_reason'] = ('pager_or_confirmation_pending'
-                                        if ending_matches(PAGER_RE.pattern, output) or pending_interaction(output)
+                data['error_reason'] = ('empty_output' if empty_output else
+                                        'pager_or_confirmation_pending' if pending
                                         else 'ending_prompt_not_verified')
-            data["message"] = self.scrub_error(denied or errors[0]) if errors else "Ending prompt not verified or pager/confirmation remains; output is incomplete"
+            data["message"] = (self.scrub_error(denied or errors[0]) if errors else
+                               "Command returned no payload" if empty_output else
+                               "Ending prompt not verified or pager/confirmation remains; output is incomplete")
         if save_output or size > self.inline_max_chars:
             try:
                 data["output_id"] = self._save_output(output, already_redacted=True)
@@ -1272,7 +1280,13 @@ class Collector:
                 result['sent_command'] = self.redact_output(sent_command)
         if driver is not None:
             result['driver'] = driver
-        awaiting = ((pending_interaction(clean_terminal(output)) and not output_container_open(command, output)) or (pattern and pattern != getattr(conn, '_network_prompt_regex', None) and ending_matches(pattern, clean_terminal(output)) and not result['output_complete'])) and not failure
+        terminal_output = clean_terminal(output)
+        awaiting = not failure and (
+            (pending_interaction(terminal_output) and not output_container_open(command, output))
+            or (pattern and pattern != getattr(conn, '_network_prompt_regex', None)
+                and ending_matches(pattern, terminal_output) and not result['output_complete']
+                and result.get('error_reason') != 'empty_output')
+        )
         conn._network_awaiting_input = bool(awaiting)
         if awaiting:
             result.update(awaiting_input=True, session_reusable=True, retryable=False)
