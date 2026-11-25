@@ -697,6 +697,11 @@ class Collector:
             prompt = getattr(conn, "_network_prompt_text", None)
             if not prompt and hasattr(conn, "find_prompt"):
                 prompt = last_prompt(conn.find_prompt())
+            if not prompt and params.get("device_type") == "terminal_server" and hasattr(conn, "write_channel"):
+                # Some console servers print the banner first; one newline yields the prompt.
+                conn.write_channel("\n")
+                time.sleep(0.5)
+                prompt = last_prompt(conn.find_prompt())
             if not prompt:
                 raise ValueError('CLI prompt could not be verified after connection')
             if prompt:

@@ -159,7 +159,7 @@ def operational_policy_allows(command, driver):
     }
     family = ('junos' if driver == 'juniper_junos' else 'cisco' if driver.startswith('cisco_')
               else 'huawei' if driver.startswith('huawei') else None)
-    if family is None and driver not in {'autodetect', 'generic_termserver', 'linux'}:
+    if family is None and driver not in {'autodetect', 'generic_termserver', 'terminal_server', 'linux'}:
         return False
     if not command.isprintable():
         return False
@@ -237,6 +237,8 @@ def is_operational_prompt(prompt, driver):
         return prompt.startswith('<') and prompt.endswith('>')
     if driver.startswith('cisco_'):
         return prompt.endswith(('#', '>')) and '(' not in prompt
+    if driver in ('terminal_server', 'generic_termserver'):
+        return prompt.endswith(('>', '#', '$', '%'))
     return driver == 'linux' and prompt.endswith(('#', '$'))
 
 

@@ -38,6 +38,15 @@ _JUNOS_TRACE_QUEUE = None
 _JUNOS_TRACE_THREAD = None
 
 
+def echo_guard_enabled():
+    """NETMIKO_JUNOS_TRUST_ECHO=1 skips the pre-Enter echo verification.
+
+    Needed for devices that drop input echo (complete-on-space); the command is
+    still sent once and the output is verified normally.
+    """
+    return os.environ.get('NETMIKO_JUNOS_TRUST_ECHO', '').strip().lower() not in {'1', 'true', 'yes', 'on'}
+
+
 def _junos_trace_writer(pending):
     """Best-effort stderr only; a blocked diagnostic pipe never blocks SSH.
 
@@ -504,7 +513,7 @@ def junos_prepare_session(conn):
             'error_reason': 'junos_preparation_not_operational', 'retryable': False}, '', '[initial prompt]')
     pattern = r'(?m)^' + re.escape(prompt) + r'[ \t]*\r?$'
     conn._network_prompt_text, conn._network_prompt_regex = prompt, pattern
-    conn._network_junos_verify_echo = True
+    conn._network_junos_verify_echo = echo_guard_enabled()
     skip_cli_setup = os.environ.get('NETMIKO_JUNOS_SKIP_CLI_SETUP', '').strip().lower() in {
         '1', 'true', 'yes', 'on'}
     conn._network_junos_capabilities = {}
@@ -521,7 +530,7 @@ def junos_prepare_session(conn):
                 raise preparation_error({'error_category': 'output_verification',
                     'error_reason': 'junos_minimal_channel_unavailable', 'retryable': False},
                     '', '[initial prompt]')
-            conn._network_junos_verify_echo = True
+            conn._network_junos_verify_echo = echo_guard_enabled()
             probe, failure = prep_read('show cli', pattern)
             if not failure and (not conn._network_command_sent or dead_session(conn)
                                 or not junos_cli_capabilities(probe, prompt)):
@@ -562,7 +571,7 @@ def junos_prepare_session(conn):
                 continue
             caps.pop(field, None)
             if field == 'complete_on_space':
-                conn._network_junos_verify_echo = True
+                conn._network_junos_verify_echo = echo_guard_enabled()
             diagnostic = re.search(r'(?im)^\s*(?:error:|syntax error|unknown command|permission denied|access denied)[^\n]*', reply)
             reason = ('permission_denied' if diagnostic and PERMISSION_DENIAL_RE.search(diagnostic[0]) else
                       'syntax_error' if diagnostic and CLI_SYNTAX_RE.search(diagnostic[0]) else
@@ -587,7 +596,7 @@ def junos_prepare_session(conn):
             # probe cannot establish settings, the business echo guard stays on.
             if not probed:
                 probed = True
-                conn._network_junos_verify_echo = caps.get('complete_on_space') is not False
+                conn._network_junos_verify_echo = echo_guard_enabled() and caps.get('complete_on_space') is not False
                 probe, probe_failure = prep_read('show cli', pattern)
                 probe_record = {'command': 'show cli', 'output': probe, 'reason': 'capability_probe'}
                 conn._network_junos_preparation.append(probe_record)
@@ -611,7 +620,7 @@ def junos_prepare_session(conn):
                         raise error
                 else:
                     caps.update(junos_cli_capabilities(probe, prompt))
-                conn._network_junos_verify_echo = caps.get('complete_on_space') is not False
+                conn._network_junos_verify_echo = echo_guard_enabled() and caps.get('complete_on_space') is not False
         conn.base_prompt = prompt[:-1]
         conn._network_prompt_text, conn._network_prompt_regex = prompt, pattern
         conn._network_junos_prepared = True

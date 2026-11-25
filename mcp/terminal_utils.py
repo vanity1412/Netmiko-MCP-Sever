@@ -58,8 +58,9 @@ def last_prompt(text: str) -> str | None:
     if not lines:
         return None
     line = lines[-1].strip()
-    # Junos user@host>, IOS/XR/NXOS, VRP <host>/[host], and simple shell prompts.
-    network = bool(re.fullmatch(r"[^\s]{1,220}[>#%$\]]", line))
+    # Junos user@host>, IOS/XR/NXOS, VRP <host>/[host], simple shell prompts,
+    # and Vertiv ACS8000 console prompt '--:- / cli->'.
+    network = bool(re.fullmatch(r"[^\s]{1,220}[>#%$\]]", line)) or line == '--:- / cli->'
     shell = bool(re.fullmatch(r"(?:\[[^\]\n]*@[^\]\n]+\][#$]|\[[^\]\n]+\][#$]|[^\s@]+@[^\n]{1,180}[#$>]|[>#%$])", line))
     if (network or shell) and line not in {"---(more)---", "[yes/no]"}:
         return line
