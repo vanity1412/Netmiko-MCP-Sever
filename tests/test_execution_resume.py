@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -162,6 +163,66 @@ class ResumeTests(unittest.TestCase):
         self.c._connect=connect
         self.assertTrue(self.run_job([{'target':'good','commands':['show version','show clock']}])['ok'])
         self.assertEqual(self.calls['192.0.2.1','show version'],1)
+
+    def fail_first_connections(self, failures):
+        connect = self.c._connect
+        attempts = collections.Counter()
+
+        def connect_once(**options):
+            host = options['host']
+            attempts[host] += 1
+            if attempts[host] == 1:
+                raise failures[host]
+            return connect(**options)
+
+        self.c._connect = connect_once
+        return attempts
+
+    def test_connect_timeout_retries_by_default(self):
+        attempts = self.fail_first_connections({'192.0.2.1': TimeoutError('TCP timed out')})
+
+        result = self.run_job([{'target': 'good', 'commands': ['show version']}])
+
+        self.assertEqual(result['success'], 1)
+        first, second = self.records()[0]['attempts']
+        self.assertEqual(first['error_category'], 'connect_timeout')
+        self.assertEqual(second['lane'], 'slow')
+        self.assertEqual(attempts['192.0.2.1'], 2)
+
+    def test_opt_out_only_skips_connect_timeout_retry(self):
+        attempts = self.fail_first_connections({
+            '192.0.2.1': TimeoutError('TCP timed out'),
+            '192.0.2.2': b.CollectionError({'error_category': 'banner_timeout',
+                                            'error_stage': 'banner', 'retryable': True}),
+        })
+        tasks = [{'target': alias, 'commands': ['show version']} for alias in ('good', 'bad')]
+
+        result = self.run_job(tasks, no_retry_connect_timeout=True)
+
+        self.assertEqual(result['failed'], 1)
+        self.assertEqual(result['success'], 1)
+        records = {record['target']: record for record in self.records()}
+        self.assertEqual(records['good']['attempts'][0]['error_category'], 'connect_timeout')
+        self.assertEqual(records['bad']['attempts'][0]['error_category'], 'banner_timeout')
+        self.assertEqual(attempts, {'192.0.2.1': 1, '192.0.2.2': 2})
+
+    def test_opt_out_skips_pending_connect_retry_on_resume(self):
+        attempts = self.fail_first_connections({'192.0.2.1': TimeoutError('TCP timed out')})
+        tasks = [{'target': 'good', 'commands': ['show version']}]
+        cancel = threading.Event()
+
+        first = self.run_job(tasks, cancel=cancel, progress=lambda _: cancel.set())
+        self.assertEqual(first['retry_pending'], 1)
+
+        resumed = self.run_job(tasks, no_retry_connect_timeout=True)
+        self.assertEqual(resumed['retry_pending'], 0)
+        self.assertEqual(resumed['failed'], 1)
+        self.assertEqual(attempts['192.0.2.1'], 1)
+
+        explicit = self.run_job(tasks, no_retry_connect_timeout=True, retry_statuses={'failed'})
+        self.assertEqual(explicit['success'], 1)
+        self.assertEqual(attempts['192.0.2.1'], 2)
+
     def test_export_recovery_does_not_repeat_configuration(self):
         tasks=[{'target':'good','commands':['configure terminal','end']}]
         with patch.object(scan.shutil,'copyfile',side_effect=OSError('simulated archive error')):

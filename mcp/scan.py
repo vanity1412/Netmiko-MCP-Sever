@@ -214,7 +214,8 @@ def _attempt(collector, task, lane, directory, number, command_map, cancel, budg
 
 
 def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command_map=None,
-             fast_timeout=90, slow_timeout=240, cancel=None, progress=None, retry_statuses=None, replay_uncertain=False, device_timeout=None):
+             fast_timeout=90, slow_timeout=240, cancel=None, progress=None, retry_statuses=None,
+             replay_uncertain=False, device_timeout=None, no_retry_connect_timeout=False):
     retry_statuses = set(retry_statuses or [])
     if retry_statuses - {'failed', 'partial', 'unknown'}:
         raise ValueError('retry_statuses must contain failed, partial or unknown')
@@ -231,7 +232,8 @@ def run_scan(collector, tasks, directory, *, workers=16, slow_workers=4, command
     lock = directory/'scan.lock'
     with scan_lock(lock):
         return _run_locked(collector,prepared,command_map,directory,workers,slow_workers,
-                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout,requested_workers)
+                           fast_timeout,slow_timeout,cancel or threading.Event(),progress,len(tasks)-len(prepared),retry_statuses,replay_uncertain,device_timeout,requested_workers,
+                           no_retry_connect_timeout=no_retry_connect_timeout)
 
 
 @contextlib.contextmanager
@@ -255,7 +257,9 @@ def scan_lock(path):
         yield
 
 
-def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout, cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout, requested_workers=None):
+def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_timeout, slow_timeout,
+                cancel, progress, duplicates, retry_statuses, replay_uncertain, device_timeout,
+                requested_workers=None, *, no_retry_connect_timeout=False):
     manifest = directory/'scan-manifest.json'
     binding = {'version':1,'plan_hash':hashlib.sha256(json.dumps([tasks,command_map],sort_keys=True).encode()).hexdigest(),
                'total':len(tasks)}
@@ -271,6 +275,10 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
     records_dir = directory/'results';records_dir.mkdir(exist_ok=True)
     (directory/'bang-chung').mkdir(exist_ok=True)
     states = {}; lanes = {'fast':collections.deque(), 'slow':collections.deque()}
+    retry_categories = {'connect_timeout', 'banner_timeout', 'read_timeout', 'auth_timeout',
+                        'connection_lost', 'handshake_incomplete'}
+    if no_retry_connect_timeout:
+        retry_categories.remove('connect_timeout')
 
     def retire_owned_raw(attempt):
         # Retire scratch only after the checkpoint references the archived files.
@@ -345,7 +353,12 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                         record['next_command_index'] = 0
                     lanes['slow'].append(task)
             elif record['status']=='retry_pending':
-                lanes['slow'].append(task)
+                latest = (record.get('attempts') or [{}])[-1]
+                if no_retry_connect_timeout and latest.get('error_category') == 'connect_timeout':
+                    record['status'] = latest['status']
+                    atomic_json(path, record)
+                else:
+                    lanes['slow'].append(task)
         else:lanes[task['lane']].append(task)
     budgets = {
         'fast':{'deadline':fast_timeout,'connection':{'conn_timeout':10,'banner_timeout':15,'auth_timeout':30},'read_timeout':45},
@@ -423,8 +436,8 @@ def _run_locked(c, tasks, command_map, directory, workers, slow_workers, fast_ti
                     remaining = record['device_budget_seconds'] - record['device_elapsed_seconds']
                     attempt['device_budget_exceeded'] = remaining <= 0
                     retry=(remaining > 0 and record['cycle_attempts'] < 2 and not attempt.get('result', {}).get('recovery_attempts')
-                           and attempt['retryable'] and attempt['error_category'] in
-                           {'connect_timeout','banner_timeout','read_timeout','auth_timeout','connection_lost','handshake_incomplete'} and not cancel.is_set())
+                           and attempt['retryable'] and attempt['error_category'] in retry_categories
+                           and not cancel.is_set())
                     record['status']='retry_pending' if retry else attempt['status']
                     record['finished_at']=stamp();save(record)
                     retire_owned_raw(attempt)
@@ -454,6 +467,8 @@ def main():
     parser.add_argument('--fast-timeout',type=int,default=90)
     parser.add_argument('--slow-timeout',type=int,default=240)
     parser.add_argument('--device-timeout',type=int,default=None,help='Shared fast/retry device budget in seconds; defaults to slow-timeout')
+    parser.add_argument('--no-retry-connect-timeout', action='store_true',
+                        help='Skip the automatic fleet retry after a TCP connect timeout')
     parser.add_argument('--retry-status', nargs='+', choices=['failed','partial','unknown'], help='Explicitly resume selected unsuccessful states, preserving successes and history')
     parser.add_argument('--replay-uncertain', action='store_true', help='Agent explicitly authorizes replay of an unsuccessful command whose effects are uncertain')
     parser.add_argument('--execute',action='store_true',help='Actually connect; default is preview only')
@@ -480,6 +495,7 @@ def main():
         result=run_scan(collector,tasks,args.output,workers=args.workers,slow_workers=args.slow_workers,
                         command_map=command_map,fast_timeout=args.fast_timeout,slow_timeout=args.slow_timeout,
                         retry_statuses=args.retry_status,replay_uncertain=args.replay_uncertain,device_timeout=args.device_timeout,
+                        no_retry_connect_timeout=args.no_retry_connect_timeout,
                         progress=lambda s:print(json.dumps({'progress':s}),flush=True))
         print(json.dumps(result));return 0 if result['ok'] else 2
     finally:collector.shutdown()
